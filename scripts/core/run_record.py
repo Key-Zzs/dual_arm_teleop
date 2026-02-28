@@ -3,7 +3,13 @@ from pathlib import Path
 from typing import Dict, Any
 from scripts.utils.dataset_utils import generate_dataset_name, update_dataset_info
 from lerobot_robot_franka import FrankaConfig, Franka
-from lerobot_teleoperator_franka import FrankaTeleopConfig, FrankaTeleop
+from lerobot_teleoperator_franka import (
+    DynamixelTeleopConfig,
+    SpacemouseTeleopConfig,
+    OculusTeleopConfig,
+    create_teleop,
+    create_teleop_config,
+)
 from lerobot.cameras.configs import ColorMode, Cv2Rotation
 from lerobot.cameras.realsense.camera_realsense import RealSenseCameraConfig
 from lerobot.scripts.lerobot_record import record_loop
@@ -26,7 +32,10 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+
 class RecordConfig:
+    """Configuration class for recording sessions."""
+    
     def __init__(self, cfg: Dict[str, Any]):
         storage = cfg["storage"]
         task = cfg["task"]
@@ -35,10 +44,8 @@ class RecordConfig:
         robot = cfg["robot"]
         policy = cfg["policy"]
         teleop = cfg["teleop"]
-        dxl_cfg = teleop["dynamixel_config"]
-        sm_cfg = teleop["spacemouse_config"]
-
-        # global config
+        
+        # Global config
         self.repo_id: str = cfg["repo_id"]
         self.debug: bool = cfg.get("debug", True)
         self.fps: str = cfg.get("fps", 15)
@@ -46,73 +53,119 @@ class RecordConfig:
         self.user_info: str = cfg.get("user_notes", None)
         self.run_mode: str = cfg.get("run_mode", "run_record")
         self.rename_map: dict[str, str] = field(default_factory=dict)
-
-        # teleop config
-        if teleop["control_mode"] == "isoteleop":
+        
+        # Teleop config - parse based on control mode
+        self.control_mode = teleop.get("control_mode", "isoteleop")
+        self._parse_teleop_config(teleop)
+        
+        # Policy config
+        self._parse_policy_config(policy)
+        
+        # Robot config
+        self.robot_ip: str = robot["ip"]
+        self.use_gripper: bool = robot["use_gripper"]
+        self.close_threshold = robot["close_threshold"]
+        self.gripper_reverse: bool = robot["gripper_reverse"]
+        self.gripper_bin_threshold: float = robot["gripper_bin_threshold"]
+        self.gripper_max_open: float = robot.get("gripper_max_open", 0.08)
+        
+        # Task config
+        self.num_episodes: int = task.get("num_episodes", 1)
+        self.display: bool = task.get("display", True)
+        self.task_description: str = task.get("description", "default task")
+        self.resume: bool = task.get("resume", False)
+        self.resume_dataset: str = task.get("resume_dataset", "")
+        
+        # Time config
+        self.episode_time_sec: int = time.get("episode_time_sec", 60)
+        self.reset_time_sec: int = time.get("reset_time_sec", 10)
+        self.save_mera_period: int = time.get("save_mera_period", 1)
+        
+        # Cameras config
+        self.wrist_cam_serial: str = cam["wrist_cam_serial"]
+        self.exterior_cam_serial: str = cam["exterior_cam_serial"]
+        self.width: int = cam["width"]
+        self.height: int = cam["height"]
+        
+        # Storage config
+        self.push_to_hub: bool = storage.get("push_to_hub", False)
+    
+    def _parse_teleop_config(self, teleop: Dict[str, Any]) -> None:
+        """Parse teleoperation configuration based on control mode."""
+        if self.control_mode == "isoteleop":
+            dxl_cfg = teleop["dynamixel_config"]
             self.port = dxl_cfg["port"]
-            self.use_gripper = dxl_cfg["use_gripper"]  
+            self.use_gripper = dxl_cfg["use_gripper"]
             self.joint_ids = dxl_cfg["joint_ids"]
             self.joint_offsets = dxl_cfg["joint_offsets"]
             self.joint_signs = dxl_cfg["joint_signs"]
             self.gripper_config = dxl_cfg["gripper_config"]
             self.hardware_offsets = dxl_cfg["hardware_offsets"]
-            self.control_mode = teleop.get("control_mode", "isoteleop")
-        elif teleop["control_mode"] == "spacemouse":
+        
+        elif self.control_mode == "spacemouse":
+            sm_cfg = teleop["spacemouse_config"]
             self.use_gripper = sm_cfg["use_gripper"]
             self.pose_scaler = sm_cfg["pose_scaler"]
             self.channel_signs = sm_cfg["channel_signs"]
-            self.control_mode = teleop.get("control_mode", "spacemouse")
-
-        # policy config
+        
+        elif self.control_mode == "oculus":
+            oculus_cfg = teleop.get("oculus_config", {})
+            self.use_gripper = oculus_cfg.get("use_gripper", True)
+            self.oculus_ip = oculus_cfg.get("ip", "192.168.110.62")
+            self.pose_scaler = oculus_cfg.get("pose_scaler", [1.0, 1.0])
+            self.channel_signs = oculus_cfg.get("channel_signs", [1, 1, 1, 1, 1, 1])
+        
+        else:
+            raise ValueError(f"Unsupported control mode: {self.control_mode}")
+    
+    def _parse_policy_config(self, policy: Dict[str, Any]) -> None:
+        """Parse policy configuration."""
         policy_type = policy["type"]
         if policy_type == "act":
             from lerobot.policies import ACTConfig
             self.policy = ACTConfig(
-                device = policy["device"],
-                push_to_hub = policy["push_to_hub"],
-                # pretrained_path = policy["pretrained_path"]
+                device=policy["device"],
+                push_to_hub=policy["push_to_hub"],
             )
         elif policy_type == "diffusion":
             from lerobot.policies import DiffusionConfig
             self.policy = DiffusionConfig(
-                device = policy["device"],
-                push_to_hub = policy["push_to_hub"],
-                # pretrained_path = policy["pretrained_path"]
+                device=policy["device"],
+                push_to_hub=policy["push_to_hub"],
             )
         else:
-            raise ValueError(f"no config for policy type: {policy_type}")
-        if policy["pretrained_path"]:
-            # self.policy = PreTrainedConfig.from_pretrained(policy["pretrained_path"])
+            raise ValueError(f"No config for policy type: {policy_type}")
+        
+        if policy.get("pretrained_path"):
             self.policy.pretrained_path = policy["pretrained_path"]
-
-        # robot config
-        self.robot_ip: str = robot["ip"]
-        # self.gripper_port: str = robot["gripper_port"]
-        self.use_gripper: str = robot["use_gripper"]
-        self.close_threshold = robot["close_threshold"]
-        self.gripper_reverse: str = robot["gripper_reverse"]
-        self.gripper_bin_threshold: float = robot["gripper_bin_threshold"]
-
-        # task config
-        self.num_episodes: int = task.get("num_episodes", 1)
-        self.display: bool = task.get("display", True)
-        self.task_description: str = task.get("description", "default task")
-        self.resume: bool = task.get("resume", "False")
-        self.resume_dataset: str = task["resume_dataset"]
-
-        # time config
-        self.episode_time_sec: int = time.get("episode_time_sec", 60)
-        self.reset_time_sec: int = time.get("reset_time_sec", 10)
-        self.save_mera_period: int = time.get("save_mera_period", 1)
-
-        # cameras config
-        self.wrist_cam_serial: str = cam["wrist_cam_serial"]
-        self.exterior_cam_serial: str = cam["exterior_cam_serial"]
-        self.width: int = cam["width"]
-        self.height: int = cam["height"]
-
-        # storage config
-        self.push_to_hub: bool = storage.get("push_to_hub", False)
+    
+    def create_teleop_config(self):
+        """Create teleoperation configuration object."""
+        if self.control_mode == "isoteleop":
+            return DynamixelTeleopConfig(
+                port=self.port,
+                use_gripper=self.use_gripper,
+                hardware_offsets=self.hardware_offsets,
+                joint_ids=self.joint_ids,
+                joint_offsets=self.joint_offsets,
+                joint_signs=self.joint_signs,
+                gripper_config=self.gripper_config,
+            )
+        elif self.control_mode == "spacemouse":
+            return SpacemouseTeleopConfig(
+                use_gripper=self.use_gripper,
+                pose_scaler=self.pose_scaler,
+                channel_signs=self.channel_signs,
+            )
+        elif self.control_mode == "oculus":
+            return OculusTeleopConfig(
+                use_gripper=self.use_gripper,
+                ip=self.oculus_ip,
+                pose_scaler=self.pose_scaler,
+                channel_signs=self.channel_signs,
+            )
+        else:
+            raise ValueError(f"Unsupported control mode: {self.control_mode}")
 
 
 def check_joint_offsets(record_cfg: RecordConfig):
@@ -175,23 +228,9 @@ def run_record(record_cfg: RecordConfig):
 
         # Create the robot and teleoperator configurations
         camera_config = {"wrist_image": wrist_image_cfg, "exterior_image": exterior_image_cfg}
-        if record_cfg.control_mode == "isoteleop":
-            teleop_config = FrankaTeleopConfig(        
-                port=record_cfg.port,
-                use_gripper=record_cfg.use_gripper,
-                hardware_offsets=record_cfg.hardware_offsets,
-                joint_ids=record_cfg.joint_ids,
-                joint_offsets=record_cfg.joint_offsets,
-                joint_signs=record_cfg.joint_signs,
-                gripper_config=record_cfg.gripper_config,
-                control_mode=record_cfg.control_mode)
-        elif record_cfg.control_mode == "spacemouse":
-            teleop_config = FrankaTeleopConfig(
-                use_gripper=record_cfg.use_gripper,
-                pose_scaler=record_cfg.pose_scaler,
-                channel_signs=record_cfg.channel_signs,
-                control_mode=record_cfg.control_mode,       
-            )
+        
+        # Create teleop config using the new method
+        teleop_config = record_cfg.create_teleop_config()
         
         robot_config = FrankaConfig(
             robot_ip=record_cfg.robot_ip,
@@ -201,6 +240,7 @@ def run_record(record_cfg: RecordConfig):
             use_gripper = record_cfg.use_gripper,
             gripper_reverse = record_cfg.gripper_reverse,
             gripper_bin_threshold = record_cfg.gripper_bin_threshold,
+            gripper_max_open = record_cfg.gripper_max_open,
             control_mode = record_cfg.control_mode,
         )
         # Initialize the robot
@@ -244,7 +284,7 @@ def run_record(record_cfg: RecordConfig):
         # configure the teleop and policy
         if record_cfg.run_mode == "run_record":
             logging.info("====== [INFO] Running in teleoperation mode ======")
-            teleop = FrankaTeleop(teleop_config)
+            teleop = create_teleop(teleop_config)
             policy = None
         elif record_cfg.run_mode == "run_policy":
             logging.info("====== [INFO] Running in policy mode ======")
@@ -253,7 +293,7 @@ def run_record(record_cfg: RecordConfig):
         elif record_cfg.run_mode == "run_mix":
             logging.info("====== [INFO] Running in mixed mode ======")
             policy = make_policy(record_cfg.policy, ds_meta=dataset.meta)
-            teleop = FrankaTeleop(teleop_config)
+            teleop = create_teleop(teleop_config)
         
         if policy is not None:
             preprocessor, postprocessor = make_pre_post_processors(

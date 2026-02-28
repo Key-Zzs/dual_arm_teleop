@@ -30,7 +30,7 @@ class Franka(Robot):
         self._initial_pose = None
         self._prev_observation = None
         self._num_joints = 7
-        self._gripper_force = 70
+        self._gripper_force = 20
         self._gripper_speed = 0.2
         self._gripper_epsilon = 1.0
         self._gripper_position = 1
@@ -169,122 +169,153 @@ class Franka(Robot):
 
     @property
     def action_features(self) -> dict[str, type]:
+        """Return action features based on control mode."""
         if self.config.control_mode == "isoteleop":
-            # print("using control mode: ", self.config.control_mode)
-            return {
-                "joint_1.pos": float,
-                "joint_2.pos": float,
-                "joint_3.pos": float,
-                "joint_4.pos": float,
-                "joint_5.pos": float,
-                "joint_6.pos": float,
-                "joint_7.pos": float,
-                "gripper_position": float,
-            }
-        elif self.config.control_mode == "spacemouse":
-            # print("using control mode: ", self.config.control_mode)
-            return {
-                "delta_ee_pose.x": float,
-                "delta_ee_pose.y": float,
-                "delta_ee_pose.z": float,
-                "delta_ee_pose.rx": float,
-                "delta_ee_pose.ry": float,
-                "delta_ee_pose.rz": float,
-                "gripper_cmd_bin": float,
-            }
+            features = {}
+            for i in range(self._num_joints):
+                features[f"joint_{i+1}.pos"] = float
+            if self.config.use_gripper:
+                features["gripper_position"] = float
+            return features
+        elif self.config.control_mode in ["spacemouse", "oculus"]:
+            features = {}
+            for axis in ["x", "y", "z", "rx", "ry", "rz"]:
+                features[f"delta_ee_pose.{axis}"] = float
+            if self.config.use_gripper:
+                features["gripper_cmd_bin"] = float
+            return features
+        else:
+            raise ValueError(f"Unsupported control mode: {self.config.control_mode}")
+
+    def _handle_gripper(self, gripper_value: float, is_binary: bool = True) -> None:
+        """Handle gripper control with common logic."""
+        if not self.config.use_gripper:
+            return
+        
+        if is_binary:
+            gripper_position = gripper_value
+        else:
+            gripper_position = 0.0 if gripper_value < self.config.close_threshold else 1.0
+        
+        if self.config.gripper_reverse:
+            gripper_position = 1 - gripper_position
+
+        if gripper_position != self._last_gripper_position:
+            self._robot.gripper_goto(
+                width=gripper_position * self.config.gripper_max_open,
+                speed=self._gripper_speed,
+                force=self._gripper_force,
+            )
+            self._last_gripper_position = gripper_position
+        
+        gripper_state = self._robot.gripper_get_state()
+        gripper_state_norm = max(0.0, min(1.0, gripper_state["width"] / self.config.gripper_max_open))
+        if self.config.gripper_reverse:
+            gripper_state_norm = 1 - gripper_state_norm
+        self._gripper_position = gripper_state_norm
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
+        
         if self.config.control_mode == "isoteleop":
-            # print("using control mode: ", self.config.control_mode)
-            target_joints = np.array([action[f"joint_{i+1}.pos"] for i in range(self._num_joints)])
-            if not self.config.debug:
-                # 获取当前关节位置
-                joint_positions = self._robot.robot_get_joint_positions()
+            self._send_action_isoteleop(action)
+        elif self.config.control_mode in ["spacemouse", "oculus"]:
+            self._send_action_cartesian(action)
+        else:
+            raise ValueError(f"Unsupported control mode: {self.config.control_mode}")
+        
+        return action
+
+    def _send_action_isoteleop(self, action: dict[str, Any]) -> None:
+        """Send action in isoteleop mode (joint positions)."""
+        target_joints = np.array([action[f"joint_{i+1}.pos"] for i in range(self._num_joints)])
+        
+        if not self.config.debug:
+            joint_positions = self._robot.robot_get_joint_positions()
+            max_delta = (np.abs(joint_positions - target_joints)).max()
+            
+            if max_delta > 0.3:
+                print("MOVING TOO FAST! SLOW DOWN!")
+                steps = min(int(max_delta / 0.05), 100)
+                for jnt in np.linspace(joint_positions, target_joints, steps):
+                    self._robot.robot_update_desired_joint_positions(jnt)
+                    time.sleep(0.02)
+            else:
+                self._robot.robot_update_desired_joint_positions(target_joints)
+        
+        if "gripper_position" in action:
+            self._handle_gripper(action["gripper_position"], is_binary=False)
+
+    def _send_action_cartesian(self, action: dict[str, Any]) -> None:
+        """Send action in spacemouse/oculus mode (delta ee pose)."""
+        # Check for reset request
+        if action.get("reset_requested", False):
+            logger.info("[ROBOT] Reset requested, moving to home position...")
+            # self._robot.robot_go_home()
+            ee_positions_reset= np.array(
+                # [0.53310639, -0.10013752, 0.42811251, -2.39517709, -2.00913615, 0.0]
+                [0.55581301, 0.00308523, 0.44111654, -2.22150303, -2.15458315, 0.00646556]
+            )
+            print(f"\nMoving ee to: {ee_positions_reset} ...\n")
+            self._robot.robot_move_to_ee_pose(pose = ee_positions_reset, time_to_go=2.0)
+            self._robot.gripper_goto(
+                width=self.config.gripper_max_open,
+                speed=self._gripper_speed,
+                force=self._gripper_force,
+                blocking=True
+            )
+            self._robot.robot_start_joint_impedance_control()
+            return
+        
+        delta_ee_pose = np.array([action[f"delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]])
+
+        if not self.config.debug:
+            import scipy.spatial.transform as st
+
+            ee_pose = self._robot.robot_get_ee_pose()
+
+            # 计算位置和旋转的变化量
+            position_delta = np.linalg.norm(delta_ee_pose[:3])
+            rotation_delta = np.linalg.norm(delta_ee_pose[3:])
+            
+            # 设置阈值：位置变化超过 0.03m 或旋转变化超过 0.2rad 时进行插值
+            max_position_step = 0.02  # 每步最大位置变化 (米)
+            max_rotation_step = 0.1   # 每步最大旋转变化 (弧度)
+            
+            # 计算需要的插值步数
+            position_steps = max(1, int(np.ceil(position_delta / max_position_step))) if position_delta > 0 else 1
+            rotation_steps = max(1, int(np.ceil(rotation_delta / max_rotation_step))) if rotation_delta > 0 else 1
+            num_steps = max(position_steps, rotation_steps)
+            
+            # 如果动作太大，进行插值
+            if num_steps > 1:
+                logger.debug(f"[ROBOT] Large delta detected, interpolating with {num_steps} steps")
                 
-                # 计算最大关节位置差
-                max_delta = (np.abs(joint_positions - target_joints)).max()
-                
-                # 如果最大差值超过阈值，则进行插值移动
-                if max_delta > 0.3:  # 设置一个合理的阈值
-                    print("MOVING TOO FAST! SLWO DOWN!")
-                    steps = min(int(max_delta / 0.05), 100)
+                for step in range(1, num_steps + 1):
+                    alpha = step / num_steps
+                    interpolated_delta = delta_ee_pose * alpha
                     
-                    for i, jnt in enumerate(np.linspace(joint_positions, target_joints, steps)):
-                        self._robot.robot_update_desired_joint_positions(jnt)
-                        time.sleep(0.02)
-                        
-                else:
-                    # 直接发送目标位置
-                    self._robot.robot_update_desired_joint_positions(target_joints)
-                
-                
-            if "gripper_position" in action:
-                gripper_position = 0.0 if action["gripper_position"]  < self.config.close_threshold else 1.0
-                if self.config.gripper_reverse:
-                    gripper_position = 1 - gripper_position
-
-                if gripper_position != self._last_gripper_position:
-                    self._robot.gripper_goto(
-                        width = gripper_position*self.config.gripper_max_open, 
-                        speed=self._gripper_speed, 
-                        force = self._gripper_force, 
-                        # epsilon_outer=self._gripper_epsilon
-                    )
-                    self._last_gripper_position = gripper_position
-                
-                gripper_state = self._robot.gripper_get_state()
-                gripper_state_norm = max(0.0, min(1.0, gripper_state["width"]/self.config.gripper_max_open))
-                if self.config.gripper_reverse:
-                    gripper_state_norm = 1 - gripper_state_norm
-
-                self._gripper_position = gripper_state_norm
-
-        elif self.config.control_mode == "spacemouse":
-            # print("using control mode: ", self.config.control_mode)
-            delta_ee_pose = np.array([action[f"delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]])
-
-            if not self.config.debug:
-                
-                import scipy.spatial.transform as st
-
-                ee_pose = self._robot.robot_get_ee_pose()
-
-                if np.linalg.norm(delta_ee_pose) >= 0.01:
-                    target_position = ee_pose[:3] + delta_ee_pose[:3]
+                    target_position = ee_pose[:3] + interpolated_delta[:3]
                     current_rot = st.Rotation.from_rotvec(ee_pose[3:])
-                    delta_rot = st.Rotation.from_rotvec(delta_ee_pose[3:])
-                    target_rotation = delta_rot * current_rot  # 注意顺序：增量旋转 * 当前旋转
+                    delta_rot = st.Rotation.from_rotvec(interpolated_delta[3:])
+                    target_rotation = delta_rot * current_rot
                     target_rotvec = target_rotation.as_rotvec()
                     target_ee_pose = np.concatenate([target_position, target_rotvec])
-                    # print("target_ee_pose:", target_ee_pose[3])
                     self._robot.robot_update_desired_ee_pose(target_ee_pose)
-                # else:
-                    pass
-            
-            if "gripper_cmd_bin" in action:
-                gripper_position = action["gripper_cmd_bin"]
-                if self.config.gripper_reverse:
-                    gripper_position = 1 - gripper_position
-
-                if gripper_position != self._last_gripper_position:
-                    self._robot.gripper_goto(
-                        width = gripper_position*self.config.gripper_max_open, 
-                        speed=self._gripper_speed, 
-                        force = self._gripper_force, 
-                        # epsilon_outer=self._gripper_epsilon
-                    )
-                    self._last_gripper_position = gripper_position
-                
-                gripper_state = self._robot.gripper_get_state()
-                gripper_state_norm = max(0.0, min(1.0, gripper_state["width"]/self.config.gripper_max_open))
-                if self.config.gripper_reverse:
-                    gripper_state_norm = 1 - gripper_state_norm
-
-                self._gripper_position = gripper_state_norm
-            
-        return action
+                    time.sleep(0.01)  # 每步间隔 10ms
+            elif np.linalg.norm(delta_ee_pose) >= 0.01:
+                # 正常小动作，直接执行
+                target_position = ee_pose[:3] + delta_ee_pose[:3]
+                current_rot = st.Rotation.from_rotvec(ee_pose[3:])
+                delta_rot = st.Rotation.from_rotvec(delta_ee_pose[3:])
+                target_rotation = delta_rot * current_rot
+                target_rotvec = target_rotation.as_rotvec()
+                target_ee_pose = np.concatenate([target_position, target_rotvec])
+                self._robot.robot_update_desired_ee_pose(target_ee_pose)
+        
+        if "gripper_cmd_bin" in action:
+            self._handle_gripper(action["gripper_cmd_bin"], is_binary=True)
 
     def get_observation(self) -> dict[str, Any]:
         if not self.is_connected:
