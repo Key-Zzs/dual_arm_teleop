@@ -107,25 +107,47 @@ class FrankaInterfaceServer:
     def robot_go_home(self):
         self.robot.go_home()
 
+    # def robot_move_to_ee_pose(
+    #     self,
+    #     position: list = None,
+    #     orientation: list = None,
+    #     time_to_go: float = None,
+    #     delta: bool = False,
+    #     Kx: list = None,
+    #     Kxd: list = None,
+    #     op_space_interp: bool = True,
+    # ):
+    #     self.robot.move_to_ee_pose(
+    #         position=torch.Tensor(position),
+    #         orientation=torch.Tensor(orientation),
+    #         time_to_go=time_to_go,
+    #         delta=delta,
+    #         Kx=torch.Tensor(Kx) if Kx is not None else None,
+    #         Kxd=torch.Tensor(Kxd) if Kxd is not None else None,
+    #         op_space_interp=op_space_interp,
+    #     )
     def robot_move_to_ee_pose(
         self,
-        position: list = None,
-        orientation: list = None,
+        # position: list = None,
+        # orientation: list = None,
+        pose: list = None,
         time_to_go: float = None,
         delta: bool = False,
         Kx: list = None,
         Kxd: list = None,
         op_space_interp: bool = True,
     ):
+        pose = torch.Tensor(pose)
         self.robot.move_to_ee_pose(
-            position=torch.Tensor(position),
-            orientation=torch.Tensor(orientation),
+            position=torch.Tensor(pose[:3]),
+            orientation=torch.Tensor(st.Rotation.from_rotvec(pose[3:]).as_quat()),
             time_to_go=time_to_go,
             delta=delta,
             Kx=torch.Tensor(Kx) if Kx is not None else None,
             Kxd=torch.Tensor(Kxd) if Kxd is not None else None,
             op_space_interp=op_space_interp,
         )
+
 
     def robot_start_joint_impedance_control(self, Kq: list = None, Kqd: list = None, adaptive=True,):
         self.robot.start_joint_impedance(
@@ -149,7 +171,7 @@ class FrankaInterfaceServer:
         pose = torch.Tensor(pose)
         self.robot.update_desired_ee_pose(
             position=torch.Tensor(pose[:3]),
-            orientation=torch.Tensor(st.Rotation.from_rotvec(pose[3:]).as_quat())
+            orientation=torch.Tensor(st.Rotation.from_rotvec(pose[3:]).as_quat()),
         )
 
     def robot_terminate_current_policy(self):

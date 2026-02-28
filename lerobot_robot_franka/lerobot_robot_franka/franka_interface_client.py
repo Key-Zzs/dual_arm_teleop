@@ -113,8 +113,9 @@ class FrankaInterfaceClient:
 
     def robot_move_to_ee_pose(
         self,
-        position: np.ndarray = None,
-        orientation: np.ndarray = None,
+        # position: np.ndarray = None,
+        # orientation: np.ndarray = None,
+        pose: np.ndarray = None,
         time_to_go: float = None,
         delta: bool = False,
         Kx: np.ndarray = None,
@@ -122,8 +123,7 @@ class FrankaInterfaceClient:
         op_space_interp: bool = True,
     ):
         self.server.robot_move_to_ee_pose(
-            position.tolist(),
-            orientation.tolist(),
+            pose.tolist(),
             time_to_go,
             delta,
             Kx.tolist() if Kx is not None else None,
