@@ -57,3 +57,6 @@ class OculusDualArmTeleopConfig(BaseTeleopConfig):
     use_gripper: bool = True
     # Left gripper: Left Trigger (LTr)
     # Right gripper: Right Trigger (RTr)
+
+    servo_time: float =0.017
+    visualize_placo: bool = True

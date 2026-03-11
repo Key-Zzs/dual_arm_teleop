@@ -349,25 +349,6 @@ class DobotDualArm(Robot):
     
     def _send_action_cartesian(self, action: dict[str, Any]) -> None:
         """Send action in oculus mode (delta ee pose) without using loops."""
-        # Check for reset request
-        if action.get("reset_requested", False):
-            logger.info("[ROBOT] Reset requested for dual-arm system...")
-            self._robot.robot_go_home()
-            if self.config.use_gripper:
-                self._gripper_client.left_gripper_goto(
-                    width=self.config.gripper_max_open,
-                    speed=self._gripper_speed,
-                    force=self._gripper_force,
-                    blocking=True
-                )
-                self._gripper_client.right_gripper_goto(
-                    width=self.config.gripper_max_open,
-                    speed=self._gripper_speed,
-                    force=self._gripper_force,
-                    blocking=True
-                )
-            return
-        
         # Get delta poses for both arms
         left_delta = np.array([
             action[f"left_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]

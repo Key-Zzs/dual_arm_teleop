@@ -266,6 +266,8 @@ huggingface-cli whoami  # Verify successful login
 2. Verify that the parameters in `record_cfg.yaml` are correct.  
 3. To ensure standardized data collection, please read `9. Dataset Naming and Recording Details` before running the following command:
 ```bash
+unset LD_LIBRARY_PATH 
+unset PYTHONPATH 
 dual-arm-record
 ```
 

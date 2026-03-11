@@ -16,10 +16,10 @@ record:
     oculus_config:
       ip: "192.168.110.62"  # Oculus Quest IP address
       use_gripper: *use_gripper
-      left_pose_scaler: [2.0, 1.5]   # left arm scaler
-      left_channel_signs: [1, 1, 1, -1, -1, 1]  # left arm signs
-      right_pose_scaler: [2.0, 1.5]  # right arm scaler
-      right_channel_signs: [1, 1, 1, -1, -1, 1]  # right arm signs
+      left_pose_scaler: [1.0, 1.0]   # left arm scaler
+      left_channel_signs: [1, -1, 1, -1, 1, 1]  # left arm signs
+      right_pose_scaler: [1.0, 1.0]  # right arm scaler
+      right_channel_signs: [1, -1, 1, -1, 1, 1]  # right arm signs
       
   robot:
     robot_ip: &ip "localhost" # dobot server ip
