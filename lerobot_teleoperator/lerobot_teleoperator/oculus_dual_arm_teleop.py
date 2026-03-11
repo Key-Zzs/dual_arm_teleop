@@ -4,7 +4,7 @@
 Oculus Quest dual-arm teleoperation implementation.
 Uses both Oculus controllers to control a dual-arm robot system.
 Left controller -> Left arm, Right controller -> Right arm.
-Integrates IK solver for joint position tracking and robot client for state feedback.
+Integrates placo IK solver for joint position tracking and robot client for state feedback.
 """
 
 import logging
@@ -13,35 +13,30 @@ import time
 import numpy as np
 from pathlib import Path
 from typing import Any, Dict, Optional
+import threading
+import webbrowser
 
 from .base_teleop import BaseTeleop
 from .config_teleop import OculusDualArmTeleopConfig
 from .oculus.oculus_dual_arm_robot import OculusDualArmRobot
-from .ik_solver import DualArmIKSolver
+from .placo_visualization import PlacoVisualizer
 
 logger = logging.getLogger(__name__)
 
-# Import robot client (try multiple paths)
+# Import robot client
 try:
-    # Try relative import from lerobot_robot package
     from lerobot_robot.dobot_interface_client import DobotDualArmClient
-    logger.debug("[TELEOP] Imported DobotDualArmClient from lerobot_robot package")
 except ImportError:
-    try:
-        # Try direct import if in path
-        from dobot_interface_client import DobotDualArmClient
-        logger.debug("[TELEOP] Imported DobotDualArmClient directly")
-    except ImportError:
-        # Fallback: add path and import
-        import sys
-        robot_path = Path(__file__).parent.parent.parent / "lerobot_robot/lerobot_robot"
-        if robot_path.exists():
-            sys.path.insert(0, str(robot_path))
-            from dobot_interface_client import DobotDualArmClient
-            logger.debug(f"[TELEOP] Imported DobotDualArmClient from {robot_path}")
-        else:
-            logger.warning(f"[TELEOP] Robot client path not found: {robot_path}")
-            DobotDualArmClient = None
+    DobotDualArmClient = None
+
+# Import placo
+try:
+    import placo
+    from scipy.spatial.transform import Rotation as R
+    PLACO_AVAILABLE = True
+except ImportError:
+    PLACO_AVAILABLE = False
+    logger.warning("[TELEOP] placo not available")
 
 
 class OculusDualArmTeleop(BaseTeleop):
@@ -50,7 +45,7 @@ class OculusDualArmTeleop(BaseTeleop):
     
     This teleoperation mode uses both Oculus Quest controllers to simultaneously
     control two robot arms in Cartesian space. The output includes both delta pose
-    and joint positions (via IK solver).
+    and joint positions (via placo IK solver).
     
     Automatically connects to robot to get current state for IK computation.
     
@@ -67,47 +62,71 @@ class OculusDualArmTeleop(BaseTeleop):
     config_class = OculusDualArmTeleopConfig
     name = "OculusDualArmTeleop"
     
+    # End-effector link configuration
+    MANIPULATOR_CONFIG = {
+        "left_arm": {
+            "ee_link": "left_Link6",
+            "base_link": "left_base_fixed_link",
+        },
+        "right_arm": {
+            "ee_link": "right_Link6",
+            "base_link": "right_base_fixed_link",
+        },
+    }
+    
     def __init__(self, config: OculusDualArmTeleopConfig):
         super().__init__(config)
         self.oculus_robot: OculusDualArmRobot = None
-        self.ik_solver: Optional[DualArmIKSolver] = None
         self.robot_client: Optional[DobotDualArmClient] = None
         
-        # Current robot state (for IK)
-        self.left_current_pose: Optional[np.ndarray] = None
-        self.right_current_pose: Optional[np.ndarray] = None
+        # Placo IK solver components
+        self.placo_robot = None
+        self.solver = None
+        self.effector_task = {}
+        self.placo_vis = None
+        
+        # Current robot state
         self.left_current_joints: np.ndarray = np.zeros(6)
         self.right_current_joints: np.ndarray = np.zeros(6)
+        self.target_left_q: np.ndarray = np.zeros(6)
+        self.target_right_q: np.ndarray = np.zeros(6)
+        
+        # URDF path
+        self.robot_urdf_path = "/home/geist/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/assets/dobot_description/urdf/dual_nova5_robot.urdf"
+        
+        # Threading
+        self._stop_event = threading.Event()
+        
+        # Visualization flag
+        self.visualize = getattr(config, 'visualize_placo', False)
     
     def _get_teleop_name(self) -> str:
         return "OculusDualArmTeleop"
     
     @property
     def action_features(self) -> dict:
-        """Return action features for dual-arm oculus mode (includes both EE pose and joints)."""
+        """Return action features for dual-arm oculus mode."""
         features = {}
-        # Left arm delta pose
-        for axis in ["x", "y", "z", "rx", "ry", "rz"]:
-            features[f"left_delta_ee_pose.{axis}"] = float
-        # Right arm delta pose
-        for axis in ["x", "y", "z", "rx", "ry", "rz"]:
-            features[f"right_delta_ee_pose.{axis}"] = float
+        # Delta EE poses
+        for arm in ["left", "right"]:
+            for axis in ["x", "y", "z", "rx", "ry", "rz"]:
+                features[f"{arm}_delta_ee_pose.{axis}"] = float
         
-        # Left arm joint positions (from IK)
-        for i in range(6):
-            features[f"left_joint_{i+1}.pos"] = float
-        # Right arm joint positions (from IK)
-        for i in range(6):
-            features[f"right_joint_{i+1}.pos"] = float
+        # Joint positions (from IK)
+        for arm in ["left", "right"]:
+            for i in range(6):
+                features[f"{arm}_joint_{i+1}.pos"] = float
         
         # Gripper commands
         if self.cfg.use_gripper:
             features["left_gripper_cmd_bin"] = float
             features["right_gripper_cmd_bin"] = float
+        
         return features
     
     def _connect_impl(self) -> None:
-        """Connect to Oculus Quest for dual-arm control and initialize IK solver and robot client."""
+        """Connect to Oculus Quest and initialize placo IK solver."""
+        # Connect to Oculus
         self.oculus_robot = OculusDualArmRobot(
             ip=self.cfg.ip,
             use_gripper=self.cfg.use_gripper,
@@ -117,44 +136,108 @@ class OculusDualArmTeleop(BaseTeleop):
             right_channel_signs=self.cfg.right_channel_signs,
         )
         logger.info(f"[TELEOP] Oculus dual-arm connected at IP: {self.cfg.ip}")
-        logger.info(f"[TELEOP]   Left arm  - pose_scaler: {self.cfg.left_pose_scaler}, "
-                    f"channel_signs: {self.cfg.left_channel_signs}")
-        logger.info(f"[TELEOP]   Right arm - pose_scaler: {self.cfg.right_pose_scaler}, "
-                    f"channel_signs: {self.cfg.right_channel_signs}")
         
-        # Initialize robot client for state feedback
+        # Connect to robot client
         try:
-            # Get robot IP and port from config (with defaults)
             robot_ip = getattr(self.cfg, 'robot_ip', '127.0.0.1')
             robot_port = getattr(self.cfg, 'robot_port', 4242)
-            
             self.robot_client = DobotDualArmClient(ip=robot_ip, port=robot_port)
             logger.info(f"[TELEOP] Robot client connected at {robot_ip}:{robot_port}")
         except Exception as e:
             logger.warning(f"[TELEOP] Failed to connect to robot client: {e}")
             self.robot_client = None
         
-        # Initialize IK solver
+        # Initialize placo IK solver
+        self._init_placo_solver()
+        
+        # Initialize joint positions from robot
+        self._init_joint_positions()
+        
+        # Start visualization if enabled
+        if self.visualize:
+            self._start_placo_visualizer()
+    
+    def _init_placo_solver(self):
+        """Initialize placo IK solver with frame tasks."""
+        if not PLACO_AVAILABLE:
+            raise RuntimeError("placo is required for IK solver")
+        
+        # Load robot model
+        self.placo_robot = placo.RobotWrapper(str(self.robot_urdf_path))
+        
+        # Create IK solver
+        self.solver = placo.KinematicsSolver(self.placo_robot)
+        self.solver.dt = self.cfg.servo_time  # ~60Hz
+        self.solver.mask_fbase(True)
+        
+        # Add regularization for smooth motion
+        self.solver.add_kinetic_energy_regularization_task(1e-6)
+        
+        # Add joint regularization to prevent jumping between IK solutions
+        joint_reg = self.solver.add_regularization_task(0.1)
+        joint_reg.configure("joint_regularization", "soft", 0.1)
+        
+        # Enable joint limits
+        self.solver.enable_joint_limits(True)
+        
+        # Create frame tasks for both end-effectors
+        initial_pose = np.eye(4)
+        
+        for arm_name, config in self.MANIPULATOR_CONFIG.items():
+            self.effector_task[arm_name] = self.solver.add_frame_task(
+                config["ee_link"], initial_pose
+            )
+            self.effector_task[arm_name].configure(f"{arm_name}_frame", "soft", 1.0)
+        
+        logger.info("[TELEOP] Placo IK solver initialized")
+    
+    def _init_joint_positions(self):
+        """Initialize joint positions from robot."""
+        if self.robot_client is not None:
+            self.left_current_joints = self.robot_client.left_robot_get_joint_positions()
+            self.right_current_joints = self.robot_client.right_robot_get_joint_positions()
+        else:
+            self.left_current_joints = np.zeros(6)
+            self.right_current_joints = np.zeros(6)
+        
+        # Set initial joint positions in placo model
+        # Joint indices: left arm q[7:13], right arm q[25:31]
+        self.placo_robot.state.q[7:13] = self.left_current_joints
+        self.placo_robot.state.q[25:31] = self.right_current_joints
+        self.placo_robot.update_kinematics()
+        
+        # Initialize target joints
+        self.target_left_q = self.left_current_joints.copy()
+        self.target_right_q = self.right_current_joints.copy()
+        
+        logger.info(f"[TELEOP] Initial left joints: {self.left_current_joints}")
+        logger.info(f"[TELEOP] Initial right joints: {self.right_current_joints}")
+    
+    def _start_placo_visualizer(self):
+        """Start meshcat visualization."""
         try:
-            urdf_path = Path(__file__).parent.parent.parent / "assets/dobot_description/urdf/dual_nova5_robot.urdf"
-            if urdf_path.exists():
-                self.ik_solver = DualArmIKSolver(
-                    urdf_path=str(urdf_path),
-                    left_arm_prefix="left_",
-                    right_arm_prefix="right_",
-                    left_ee_link="left_Link6",
-                    right_ee_link="right_Link6",
-                )
-                logger.info(f"[TELEOP] IK solver initialized with URDF: {urdf_path}")
-            else:
-                logger.warning(f"[TELEOP] URDF not found at {urdf_path}, IK solver disabled")
-                self.ik_solver = None
+            self.placo_vis = PlacoVisualizer(self.placo_robot, auto_open=True)
+            logger.info(f"[TELEOP] Visualization started at: {self.placo_vis.url()}")
         except Exception as e:
-            logger.warning(f"[TELEOP] Failed to initialize IK solver: {e}")
-            self.ik_solver = None
+            logger.warning(f"[TELEOP] Failed to start visualization: {e}")
+            self.placo_vis = None
+    
+    def _update_visualization(self):
+        """Update visualization with current robot state."""
+        if self.placo_vis is not None:
+            try:
+                self.placo_vis.display()
+                # Update target frames
+                self.placo_vis.update_target(
+                    left_target=self.effector_task["left_arm"].T_world_frame,
+                    right_target=self.effector_task["right_arm"].T_world_frame
+                )
+            except Exception as e:
+                logger.warning(f"[TELEOP] Visualization update failed: {e}")
     
     def _disconnect_impl(self) -> None:
         """Disconnect from Oculus Quest and robot client."""
+        self._stop_event.set()
         if self.robot_client is not None:
             try:
                 self.robot_client.close()
@@ -162,69 +245,26 @@ class OculusDualArmTeleop(BaseTeleop):
             except:
                 pass
     
-    def update_robot_state(
-        self,
-        left_ee_pose: Optional[np.ndarray] = None,
-        right_ee_pose: Optional[np.ndarray] = None,
-        left_joints: Optional[np.ndarray] = None,
-        right_joints: Optional[np.ndarray] = None,
-    ):
-        """
-        Update current robot state for IK computation.
-        This should be called by the robot with its current state.
-        
-        Args:
-            left_ee_pose: Current left arm end-effector pose [x, y, z, rx, ry, rz]
-            right_ee_pose: Current right arm end-effector pose [x, y, z, rx, ry, rz]
-            left_joints: Current left arm joint positions (6 values)
-            right_joints: Current right arm joint positions (6 values)
-        """
-        if left_ee_pose is not None:
-            self.left_current_pose = left_ee_pose
-        if right_ee_pose is not None:
-            self.right_current_pose = right_ee_pose
-        if left_joints is not None:
-            self.left_current_joints = left_joints
-            if self.ik_solver is not None:
-                self.ik_solver.update_joint_positions(left_joints=left_joints)
-        if right_joints is not None:
-            self.right_current_joints = right_joints
-            if self.ik_solver is not None:
-                self.ik_solver.update_joint_positions(right_joints=right_joints)
-    
     def _get_action_impl(self) -> Dict[str, Any]:
         """
-        Get delta pose from both Oculus controllers and compute joint positions via IK.
-        
-        Automatically fetches current robot state from robot_client if available.
-        Uses Dobot's built-in IK solver for accurate joint computation.
+        Get delta pose from Oculus controllers and compute joint positions via placo IK.
         
         Returns dict with:
-            - left_delta_ee_pose.{x,y,z,rx,ry,rz}
-            - right_delta_ee_pose.{x,y,z,rx,ry,rz}
-            - left_joint_{1-6}.pos (IK computed, in radians)
-            - right_joint_{1-6}.pos (IK computed, in radians)
-            - left_gripper_cmd_bin
-            - right_gripper_cmd_bin
+            - left/right_delta_ee_pose.{x,y,z,rx,ry,rz}
+            - left/right_joint_{1-6}.pos (IK computed, in radians)
+            - left/right_gripper_cmd_bin
             - reset_requested
         """
-        # Automatically update robot state from client if available
+        # Update robot state from client
         if self.robot_client is not None:
             try:
-                # Get current EE poses (in meters and radians)
-                left_ee = self.robot_client.left_robot_get_ee_pose()
-                right_ee = self.robot_client.right_robot_get_ee_pose()
+                self.left_current_joints = self.robot_client.left_robot_get_joint_positions()
+                self.right_current_joints = self.robot_client.right_robot_get_joint_positions()
                 
-                # Get current joint positions (in radians)
-                left_joints = self.robot_client.left_robot_get_joint_positions()
-                right_joints = self.robot_client.right_robot_get_joint_positions()
-                
-                # Update internal state
-                self.left_current_pose = left_ee
-                self.right_current_pose = right_ee
-                self.left_current_joints = left_joints
-                self.right_current_joints = right_joints
-                    
+                # Update placo model with current joints
+                self.placo_robot.state.q[7:13] = self.left_current_joints
+                self.placo_robot.state.q[25:31] = self.right_current_joints
+                self.placo_robot.update_kinematics()
             except Exception as e:
                 logger.warning(f"[TELEOP] Failed to get robot state: {e}")
         
@@ -249,74 +289,67 @@ class OculusDualArmTeleop(BaseTeleop):
             action[f"left_delta_ee_pose.{axis}"] = float(left_delta[i])
             action[f"right_delta_ee_pose.{axis}"] = float(right_delta[i])
         
-        # Compute joint positions via IK using Dobot's built-in IK
-        if self.robot_client is not None and self.left_current_pose is not None:
-            try:
-                # Compute target poses with proper rotation handling
-                # Position: can be added directly
-                left_target_pos = self.left_current_pose[:3] + left_delta[:3]
-                right_target_pos = self.right_current_pose[:3] + right_delta[:3]
-                
-                # Orientation: need to use rotation matrices
-                from scipy.spatial.transform import Rotation
-                
-                # Current orientation as rotation matrix
-                R_current_left = Rotation.from_euler("xyz", self.left_current_pose[3:])
-                R_current_right = Rotation.from_euler("xyz", self.right_current_pose[3:])
-                
-                # Delta orientation as rotation matrix
-                R_delta_left = Rotation.from_euler("xyz", left_delta[3:])
-                R_delta_right = Rotation.from_euler("xyz", right_delta[3:])
-                
-                # Target orientation: R_target = R_delta * R_current
-                R_target_left = R_delta_left * R_current_left
-                R_target_right = R_delta_right * R_current_right
-                
-                # Convert back to Euler angles
-                left_target_rot = R_target_left.as_euler("xyz")
-                right_target_rot = R_target_right.as_euler("xyz")
-                
-                # Combine position and orientation (in meters and radians)
-                left_target_pose = np.concatenate([left_target_pos, left_target_rot])
-                right_target_pose = np.concatenate([right_target_pos, right_target_rot])
-                
-                # Solve IK using Dobot controller (expects meters and radians)
-                left_joints_result = self.robot_client.inverse_kinematics(
-                    'left', left_target_pose, self.left_current_joints
-                )
-                right_joints_result = self.robot_client.inverse_kinematics(
-                    'right', right_target_pose, self.right_current_joints
-                )
-                
-                # IK returns radians
-                if left_joints_result is not None:
-                    left_target_joints = np.array(left_joints_result)
-                else:
-                    logger.warning("[TELEOP] Left arm IK failed, using current joints")
-                    left_target_joints = self.left_current_joints
-                
-                if right_joints_result is not None:
-                    right_target_joints = np.array(right_joints_result)
-                else:
-                    logger.warning("[TELEOP] Right arm IK failed, using current joints")
-                    right_target_joints = self.right_current_joints
-                
-                # Add joint positions to action (in radians)
-                for i in range(6):
-                    action[f"left_joint_{i+1}.pos"] = float(left_target_joints[i])
-                    action[f"right_joint_{i+1}.pos"] = float(right_target_joints[i])
-                
-            except Exception as e:
-                logger.warning(f"[TELEOP] IK computation failed: {e}")
-                # Use current joints as fallback
-                for i in range(6):
-                    action[f"left_joint_{i+1}.pos"] = float(self.left_current_joints[i])
-                    action[f"right_joint_{i+1}.pos"] = float(self.right_current_joints[i])
-        else:
-            # No robot client, use zeros
-            for i in range(6):
-                action[f"left_joint_{i+1}.pos"] = 0.0
-                action[f"right_joint_{i+1}.pos"] = 0.0
+        # Compute joint positions via placo IK
+        try:
+            # Get current EE poses from placo
+            T_left_ee = self.placo_robot.get_T_world_frame("left_Link6")
+            T_right_ee = self.placo_robot.get_T_world_frame("right_Link6")
+            
+            # Convert to pose format [x, y, z, rx, ry, rz]
+            left_ee_pos = T_left_ee[:3, 3]
+            right_ee_pos = T_right_ee[:3, 3]
+            left_ee_rot = R.from_matrix(T_left_ee[:3, :3]).as_euler("xyz")
+            right_ee_rot = R.from_matrix(T_right_ee[:3, :3]).as_euler("xyz")
+            
+            # Compute target poses
+            left_target_pos = left_ee_pos + left_delta[:3]
+            right_target_pos = right_ee_pos + right_delta[:3]
+            
+            # Handle rotation delta
+            R_current_left = R.from_euler("xyz", left_ee_rot)
+            R_current_right = R.from_euler("xyz", right_ee_rot)
+            R_delta_left = R.from_euler("xyz", left_delta[3:])
+            R_delta_right = R.from_euler("xyz", right_delta[3:])
+            
+            R_target_left = R_delta_left * R_current_left
+            R_target_right = R_delta_right * R_current_right
+            
+            left_target_rot = R_target_left.as_euler("xyz")
+            right_target_rot = R_target_right.as_euler("xyz")
+            
+            # Build target transforms
+            T_left_target = np.eye(4)
+            T_left_target[:3, 3] = left_target_pos
+            T_left_target[:3, :3] = R_target_left.as_matrix()
+            
+            T_right_target = np.eye(4)
+            T_right_target[:3, 3] = right_target_pos
+            T_right_target[:3, :3] = R_target_right.as_matrix()
+            
+            # Set effector tasks
+            self.effector_task["left_arm"].T_world_frame = T_left_target
+            self.effector_task["right_arm"].T_world_frame = T_right_target
+            
+            # Solve IK
+            self.solver.solve(True)
+            
+            # Extract joint positions
+            self.target_left_q = self.placo_robot.state.q[7:13].copy()
+            self.target_right_q = self.placo_robot.state.q[25:31].copy()
+            
+            # Update visualization
+            if self.visualize:
+                self._update_visualization()
+            
+        except RuntimeError as e:
+            logger.warning(f"[TELEOP] IK solver failed: {e}")
+        except Exception as e:
+            logger.warning(f"[TELEOP] IK computation failed: {e}")
+        
+        # Add joint positions to action
+        for i in range(6):
+            action[f"left_joint_{i+1}.pos"] = float(self.target_left_q[i])
+            action[f"right_joint_{i+1}.pos"] = float(self.target_right_q[i])
         
         # Add gripper commands
         if self.cfg.use_gripper:
@@ -329,32 +362,54 @@ class OculusDualArmTeleop(BaseTeleop):
         return action
 
 
-def main() -> None:
-    """Simple CLI test entrypoint for OculusDualArmTeleop output."""
-    parser = argparse.ArgumentParser(description="Test OculusDualArmTeleop action output")
-    parser.add_argument("--ip", type=str, default="192.168.110.62", help="Oculus Quest IP")
-    parser.add_argument("--hz", type=float, default=10.0, help="Print frequency")
-    parser.add_argument("--max-steps", type=int, default=0, help="Stop after N steps; 0 means run forever")
-    parser.add_argument("--no-gripper", action="store_true", help="Disable gripper fields")
-    args = parser.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-
+def test_action_output(ip: str, hz: float, max_steps: int, use_gripper: bool, visualize: bool) -> None:
+    """Test the action output from OculusDualArmTeleop."""
+    logger.info("\n" + "="*60)
+    logger.info("Testing Action Output with Placo IK")
+    logger.info("="*60)
+    
     cfg = OculusDualArmTeleopConfig(
-        ip=args.ip,
-        use_gripper=not args.no_gripper,
+        ip=ip,
+        use_gripper=use_gripper,
+        visualize_placo=True,
     )
     teleop = OculusDualArmTeleop(cfg)
 
-    sleep_s = 1.0 / max(args.hz, 1e-6)
+    sleep_s = 1.0 / max(hz, 1e-6)
     step = 0
     try:
         teleop.connect()
+        logger.info(f"[TELEOP] Connected to Oculus at {ip}")
+        logger.info(f"[TELEOP] Running at {hz} Hz, max_steps={max_steps}")
+        logger.info("")
+        
         while True:
             action = teleop.get_action()
-            print(f"[step={step}] {action}")
+            
+            # Format action output nicely
+            print(f"\n--- Step {step} ---")
+            print("Delta EE Pose (left):  ", end="")
+            for axis in ["x", "y", "z", "rx", "ry", "rz"]:
+                print(f"{axis}={action[f'left_delta_ee_pose.{axis}']:.4f} ", end="")
+            print()
+            print("Delta EE Pose (right): ", end="")
+            for axis in ["x", "y", "z", "rx", "ry", "rz"]:
+                print(f"{axis}={action[f'right_delta_ee_pose.{axis}']:.4f} ", end="")
+            print()
+            print("Joint Positions (left):  [", end="")
+            for i in range(6):
+                print(f"{action[f'left_joint_{i+1}.pos']:.4f}", end=", " if i < 5 else "")
+            print("]")
+            print("Joint Positions (right): [", end="")
+            for i in range(6):
+                print(f"{action[f'right_joint_{i+1}.pos']:.4f}", end=", " if i < 5 else "")
+            print("]")
+            if use_gripper:
+                print(f"Gripper (L/R): {action['left_gripper_cmd_bin']:.2f} / {action['right_gripper_cmd_bin']:.2f}")
+            print(f"Reset requested: {action['reset_requested']}")
+            
             step += 1
-            if args.max_steps > 0 and step >= args.max_steps:
+            if max_steps > 0 and step >= max_steps:
                 break
             time.sleep(sleep_s)
     except KeyboardInterrupt:
@@ -363,7 +418,20 @@ def main() -> None:
         teleop.disconnect()
 
 
+def main() -> None:
+    """CLI test entrypoint for OculusDualArmTeleop."""
+    parser = argparse.ArgumentParser(description="Test OculusDualArmTeleop with Placo IK")
+    parser.add_argument("--ip", type=str, default="192.168.110.62", help="Oculus Quest IP")
+    parser.add_argument("--hz", type=float, default=10.0, help="Print frequency")
+    parser.add_argument("--max-steps", type=int, default=0, help="Stop after N steps; 0 means run forever")
+    parser.add_argument("--no-gripper", action="store_true", help="Disable gripper fields")
+    parser.add_argument("--visualize", action="store_true", help="Enable placo visualization")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    
+    test_action_output(args.ip, args.hz, args.max_steps, not args.no_gripper, args.visualize)
+
+
 if __name__ == "__main__":
     main()
-
-
