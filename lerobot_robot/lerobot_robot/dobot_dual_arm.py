@@ -172,13 +172,13 @@ class DobotDualArm(Robot):
         """Motor features for dual-arm system."""
         features = {}
         
-        # # Left arm joint positions
-        # for i in range(self._num_joints_per_arm):
-        #     features[f"left_joint_{i+1}.pos"] = float
+        # Left arm joint positions
+        for i in range(self._num_joints_per_arm):
+            features[f"left_joint_{i+1}.pos"] = float
         
-        # # Right arm joint positions
-        # for i in range(self._num_joints_per_arm):
-        #     features[f"right_joint_{i+1}.pos"] = float
+        # Right arm joint positions
+        for i in range(self._num_joints_per_arm):
+            features[f"right_joint_{i+1}.pos"] = float
         
         # Left arm end effector pose
         for axis in ["x", "y", "z", "rx", "ry", "rz"]:
@@ -200,6 +200,15 @@ class DobotDualArm(Robot):
     @property
     def action_features(self) -> dict[str, type]:
         features = {}
+
+        # Left arm joint positions
+        for i in range(self._num_joints_per_arm):
+            features[f"left_joint_{i+1}.pos"] = float
+        
+        # Right arm joint positions
+        for i in range(self._num_joints_per_arm):
+            features[f"right_joint_{i+1}.pos"] = float
+
         # Left arm delta pose
         for axis in ["x", "y", "z", "rx", "ry", "rz"]:
             features[f"left_delta_ee_pose.{axis}"] = float
@@ -261,23 +270,24 @@ class DobotDualArm(Robot):
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
         # Check for reset request
-        if action.get("reset_requested", False):
-            logger.info("[ROBOT] Reset requested for dual-arm system...")
-            self._robot.robot_go_home()
-            if self.config.use_gripper:
-                self._gripper_client.left_gripper_goto(
-                    width=self.config.gripper_max_open,
-                    speed=self._gripper_speed,
-                    force=self._gripper_force,
-                    blocking=True
-                )
-                self._gripper_client.right_gripper_goto(
-                    width=self.config.gripper_max_open,
-                    speed=self._gripper_speed,
-                    force=self._gripper_force,
-                    blocking=True
-                )
-            return action
+        # if action.get("reset_requested", False):
+        #     logger.info("[ROBOT] Reset requested for dual-arm system...")
+        #     # self._robot.robot_go_home()
+        #     # if self.config.use_gripper:
+        #     #     self._gripper_client.left_gripper_goto(
+        #     #         width=self.config.gripper_max_open,
+        #     #         speed=self._gripper_speed,
+        #     #         force=self._gripper_force,
+        #     #         blocking=True
+        #     #     )
+        #     #     self._gripper_client.right_gripper_goto(
+        #     #         width=self.config.gripper_max_open,
+        #     #         speed=self._gripper_speed,
+        #     #         force=self._gripper_force,
+        #     #         blocking=True
+        #     #     )
+        #     self.reset()
+        #     return action
 
         # Use joint servo control if joint positions are provided
         if not self.config.debug:
