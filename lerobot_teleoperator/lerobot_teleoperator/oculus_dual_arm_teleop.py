@@ -77,7 +77,7 @@ class OculusDualArmTeleop(BaseTeleop):
     def __init__(self, config: OculusDualArmTeleopConfig):
         super().__init__(config)
         self.oculus_robot: OculusDualArmRobot = None
-        self.robot_client: Optional[DobotDualArmClient] = None
+        self.robot_client: Optional[Any] = None
         
         # Placo IK solver components
         self.placo_robot = None
@@ -102,8 +102,11 @@ class OculusDualArmTeleop(BaseTeleop):
         # Visualization flag
         self.visualize = getattr(config, 'visualize_placo', False)
         
-        # Joint reading frequency (zerorpc is thread-safe)
+        # Joint reading frequency (used only when background polling is explicitly enabled)
         self.joint_read_fps = getattr(config, 'joint_read_fps', 100)
+        # zerorpc/gevent client is not reliably safe in a native Python thread.
+        # Keep this disabled by default to avoid "This operation would block forever".
+        self.enable_joint_read_thread = getattr(config, 'enable_joint_read_thread', False)
     
     def _get_teleop_name(self) -> str:
         return "OculusDualArmTeleop"
@@ -162,10 +165,13 @@ class OculusDualArmTeleop(BaseTeleop):
         if self.visualize:
             self._start_placo_visualizer()
         
-        # Start background thread for reading robot joint positions via zerorpc
-        # zerorpc is thread-safe, so we can run it in a separate thread
-        threading.Thread(target=self._start_joint_reading, daemon=True).start()
-        logger.info("[TELEOP] Started background joint reading thread")
+        # Optional background thread for reading robot state.
+        # Disabled by default because zerorpc/gevent can fail in native threads.
+        if self.enable_joint_read_thread:
+            threading.Thread(target=self._start_joint_reading, daemon=True).start()
+            logger.info("[TELEOP] Started background joint reading thread")
+        else:
+            logger.info("[TELEOP] Background joint reading thread disabled")
     
     def _init_placo_solver(self):
         """Initialize placo IK solver with frame tasks."""
@@ -223,6 +229,47 @@ class OculusDualArmTeleop(BaseTeleop):
         logger.info(f"[TELEOP] Initial left joints: {self.left_current_joints}")
         logger.info(f"[TELEOP] Initial right joints: {self.right_current_joints}")
     
+    def _sync_placo_to_robot_state(self):
+        """
+        Synchronize placo model state to current robot state.
+        Called when reset is requested to ensure placo starts from the robot's reset position.
+        
+        IMPORTANT: This method triggers the robot reset FIRST, then syncs placo state.
+        This ensures placo is synchronized to the POST-RESET joint positions.
+        """
+        if self.robot_client is not None:
+            # First, trigger robot reset and wait for completion
+            logger.info("[TELEOP] Triggering robot reset...")
+            try:
+                self.robot_client.robot_go_home()
+                logger.info("[TELEOP] Robot reset completed")
+            except Exception as e:
+                logger.warning(f"[TELEOP] Robot reset failed: {e}")
+            
+            # Small delay to ensure robot state is updated
+            time.sleep(0.1)
+            
+            # Get current joint positions from robot (after reset)
+            self.left_current_joints = self.robot_client.left_robot_get_joint_positions()
+            self.right_current_joints = self.robot_client.right_robot_get_joint_positions()
+        else:
+            # If no robot client, reset to zero
+            self.left_current_joints = np.zeros(6)
+            self.right_current_joints = np.zeros(6)
+        
+        # Update placo model state
+        self.placo_robot.state.q[7:13] = self.left_current_joints
+        self.placo_robot.state.q[25:31] = self.right_current_joints
+        self.placo_robot.update_kinematics()
+        
+        # Update target joints to match
+        with self._qpos_lock:
+            self.target_left_q = self.left_current_joints.copy()
+            self.target_right_q = self.right_current_joints.copy()
+        
+        logger.info(f"[TELEOP] Synced placo to robot state - left: {self.left_current_joints}")
+        logger.info(f"[TELEOP] Synced placo to robot state - right: {self.right_current_joints}")
+    
     def _start_placo_visualizer(self):
         """Start meshcat visualization."""
         try:
@@ -248,7 +295,10 @@ class OculusDualArmTeleop(BaseTeleop):
     def _start_joint_reading(self):
         """
         Background thread for continuously reading robot joint positions via zerorpc.
-        zerorpc is thread-safe, so this runs independently.
+        
+        NOTE: gevent/zerorpc can raise "This operation would block forever"
+        when a client created in the main thread is used from a native thread.
+        Keep this optional and disabled by default.
         """
         while not self._stop_event.is_set():
             try:
@@ -281,6 +331,13 @@ class OculusDualArmTeleop(BaseTeleop):
         Args:
             oculus_obs: Pre-fetched Oculus observations to avoid duplicate calls
         """
+        # Check if reset was requested - sync placo state to robot's reset position
+        if oculus_obs.get("reset_requested", False):
+            self._sync_placo_to_robot_state()
+            logger.info("[TELEOP] Reset requested - synced placo state to robot reset position")
+            # Skip IK update this cycle since we just reset
+            return
+        
         # Extract delta poses from pre-fetched observations
         left_delta = np.array([
             oculus_obs[f"left_delta_ee_pose.{axis}"] 
