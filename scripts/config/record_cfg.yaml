@@ -1,5 +1,5 @@
 record:
-  repo_id: &repo_id "roboticiq/pick_all_yellow_cube_to_brown_basket" 
+  repo_id: &repo_id "dual_dobot/milk_shake_3_16_step5" 
   # repo_id: &repo_id "scylearning/pick_greencube_into_trashb
   # Suggested format: <hf_username>/<description>, description = task.description -> Verb_SourceObject_prep_TargetObject
   # e.g. Pick up the green cube and put it into the trash bin -> pick_greencube_into_trashbin
@@ -20,6 +20,7 @@ record:
       left_channel_signs: [1, -1, 1, -1, 1, 1]  # left arm signs
       right_pose_scaler: [1.0, 1.0]  # right arm scaler
       right_channel_signs: [1, -1, 1, -1, 1, 1]  # right arm signs
+      visualize_placo: false  # whether to visualize robot using placo
       
   robot:
     robot_ip: &ip "localhost" # dobot server ip
@@ -40,8 +41,8 @@ record:
     # 预训练模型路径下要包括config.json
 
   task:
-    description: "pick up all yellow cubes and put them into the brown basket" # task description
-    num_episodes: 1 # number of episodes to record
+    description: "use the left hand to pick up the bottle and insert it into the blender then pressing the button" # task description
+    num_episodes: 10 # number of episodes to record
     display: True # Whether to display the data during recording
     resume: false # whether to resume from an existing dataset
     resume_dataset: roboticiq/pick_all_yellow_cube_to_brown_basket_20260208_v01 # dataset to resume from if resume is True
@@ -62,16 +63,16 @@ record:
     push_to_hub: False # whether to push the dataset to your huggingface repo after recording
 
 replay:
-  dataset_name: roboticiq/pick_all_yellow_cube_to_brown_basket_20260208_v01
-  episode_idx: 4 # episode index to replay
+  dataset_name: dual_dobot/milk_shake_3_15_step1_20260315_v08
+  episode_idx: 0 # episode index to replay
   robot:
     ip: *ip
     robot_port: 4242  # dual-arm zerorpc port
   control_mode: *control_mode 
 
 visualize:
-  dataset_name: szl/pick_red_cube_grey_box_act_20260208_v01
-  episode_index: 10 # episode index to visualize
+  dataset_name: dual_dobot/milk_shake_3_15_step1_20260315_v08
+  episode_index: 0 # episode index to visualize
 
 
 

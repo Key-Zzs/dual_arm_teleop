@@ -101,6 +101,7 @@ class RecordConfig:
             self.oculus_ip = oculus_cfg.get("ip", "192.168.110.62")
             self.pose_scaler = oculus_cfg.get("pose_scaler", [1.0, 1.0])
             self.channel_signs = oculus_cfg.get("channel_signs", [1, 1, 1, 1, 1, 1])
+            self.visualize_placo = oculus_cfg.get("visualize_placo", False)
             if self.dual_arm:
                 self.left_pose_scaler = oculus_cfg.get("left_pose_scaler", self.pose_scaler)
                 self.right_pose_scaler = oculus_cfg.get("right_pose_scaler", self.pose_scaler)
@@ -142,6 +143,7 @@ class RecordConfig:
                     right_pose_scaler=self.right_pose_scaler,
                     left_channel_signs=self.left_channel_signs,
                     right_channel_signs=self.right_channel_signs,
+                    visualize_placo=self.visualize_placo,
                 )
             return OculusTeleopConfig(
                 use_gripper=self.use_gripper,
