@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import List
 from lerobot.teleoperators.config import TeleoperatorConfig
 
-@TeleoperatorConfig.register_subclass("so101_leader")
+@TeleoperatorConfig.register_subclass("oculus_teleop")
 @dataclass
 class OculusTeleopConfig(TeleoperatorConfig):
     """

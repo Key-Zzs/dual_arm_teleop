@@ -91,8 +91,16 @@ class OculusDualArmTeleop(BaseTeleop):
         self.target_left_q: np.ndarray = np.zeros(6)
         self.target_right_q: np.ndarray = np.zeros(6)
         
-        # URDF path
-        self.robot_urdf_path = "/home/geist/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/assets/dual_dobot/dual_nova5_robot.urdf"
+        # URDF path: configurable via config, with a default relative to this file
+        default_urdf_path = (
+            Path(__file__).resolve().parent
+            / "assets"
+            / "dual_dobot"
+            / "dual_nova5_robot.urdf"
+        )
+        self.robot_urdf_path = str(
+            getattr(config, "robot_urdf_path", default_urdf_path)
+        )
         
         # Threading
         self._stop_event = threading.Event()
