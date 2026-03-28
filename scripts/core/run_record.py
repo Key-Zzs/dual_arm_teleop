@@ -2,8 +2,8 @@ import yaml
 from pathlib import Path
 from typing import Dict, Any
 from scripts.utils.dataset_utils import generate_dataset_name, update_dataset_info
-from lerobot_robot import DobotDualArmConfig, DobotDualArm
-from lerobot_teleoperator import (
+from robots import DobotDualArmConfig, DobotDualArm
+from teleoperators import (
     OculusTeleopConfig,
     OculusDualArmTeleopConfig,
     create_teleop,

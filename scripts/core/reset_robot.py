@@ -1,7 +1,7 @@
 import yaml
 from pathlib import Path
 from typing import Dict, Any
-from lerobot_robot import DobotDualArmConfig, DobotDualArm
+from robots import DobotDualArmConfig, DobotDualArm
 import logging
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")

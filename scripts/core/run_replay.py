@@ -4,7 +4,7 @@ import logging
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 from pathlib import Path
 from typing import Dict, Any
-from lerobot_robot import DobotDualArmConfig, DobotDualArm
+from robots import DobotDualArmConfig, DobotDualArm
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import log_say

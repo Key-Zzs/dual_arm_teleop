@@ -14,7 +14,6 @@ from .dobot_interface_client import DobotDualArmClient
 
 
 __all__ = [
-    # Dobot
     "DobotDualArmConfig",
     "DobotDualArm",
     "DobotDualArmClient",

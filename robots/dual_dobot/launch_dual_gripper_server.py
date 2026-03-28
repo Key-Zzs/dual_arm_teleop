@@ -1,3 +1,7 @@
+'''
+dual robotiq 2f-85 gripper interface server.
+Provides zerorpc interface for dual gripper control.
+'''
 import zerorpc
 from polymetis import GripperInterface
 

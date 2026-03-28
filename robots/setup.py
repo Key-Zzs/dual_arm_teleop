@@ -1,18 +1,18 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="lerobot_teleoperator",
+    name="robots",
     version="0.0.1",
-    description="LeRobot teleoperator integration for Dobot dual-arm system",
+    description="LeRobot robots integration",
     author="Zhaolong Shen",
     author_email="shenzhaolong@buaa.edu.cn",
     packages=find_packages(),
-    python_requires=">=3.10",
     install_requires=[
+        "pyrealsense2",
         "scipy",
-        "numpy",
-        "easyhid",
+        "zerorpc",
     ],
+    python_requires=">=3.10",
     classifiers=[
         "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",

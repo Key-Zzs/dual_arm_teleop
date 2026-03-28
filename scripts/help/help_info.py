@@ -1,15 +1,15 @@
 def main():
     print("""
 ==================================================
- Dobot Nova5 Dual-Arm Teleoperation - Command Reference
+Dual-Arm Teleoperation - Command Reference
 ==================================================
 
 Core Commands:
-  dobot-record           Record teleoperation dataset
-  dobot-replay           Replay a recorded dataset
-  dobot-visualize        Visualize recorded dataset
-  dobot-reset            Reset the robot to initial state
-  dobot-train            Train a policy on the recorded dataset
+  robot-record           Record teleoperation dataset
+  robot-replay           Replay a recorded dataset
+  robot-visualize        Visualize recorded dataset
+  robot-reset            Reset the robot to initial state
+  robot-train            Train a policy on the recorded dataset
 
 Utility Commands:
   utils-joint-offsets    Compute joint offsets for teleoperation
@@ -26,6 +26,6 @@ Test Commands:
   test-gripper-ctrl      Run gripper control command (operate the gripper)
 
 --------------------------------------------------
- Tip: Use 'dobot-help' anytime to see this summary.
+ Tip: Use 'robot-help' anytime to see this summary.
 ==================================================
 """)

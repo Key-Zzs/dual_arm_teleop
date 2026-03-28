@@ -1,3 +1,7 @@
+'''
+dual robotiq 2f-85 gripper interface client.
+Connects to launch_dual_gripper_server via zerorpc.
+'''
 import logging
 import zerorpc
 from typing import Dict, Any
