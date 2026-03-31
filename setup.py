@@ -9,12 +9,15 @@ setup(
     version="0.1.0",
     description="dual-arm teleoperation and dataset collection utilities",
     python_requires=">=3.10",
-    packages=find_packages(where=".", include=["scripts*", "scripts.*"]),
+    packages=find_packages(where=".", include=["scripts*", "scripts.*", "robots*", "robots.*", "teleoperators*", "teleoperators.*"]),
     include_package_data=True,
     install_requires=[
         "send2trash",
-        f"robots @ file:///{ROOT}/robots",
-        f"teleoperators @ file:///{ROOT}/teleoperators"
+        "pyrealsense2",
+        "scipy",
+        "zerorpc",
+        "numpy",
+        "easyhid",
     ],
     entry_points={
         "console_scripts": [
