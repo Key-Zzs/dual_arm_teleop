@@ -41,7 +41,7 @@ pip install -e .
 
 ### 1.3 Clone and Install Dual Arm Teleoperation Source
 ```bash
-mkdir dual_arm_data_collection && cd dual_arm_data_collection
+mkdir dual_arm_ws && cd dual_arm_ws
 git clone https://github.com/Shenzhaolong1330/dual_arm_teleop.git
 cd dual_arm_teleop
 pip install -e .
