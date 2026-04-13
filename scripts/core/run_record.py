@@ -17,7 +17,8 @@ from lerobot.scripts.lerobot_record import record_loop
 from lerobot.processor import make_default_processors
 from lerobot.utils.visualization_utils import init_rerun
 from lerobot.utils.control_utils import init_keyboard_listener
-from send2trash import send2trash
+# from send2trash import send2trash
+import shutil
 import termios, sys
 from lerobot.utils.constants import HF_LEROBOT_HOME
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -174,7 +175,8 @@ def handle_incomplete_dataset(dataset_path):
         if ans == "y":
             print(f"====== [DELETE] Removing folder: {dataset_path} ======")
             # Send to trash
-            send2trash(dataset_path)
+            # send2trash(dataset_path)
+            shutil.rmtree(dataset_path)
             print("====== [DONE] Incomplete dataset folder deleted successfully. ======")
         else:
             print("====== [KEEP] Incomplete dataset folder retained, please check manually. ======")
