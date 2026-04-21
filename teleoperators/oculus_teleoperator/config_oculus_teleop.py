@@ -31,6 +31,10 @@ class OculusTeleopConfig(TeleoperatorConfig):
     # Left gripper: Left Trigger (LTr)
     # Right gripper: Right Trigger (RTr)
 
+    # Action smoothing (EMA) for 6D delta pose per arm.
+    # 1.0 means no smoothing, smaller values increase smoothing.
+    action_smoothing_alpha: float = 0.35
+
     use_ik: bool = False
     servo_time: float = 0.017
     visualize_placo: bool = True

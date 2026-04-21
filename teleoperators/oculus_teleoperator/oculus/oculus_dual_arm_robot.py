@@ -52,6 +52,7 @@ class OculusDualArmRobot(Robot):
         left_channel_signs: Sequence[int] = [1, 1, 1, 1, 1, 1],
         right_pose_scaler: Sequence[float] = [1.0, 1.0],
         right_channel_signs: Sequence[int] = [1, 1, 1, 1, 1, 1],
+        action_smoothing_alpha: float = 0.35,
     ):
         self._oculus_reader = OculusReader(ip_address=ip)
         self._use_gripper = use_gripper
@@ -71,9 +72,21 @@ class OculusDualArmRobot(Robot):
         # State tracking - right arm
         self._right_prev_transform = None
         self._right_last_gripper_position = 1.0  # Default: open
+
+        # EMA smoothing state (6D delta pose for each arm)
+        self._action_smoothing_alpha = float(action_smoothing_alpha)
+        self._left_smoothed_delta = None
+        self._right_smoothed_delta = None
         
         # Reset request
         self._reset_requested = False
+
+    def _ema_smooth(self, current: np.ndarray, prev: Optional[np.ndarray]) -> np.ndarray:
+        """Apply EMA smoothing to a 6D delta vector."""
+        alpha = max(0.0, min(1.0, self._action_smoothing_alpha))
+        if prev is None or alpha >= 1.0:
+            return current.copy()
+        return alpha * current + (1.0 - alpha) * prev
 
     def num_dofs(self) -> int:
         # Each arm: 6 DOF pose + 1 gripper = 7, total = 14
@@ -172,12 +185,16 @@ class OculusDualArmRobot(Robot):
             if lg_pressed:
                 delta_left = self._compute_delta_pose(left_transform, self._left_prev_transform)
                 scaled_left = self._apply_scaling(delta_left, self._left_pose_scaler, self._left_channel_signs)
-                action[0:6] = scaled_left
+                smoothed_left = self._ema_smooth(scaled_left, self._left_smoothed_delta)
+                self._left_smoothed_delta = smoothed_left.copy()
+                action[0:6] = smoothed_left
                 self._left_prev_transform = left_transform.copy()
             else:
                 self._left_prev_transform = None
+                self._left_smoothed_delta = None
         else:
             self._left_prev_transform = None
+            self._left_smoothed_delta = None
         
         # ========== Right arm (right controller) ==========
         if 'r' in transforms:
@@ -186,15 +203,19 @@ class OculusDualArmRobot(Robot):
             if rg_pressed:
                 delta_right = self._compute_delta_pose(right_transform, self._right_prev_transform)
                 scaled_right = self._apply_scaling(delta_right, self._right_pose_scaler, self._right_channel_signs)
+                smoothed_right = self._ema_smooth(scaled_right, self._right_smoothed_delta)
+                self._right_smoothed_delta = smoothed_right.copy()
                 if self._use_gripper:
-                    action[7:13] = scaled_right
+                    action[7:13] = smoothed_right
                 else:
-                    action[6:12] = scaled_right
+                    action[6:12] = smoothed_right
                 self._right_prev_transform = right_transform.copy()
             else:
                 self._right_prev_transform = None
+                self._right_smoothed_delta = None
         else:
             self._right_prev_transform = None
+            self._right_smoothed_delta = None
         
         # ========== Gripper control ==========
         if self._use_gripper:

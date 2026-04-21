@@ -87,6 +87,7 @@ class OculusTeleop(Teleoperator):
             left_channel_signs=self.cfg.left_channel_signs,
             right_pose_scaler=self.cfg.right_pose_scaler,
             right_channel_signs=self.cfg.right_channel_signs,
+            action_smoothing_alpha=self.cfg.action_smoothing_alpha,
         )
         
         self._is_connected = True
