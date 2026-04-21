@@ -54,6 +54,9 @@ class RecordConfig:
         self.user_info: str = cfg.get("user_notes", None)
         self.run_mode: str = cfg.get("run_mode", "run_record")
         self.rename_map: dict[str, str] = field(default_factory=dict)
+        # Finish behavior: by default reset to home and keep connection to avoid server stop on close.
+        self.reset_on_finish: bool = cfg.get("reset_on_finish", True)
+        self.disconnect_on_finish: bool = cfg.get("disconnect_on_finish", False)
         
         # Robot type selection
         self.robot_type: str = cfg.get("robot_type", "dobot_dual_arm")
@@ -114,6 +117,7 @@ class RecordConfig:
             self.pose_scaler = oculus_cfg.get("pose_scaler", [1.0, 1.0])
             self.channel_signs = oculus_cfg.get("channel_signs", [1, 1, 1, 1, 1, 1])
             self.visualize_placo = oculus_cfg.get("visualize_placo", False)
+            self.action_smoothing_alpha = oculus_cfg.get("action_smoothing_alpha", 0.35)
             if self.dual_arm:
                 self.left_pose_scaler = oculus_cfg.get("left_pose_scaler", self.pose_scaler)
                 self.right_pose_scaler = oculus_cfg.get("right_pose_scaler", self.pose_scaler)
@@ -131,6 +135,9 @@ class RecordConfig:
             self.policy = ACTConfig(
                 device=policy["device"],
                 push_to_hub=policy["push_to_hub"],
+                temporal_ensemble_coeff=policy.get("temporal_ensemble_coeff"),
+                chunk_size=policy.get("chunk_size", 100),
+                n_action_steps=policy.get("n_action_steps", 100),
             )
         elif policy_type == "diffusion":
             from lerobot.policies import DiffusionConfig
@@ -155,6 +162,7 @@ class RecordConfig:
                     right_pose_scaler=self.right_pose_scaler,
                     left_channel_signs=self.left_channel_signs,
                     right_channel_signs=self.right_channel_signs,
+                    action_smoothing_alpha=self.action_smoothing_alpha,
                     visualize_placo=self.visualize_placo,
                 )
             return OculusTeleopConfig(
@@ -273,9 +281,12 @@ def run_record(record_cfg: RecordConfig):
         # Set the episode metadata buffer size to 1, so that each episode is saved immediately
         dataset.meta.metadata_buffer_size = record_cfg.save_meta_period
 
-        # Initialize the keyboard listener and rerun visualization
+        # Initialize keyboard listener.
+        # Rerun visualization can introduce periodic stalls when transport is unstable,
+        # so only initialize it when display is explicitly enabled.
         _, events = init_keyboard_listener()
-        init_rerun(session_name="recording")
+        if record_cfg.display:
+            init_rerun(session_name="recording")
 
         # Create processor
         teleop_action_processor, robot_action_processor, robot_observation_processor = make_default_processors()
@@ -369,7 +380,20 @@ def run_record(record_cfg: RecordConfig):
 
         # Clean up
         logging.info("Stop recording")
-        robot.disconnect()
+
+        # Reset robot to home position at the end (same intent as pressing A in teleop).
+        if record_cfg.reset_on_finish:
+            try:
+                robot.reset()
+            except Exception as reset_err:
+                logging.warning(f"[WARNING] reset_on_finish failed: {reset_err}")
+
+        # Optional disconnect. For Nero, disconnect triggers client.close() -> robot_stop on server.
+        if record_cfg.disconnect_on_finish:
+            robot.disconnect()
+        else:
+            logging.info("[INFO] Skip robot.disconnect() to avoid stop/e-stop at session end.")
+
         if teleop is not None:
             teleop.disconnect()
         dataset.finalize()
