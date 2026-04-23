@@ -41,6 +41,7 @@ from lerobot.utils.utils import (
 )
 import builtins
 import os
+import tempfile
 
 from pathlib import Path
 
@@ -58,6 +59,97 @@ from lerobot.optim.schedulers import LRSchedulerConfig
 from lerobot.utils.hub import HubMixin
 
 TRAIN_CONFIG_NAME = "train_config.json"
+
+
+def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
+    """
+    Build a DAggerPipelineConfig from the existing train_cfg.yaml structure and run DAgger.
+
+    Expected extension in train_cfg.yaml:
+    train:
+      policy:
+        type: act_dagger
+        ...
+      dagger:
+        robot: {...}
+        expert: {...}
+        dataset: {...}
+        rollout: {...}     # optional
+        beta: {...}        # optional
+        training: {...}    # optional
+    """
+    dagger_section = train_cfg.get("dagger")
+    if dagger_section is None:
+        raise ValueError(
+            "When train.policy.type='act_dagger', a 'train.dagger' section is required in train_cfg.yaml."
+        )
+
+    # Import DAgger types lazily to avoid impacting BC-only startup.
+    from lerobot.policies.dagger.configuration_dagger import DAggerPipelineConfig
+    from lerobot.policies.dagger.dagger_trainer import train_dagger
+
+    # Import concrete robot/teleop config classes so draccus can resolve ChoiceRegistry types.
+    from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
+    from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig  # noqa: F401
+    from lerobot.robots import (  # noqa: F401
+        bi_so100_follower,
+        hope_jr,
+        koch_follower,
+        so100_follower,
+        so101_follower,
+    )
+    from lerobot.teleoperators import (  # noqa: F401
+        bi_so100_leader,
+        gamepad,
+        homunculus,
+        koch_leader,
+        so100_leader,
+        so101_leader,
+    )
+    from lerobot.utils.import_utils import register_third_party_devices
+
+    register_third_party_devices()
+
+    policy_cfg = dict(train_cfg.get("policy", {}))
+    # DAgger pipeline uses ACT policy type internally.
+    policy_cfg["type"] = "act"
+    # Backward compatibility for users who may set `policy.path`.
+    if "path" in policy_cfg and "pretrained_path" not in policy_cfg:
+        policy_cfg["pretrained_path"] = policy_cfg["path"]
+    policy_cfg.pop("path", None)
+
+    dagger_cfg_dict: Dict[str, Any] = {
+        "robot": dagger_section["robot"],
+        "policy": policy_cfg,
+        "dataset": dagger_section["dataset"],
+        "expert": dagger_section["expert"],
+        "rollout": dagger_section.get("rollout", {}),
+        "beta": dagger_section.get("beta", {}),
+        "training": dagger_section.get("training", {}),
+        # Reuse top-level training metadata for output bookkeeping.
+        "output_dir": train_cfg.get("output_dir"),
+        "job_name": train_cfg.get("job_name"),
+        "resume": train_cfg.get("resume", False),
+        "seed": train_cfg.get("seed", 1000),
+        "use_policy_training_preset": train_cfg.get("use_policy_training_preset", True),
+    }
+
+    # Optional manual optimizer/scheduler passthrough when not using presets.
+    if "optimizer" in train_cfg:
+        dagger_cfg_dict["optimizer"] = train_cfg["optimizer"]
+    if "scheduler" in train_cfg:
+        dagger_cfg_dict["scheduler"] = train_cfg["scheduler"]
+
+    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
+        yaml.safe_dump(dagger_cfg_dict, f, allow_unicode=True, sort_keys=False)
+        temp_cfg_path = f.name
+
+    try:
+        dagger_cfg = draccus.parse(DAggerPipelineConfig, config_path=temp_cfg_path, args=[])
+    finally:
+        os.unlink(temp_cfg_path)
+
+    train_dagger(dagger_cfg)
 
 class TrainPipelineConfig(HubMixin):
     def __init__(self, cfg: Dict[str, Any]):
@@ -106,6 +198,21 @@ class TrainPipelineConfig(HubMixin):
 
         policy_type = policy["type"]
         if policy_type == "act":
+            from lerobot.policies import ACTConfig
+            temporal_ensemble_coeff = normalize_temporal_ensemble_coeff(
+                policy.get("temporal_ensemble_coeff")
+            )
+            self.policy = ACTConfig(
+                device = policy["device"],
+                repo_id = policy["repo_id"],
+                push_to_hub = policy["push_to_hub"],
+                temporal_ensemble_coeff = temporal_ensemble_coeff,
+                chunk_size = policy.get("chunk_size", 100),
+                n_action_steps = policy.get("n_action_steps", 1),
+            )
+        elif policy_type == "act_dagger":
+            # NOTE: `act_dagger` is dispatched in main() to train_dagger.
+            # This branch keeps compatibility for places that still instantiate TrainPipelineConfig.
             from lerobot.policies import ACTConfig
             temporal_ensemble_coeff = normalize_temporal_ensemble_coeff(
                 policy.get("temporal_ensemble_coeff")
@@ -739,9 +846,16 @@ def main():
     cfg_path = parent_path.parent / "config" / "train_cfg.yaml"
     with open(cfg_path, 'r') as f:
         cfg = yaml.safe_load(f)
-    
-    train_cfg = TrainPipelineConfig(cfg["train"])
 
+    train_section = cfg["train"]
+    policy_type = train_section.get("policy", {}).get("type")
+
+    if policy_type == "act_dagger":
+        # DAgger uses robot/teleop configs that may come from third-party plugins.
+        run_act_dagger_from_train_cfg(train_section)
+        return
+
+    train_cfg = TrainPipelineConfig(train_section)
     run_train(train_cfg)
 
 

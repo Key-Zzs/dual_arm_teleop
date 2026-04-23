@@ -1,32 +1,37 @@
 train:
   dataset:
-    repo_id: "szl/pick_red_cube_grey_box_act_20260208_v01"
+    repo_id: "nero_task3_step1/2mL_empty_merged" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
   # 指向包含数据集 repo 的本地目录（要包含 repo_id 子目录），
   # 例如本地缓存路径下的 physbrain3/pick_and_place_merged
-    root: "/home/deepcybo/.cache/huggingface/lerobot/szl/pick_red_cube_grey_box_act_20260208_v01"
+    root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged"
 
   env:
 
   policy:
-    type: "act"
+    # 纯BC: "act"
+    # DAgger: "act_dagger"（会走 core/run_train.py 中的 DAgger 分支）
+    type: "act_dagger"
     device: "cuda"
     repo_id: "shenzhaolong/act_policy"
     push_to_hub: false  # 禁用模型推送
+    # temporal_ensemble_coeff: null # 关闭时序加权，减少动作启动迟滞
+    chunk_size: 15
+    n_action_steps: 5
 
-  output_dir: "outputs/train/act_test9"
-  job_name: "act_policy_test9"
+  output_dir: "outputs/train/nero_act_task3_step1_2mL_empty_20260423_v00" # 模型和日志的输出目录
+  job_name: "nero_act_task3_step1_2mL_empty_20260423_v00"
 
   resume: false
   seed: 1000
   # Number of workers for the dataloader.
   num_workers: 4
-  batch_size: 8
-  steps: 200_00
+  batch_size: 16
+  steps: 10_000
   eval_freq: 20_00
   log_freq: 200
   save_checkpoint: True
   # Checkpoint is saved every `save_freq` training iterations and after the last training step.
-  save_freq: 50_00
+  save_freq: 5_000
   use_policy_training_preset: True
 
   eval: 
@@ -35,8 +40,99 @@ train:
 
   wandb: 
     enable: True
-    project: "lerobot"
+    project: "lerobot_nero"
     # entity: "your-wandb-username"  # 改为您的 WandB 用户名，或注释掉使用默认
     # notes: "训练备注"
     # run_id: "自定义运行ID"
     mode: "online"  # Allowed values: 'online', 'offline' 'disabled'. Defaults to 'online"
+
+  # =========================
+  # DAgger 训练配置（仅当 policy.type=act_dagger 生效）
+  # =========================
+  dagger:
+    robot:
+      # 通过第三方插件自动发现: lerobot_robot_agilex_nero
+      # 也兼容原始类型 "nero_dual_arm"
+      type: "agilex_nero"
+      robot_ip: "192.168.110.41"
+      robot_port: 4242
+      use_gripper: true
+      gripper_max_open: 0.1
+      gripper_force: 2.0
+      gripper_speed: 0.1
+      gripper_reverse: false
+      close_threshold: 0.05
+      control_mode: "oculus"
+      debug: false
+      cameras:
+        left_wrist_image:
+          type: "intelrealsense"
+          serial_number_or_name: "412622270929"
+          width: 424
+          height: 240
+          fps: 30
+          use_depth: false
+        right_wrist_image:
+          type: "intelrealsense"
+          serial_number_or_name: "412622270701"
+          width: 424
+          height: 240
+          fps: 30
+          use_depth: false
+        head_image:
+          type: "intelrealsense"
+          serial_number_or_name: "339322074423"
+          width: 424
+          height: 240
+          fps: 30
+          use_depth: false
+
+    expert:
+      # teleop: 用遥操作做expert
+      # callable: 用IK/脚本标注（callable_path: "your_module:your_fn"）
+      mode: "teleop"
+      teleop:
+        # 通过第三方插件自动发现: lerobot_teleoperator_oculus
+        # 也兼容原始类型 "oculus_teleop"
+        type: "oculus"
+        ip: "192.168.110.62"
+        use_gripper: true
+        left_pose_scaler: [1.2, 1.2]
+        right_pose_scaler: [1.2, 1.2]
+        left_channel_signs: [-1, -1, 1, 1, 1, 1]
+        right_channel_signs: [-1, -1, 1, 1, 1, 1]
+        action_smoothing_alpha: 0.35
+        visualize_placo: false
+      # callable_path: "your_pkg.your_module:expert_fn"
+
+    dataset:
+      # seed_* 是你现有BC数据集
+      seed_repo_id: "nero_task3_step1/2mL_empty_merged"
+      seed_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged"
+      # aggregated_* 是DAgger聚合后的数据集目录
+      aggregated_repo_id: "nero_task3_step1/2mL_empty_merged_dagger"
+      aggregated_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_dagger"
+      resume_aggregation: true
+      copy_seed_if_missing: true
+
+    rollout:
+      episodes_per_round: 5
+      episode_time_s: 45.0
+      reset_time_s: 10.0
+      fps: 30
+      single_task: "Seat a 2 mL vial into the 2 mL empty rack"
+      reset_with_expert: true
+
+    beta:
+      schedule: "linear"  # linear | exponential | constant
+      beta_start: 1.0
+      beta_end: 0.1
+      exp_decay: 0.8
+
+    training:
+      rounds: 8
+      steps_per_round: 2000
+      batch_size: 8
+      num_workers: 4
+      log_freq: 100
+      save_checkpoint: true

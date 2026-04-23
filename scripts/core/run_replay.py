@@ -15,10 +15,11 @@ class ReplayConfig:
 
         # global config
         self.dataset_name: str = cfg["dataset_name"]
-        self.episode_idx: str = cfg.get("episode_idx", 0)
+        self.episode_idx: int = int(cfg.get("episode_idx", 0))
 
         # robot config
-        self.robot_ip: str = robot.get("robot_ip", "localhost")
+        # Support both `robot_ip` and legacy `ip` in YAML replay config.
+        self.robot_ip: str = robot.get("robot_ip", robot.get("ip", "localhost"))
         self.robot_port: int = robot.get("robot_port", 4242)
         self.control_mode: str = cfg.get("control_mode", "oculus")
         
@@ -43,13 +44,29 @@ def run_replay(replay_cfg: ReplayConfig):
     
     robot = create_robot(replay_cfg.robot_type, robot_config)
     robot.connect()
-    dataset = LeRobotDataset(replay_cfg.dataset_name, episodes=[episode_idx])
-    actions = dataset.hf_dataset.select_columns("action")
-    log_say(f"Replaying episode {episode_idx}")
-    for idx in range(dataset.num_frames):
+    dataset = LeRobotDataset(replay_cfg.dataset_name)
+    episode_indices = dataset.hf_dataset["episode_index"]
+    selected_frame_indices = [
+        i for i, ep in enumerate(episode_indices) if int(ep) == episode_idx
+    ]
+
+    if not selected_frame_indices:
+        available_eps = sorted({int(ep) for ep in episode_indices})
+        raise ValueError(
+            f"Episode index {episode_idx} not found in dataset {replay_cfg.dataset_name}. "
+            f"Available episodes: {available_eps[:20]}"
+            + ("..." if len(available_eps) > 20 else "")
+        )
+
+    action_names = dataset.features["action"]["names"]
+    log_say(
+        f"Replaying episode {episode_idx} with {len(selected_frame_indices)} frames"
+    )
+    for frame_idx in selected_frame_indices:
         t0 = time.perf_counter()
+        action_vec = dataset.hf_dataset[frame_idx]["action"]
         action = {
-            name: float(actions[idx]["action"][i]) for i, name in enumerate(dataset.features["action"]["names"])
+            name: float(action_vec[i]) for i, name in enumerate(action_names)
         }
         # print(f"action: {action}")
         robot.send_action(action)

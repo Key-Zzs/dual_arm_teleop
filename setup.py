@@ -9,7 +9,19 @@ setup(
     version="0.1.0",
     description="dual-arm teleoperation and dataset collection utilities",
     python_requires=">=3.10",
-    packages=find_packages(where=".", include=["scripts*", "scripts.*", "robots*", "robots.*", "teleoperators*", "teleoperators.*"]),
+    packages=find_packages(
+        where=".",
+        include=[
+            "scripts*",
+            "scripts.*",
+            "robots*",
+            "robots.*",
+            "teleoperators*",
+            "teleoperators.*",
+            "lerobot_robot_agilex_nero*",
+            "lerobot_teleoperator_oculus*",
+        ],
+    ),
     include_package_data=True,
     install_requires=[
         "send2trash",

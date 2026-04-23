@@ -1,13 +1,27 @@
 record:
-  repo_id: &repo_id "test/test"
-  # Suggested format: <hf_username>/<description>, description = task.description -> Verb_SourceObject_prep_TargetObject
-  # e.g. Pick up the green cube and put it into the trash bin -> pick_greencube_into_trashbin
+  repo_id: &repo_id "nero_task3_step1/2mL_empty"
+  # Suggested format: <robot_task<num>_step<num>>/<description>, e.g. nero_task3_step1/2mL_empty
+  # <description>: (https://github.com/wbcdcompetition/wbcd_tasks/tree/main/track-3-lab-experiments)
+    ## step1
+      ### 2mL_empty: Seat a 2 mL vial into the 2 mL empty rack
+      ### 2ml_filled: Seat a filled 2 mL vial into the 2 mL filled rack
+      ### 8mL_empty: Seat a 8 mL vial into the 8 mL empty rack
+      ### 8mL_filled: Seat a filled 8 mL vial into the 8 mL filled rack
+    ## step2
+      ### open: Open the instrument drawer
+      ### place: Place the rack in the correct position
+      ### close: Close the instrument drawer
+    ## step3
+      ### remove_cap: Remove the cap from the source bottle
+      ### remove_tubing: Remove the tubing from the source bottle
+      ### insert_tubing: Insert the tubing into the target bottle
+      ### replace_cap: Replace the cap on the source bottle
   debug: 0 # if True, robot will not execute any actions, but gripper can still be controlled
   user_notes:  # any additional notes about the dataset
   fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
   use_gripper: &use_gripper true  # whether to use gripper
-  run_mode: "run_record" # "run_record" or "run_policy" or "run_mix"
+  run_mode: "run_mix" # "run_record" or "run_policy" or "run_mix"
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka
   robot_type: &robot_type "nero_dual_arm"
@@ -18,10 +32,10 @@ record:
     oculus_config:
       ip: "192.168.110.62"  # Oculus Quest IP address
       use_gripper: *use_gripper
-      left_pose_scaler: [0.3, 0.3]   # left arm scaler
+      left_pose_scaler: [1.2, 1.2]   # left arm scaler
       left_channel_signs: [-1, -1, 1, 1, 1, 1]  # left arm signs
       # left_channel_signs: [-1, -1, 1, -1, -1, -1] 
-      right_pose_scaler: [0.3, 0.3]  # right arm scalers
+      right_pose_scaler: [1.2, 1.2]  # right arm scalers
       right_channel_signs: [-1, -1, 1, 1, 1, 1]  # right arm signs
       # right_channel_signs: [-1, -1, 1, -1, -1, -1]
       visualize_placo: false  # whether to visualize robot using placo
@@ -40,14 +54,20 @@ record:
     gripper_force: 2.0 # Robotiq 2F-85 max force in Newtons
 
   policy:
-    type: "act"  # 策略类型 (act, diffusion)
+    # 策略类型: act | act_dagger | diffusion
+    # act_dagger 在部署时按 ACT 推理加载（同一网络结构）
+    type: "act"
     device: "cuda"  # 运行设备 (cuda, cpu)
     push_to_hub: False  # 禁用模型推送
-    pretrained_path: "/home/deepcybo/lerobot/franka_workspace/outputs/train/act_test9/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
+    temporal_ensemble_coeff: null  # 关闭时序加权，降低启动迟滞
+    chunk_size: 15
+    n_action_steps: 15
+    pretrained_path: "/home/geist/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_task3_step1_2mL_empty_20260423_v00/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
 
   task:
-    description: "use the left hand to pick up the bottle and insert it into the blender then pressing the button" # task description
-    num_episodes: 10 # number of episodes to record
+    description: "Seat a 2 mL vial into the 2 mL empty rack" # task description
+    # description: "pick up the red cube with the right hand and transfer it to the right hand" # task description
+    num_episodes: 25 # number of episodes to record
     display: True # Whether to display the data during recording
     resume: false # whether to resume from an existing dataset
     resume_dataset: roboticiq/pick_all_yellow_cube_to_brown_basket_20260208_v01 # dataset to resume from if resume is True
@@ -68,8 +88,8 @@ record:
     push_to_hub: False # whether to push the dataset to your huggingface repo after recording
 
 replay:
-  dataset_name: dual_dobot/milk_shake_3_15_step1_20260315_v08
-  episode_idx: 0 # episode index to replay
+  dataset_name: nero_task3_step1/2mL_empty_merged
+  episode_idx: 18 # episode index to replay
   robot_type: *robot_type  # robot type to use for replay
   robot:
     ip: *ip
@@ -77,8 +97,8 @@ replay:
   control_mode: *control_mode 
 
 visualize:
-  dataset_name: dual_dobot/milk_shake_3_15_step1_20260315_v08
-  episode_index: 0 # episode index to visualize
+  dataset_name: nero_task3_step1/2mL_empty_merged
+  episode_index: 18 # episode index to visualize
 
 
 

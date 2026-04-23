@@ -154,7 +154,10 @@ class RecordConfig:
             )
 
         policy_type = policy["type"]
-        if policy_type == "act":
+        # NOTE:
+        # - "act" and "act_dagger" share the same ACT architecture at inference time.
+        # - DAgger only changes data collection/training loop, not policy forward/select_action API.
+        if policy_type in {"act", "act_dagger"}:
             from lerobot.policies import ACTConfig
 
             temporal_ensemble_coeff = normalize_temporal_ensemble_coeff(
