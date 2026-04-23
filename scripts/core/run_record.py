@@ -17,7 +17,8 @@ from lerobot.scripts.lerobot_record import record_loop
 from lerobot.processor import make_default_processors
 from lerobot.utils.visualization_utils import init_rerun
 from lerobot.utils.control_utils import init_keyboard_listener
-from send2trash import send2trash
+# from send2trash import send2trash
+import shutil
 import termios, sys
 from lerobot.utils.constants import HF_LEROBOT_HOME
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -53,6 +54,9 @@ class RecordConfig:
         self.user_info: str = cfg.get("user_notes", None)
         self.run_mode: str = cfg.get("run_mode", "run_record")
         self.rename_map: dict[str, str] = field(default_factory=dict)
+        # Finish behavior: by default reset to home and keep connection to avoid server stop on close.
+        self.reset_on_finish: bool = cfg.get("reset_on_finish", True)
+        self.disconnect_on_finish: bool = cfg.get("disconnect_on_finish", False)
         # Finish behavior: by default reset to home and keep connection to avoid server stop on close.
         self.reset_on_finish: bool = cfg.get("reset_on_finish", True)
         self.disconnect_on_finish: bool = cfg.get("disconnect_on_finish", False)
@@ -116,6 +120,7 @@ class RecordConfig:
             self.pose_scaler = oculus_cfg.get("pose_scaler", [1.0, 1.0])
             self.channel_signs = oculus_cfg.get("channel_signs", [1, 1, 1, 1, 1, 1])
             self.visualize_placo = oculus_cfg.get("visualize_placo", False)
+            self.action_smoothing_alpha = oculus_cfg.get("action_smoothing_alpha", 0.35)
             self.action_smoothing_alpha = oculus_cfg.get("action_smoothing_alpha", 0.35)
             if self.dual_arm:
                 self.left_pose_scaler = oculus_cfg.get("left_pose_scaler", self.pose_scaler)
@@ -194,6 +199,7 @@ class RecordConfig:
                     left_channel_signs=self.left_channel_signs,
                     right_channel_signs=self.right_channel_signs,
                     action_smoothing_alpha=self.action_smoothing_alpha,
+                    action_smoothing_alpha=self.action_smoothing_alpha,
                     visualize_placo=self.visualize_placo,
                 )
             return OculusTeleopConfig(
@@ -214,7 +220,8 @@ def handle_incomplete_dataset(dataset_path):
         if ans == "y":
             print(f"====== [DELETE] Removing folder: {dataset_path} ======")
             # Send to trash
-            send2trash(dataset_path)
+            # send2trash(dataset_path)
+            shutil.rmtree(dataset_path)
             print("====== [DONE] Incomplete dataset folder deleted successfully. ======")
         else:
             print("====== [KEEP] Incomplete dataset folder retained, please check manually. ======")
@@ -314,7 +321,12 @@ def run_record(record_cfg: RecordConfig):
         # Initialize keyboard listener.
         # Rerun visualization can introduce periodic stalls when transport is unstable,
         # so only initialize it when display is explicitly enabled.
+        # Initialize keyboard listener.
+        # Rerun visualization can introduce periodic stalls when transport is unstable,
+        # so only initialize it when display is explicitly enabled.
         _, events = init_keyboard_listener()
+        if record_cfg.display:
+            init_rerun(session_name="recording")
         if record_cfg.display:
             init_rerun(session_name="recording")
 
@@ -410,6 +422,20 @@ def run_record(record_cfg: RecordConfig):
 
         # Clean up
         logging.info("Stop recording")
+
+        # Reset robot to home position at the end (same intent as pressing A in teleop).
+        if record_cfg.reset_on_finish:
+            try:
+                robot.reset()
+            except Exception as reset_err:
+                logging.warning(f"[WARNING] reset_on_finish failed: {reset_err}")
+
+        # Optional disconnect. For Nero, disconnect triggers client.close() -> robot_stop on server.
+        if record_cfg.disconnect_on_finish:
+            robot.disconnect()
+        else:
+            logging.info("[INFO] Skip robot.disconnect() to avoid stop/e-stop at session end.")
+
 
         # Reset robot to home position at the end (same intent as pressing A in teleop).
         if record_cfg.reset_on_finish:

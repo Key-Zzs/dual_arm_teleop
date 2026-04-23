@@ -95,6 +95,8 @@ adb devices
 # 预期输出：
 # List of devices attached
 # <device_id>    device
+adb shell ip route
+# 查找 "src" 后面的 IP 地址，例如 192.168.110.62
 ```
 
 **方式 B：无线连接（操作更便捷）**
@@ -103,6 +105,7 @@ adb devices
 2. 确保 Oculus Quest 和计算机连接到同一网络
 3. 获取 Oculus Quest 的 IP 地址：
 ```bash
+adb connect <获取到的IP地址>:5555
 adb shell ip route
 # 查找 "src" 后面的 IP 地址，例如 192.168.110.62
 ```
