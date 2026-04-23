@@ -17,7 +17,7 @@ train:
     # temporal_ensemble_coeff: null # 关闭时序加权，减少动作启动迟滞
     chunk_size: 15
     n_action_steps: 5
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_task3_step1_2mL_empty_20260422_v04/checkpoints/last/pretrained_model"  # 从ACT模型开始DAgger训练
+    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_task3_step1_2mL_empty_20260422_v04/checkpoints/last"  # 从ACT模型开始DAgger训练
 
   output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_dagger_task3_step1_2mL_empty_20260423_v01" # 模型和日志的输出目录
   job_name: "nero_act_dagger_task3_step1_2mL_empty_20260423_v01"
@@ -117,12 +117,13 @@ train:
       copy_seed_if_missing: true
 
     rollout:
-      episodes_per_round: 5
-      episode_time_s: 45.0
-      reset_time_s: 10.0
+      episodes_per_round: 2
+      episode_time_s: 86400.0  # 24小时，实际由键盘控制
+      reset_time_s: 0.0  # 禁用自动reset，由键盘控制
       fps: 30
       single_task: "Seat a 2 mL vial into the 2 mL empty rack"
       reset_with_expert: true
+      keyboard_control: true  # 启用键盘控制
 
     beta:
       schedule: "linear"  # linear | exponential | constant
@@ -131,7 +132,7 @@ train:
       exp_decay: 0.8
 
     training:
-      rounds: 8
+      rounds: 2
       steps_per_round: 2000
       batch_size: 8
       num_workers: 4

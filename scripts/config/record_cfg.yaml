@@ -19,10 +19,9 @@ record:
   debug: 0 # if True, robot will not execute any actions, but gripper can still be controlled
   user_notes:  # any additional notes about the dataset
   fps: 30  # dataset and camera frame rate
-  fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
   use_gripper: &use_gripper true  # whether to use gripper
-  run_mode: "run_record" # "run_record" or "run_policy" or "run_mix"
+  run_mode: "run_policy" # "run_record" or "run_policy" or "run_mix"
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka
   robot_type: &robot_type "nero_dual_arm"
@@ -68,8 +67,8 @@ record:
     push_to_hub: False  # 禁用模型推送
     temporal_ensemble_coeff: null  # 关闭时序加权，降低启动迟滞
     chunk_size: 15
-    n_action_steps: 15
-    pretrained_path: "/home/geist/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_task3_step1_2mL_empty_20260423_v00/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
+    n_action_steps: 5
+    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_dagger_task3_step1_2mL_empty_20260423_v01/final"  # 预训练模型路径下要包括config.json
 
   task:
     description: "Seat a 2 mL vial into the 2 mL empty rack" # task description
