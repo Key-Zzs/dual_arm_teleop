@@ -121,7 +121,6 @@ class RecordConfig:
             self.channel_signs = oculus_cfg.get("channel_signs", [1, 1, 1, 1, 1, 1])
             self.visualize_placo = oculus_cfg.get("visualize_placo", False)
             self.action_smoothing_alpha = oculus_cfg.get("action_smoothing_alpha", 0.35)
-            self.action_smoothing_alpha = oculus_cfg.get("action_smoothing_alpha", 0.35)
             if self.dual_arm:
                 self.left_pose_scaler = oculus_cfg.get("left_pose_scaler", self.pose_scaler)
                 self.right_pose_scaler = oculus_cfg.get("right_pose_scaler", self.pose_scaler)
@@ -198,7 +197,6 @@ class RecordConfig:
                     right_pose_scaler=self.right_pose_scaler,
                     left_channel_signs=self.left_channel_signs,
                     right_channel_signs=self.right_channel_signs,
-                    action_smoothing_alpha=self.action_smoothing_alpha,
                     action_smoothing_alpha=self.action_smoothing_alpha,
                     visualize_placo=self.visualize_placo,
                 )

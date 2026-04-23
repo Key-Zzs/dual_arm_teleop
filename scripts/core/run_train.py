@@ -109,6 +109,13 @@ def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
     from lerobot.utils.import_utils import register_third_party_devices
 
     register_third_party_devices()
+    # Fallback: explicitly import local third-party plugins in case discovery misses
+    # editable modules in some environments.
+    for plugin_name in ("lerobot_robot_agilex_nero", "lerobot_teleoperator_oculus"):
+        try:
+            __import__(plugin_name)
+        except Exception as exc:
+            logging.warning("Could not import plugin '%s': %s", plugin_name, exc)
 
     policy_cfg = dict(train_cfg.get("policy", {}))
     # DAgger pipeline uses ACT policy type internally.

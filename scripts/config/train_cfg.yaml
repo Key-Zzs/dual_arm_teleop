@@ -17,9 +17,10 @@ train:
     # temporal_ensemble_coeff: null # 关闭时序加权，减少动作启动迟滞
     chunk_size: 15
     n_action_steps: 5
+    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_task3_step1_2mL_empty_20260422_v04/checkpoints/last/pretrained_model"  # 从ACT模型开始DAgger训练
 
-  output_dir: "outputs/train/nero_act_task3_step1_2mL_empty_20260423_v00" # 模型和日志的输出目录
-  job_name: "nero_act_task3_step1_2mL_empty_20260423_v00"
+  output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_dagger_task3_step1_2mL_empty_20260423_v01" # 模型和日志的输出目录
+  job_name: "nero_act_dagger_task3_step1_2mL_empty_20260423_v01"
 
   resume: false
   seed: 1000
@@ -53,7 +54,7 @@ train:
     robot:
       # 通过第三方插件自动发现: lerobot_robot_agilex_nero
       # 也兼容原始类型 "nero_dual_arm"
-      type: "agilex_nero"
+      type: &robot_type "agilex_nero"
       robot_ip: "192.168.110.41"
       robot_port: 4242
       use_gripper: true

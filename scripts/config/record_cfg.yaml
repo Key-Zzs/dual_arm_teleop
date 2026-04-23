@@ -22,10 +22,9 @@ record:
   fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
   use_gripper: &use_gripper true  # whether to use gripper
-  run_mode: "run_mix" # "run_record" or "run_policy" or "run_mix"
+  run_mode: "run_record" # "run_record" or "run_policy" or "run_mix"
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka
-  robot_type: &robot_type "nero_dual_arm"
   robot_type: &robot_type "nero_dual_arm"
 
   teleop:
@@ -43,8 +42,6 @@ record:
       visualize_placo: false  # whether to visualize robot using placo
       
   robot:
-    robot_ip: &ip "192.168.110.41" # dobot server ip
-    # robot_ip: &ip "localhost" # nero server ip
     robot_ip: &ip "192.168.110.41" # dobot server ip
     # robot_ip: &ip "localhost" # nero server ip
     robot_port: 4242  # dual-arm zerorpc port (single port for both arms)
@@ -112,7 +109,3 @@ replay:
 visualize:
   dataset_name: nero_task3_step1/2mL_empty_merged
   episode_index: 18 # episode index to visualize
-
-
-
-
