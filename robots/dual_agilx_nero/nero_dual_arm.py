@@ -43,10 +43,10 @@ class NeroDualArm(Robot):
         
         # Gripper settings
         self._gripper_force = config.gripper_force
-        self._left_gripper_cmd_bin = config.gripper_max_open
-        self._right_gripper_cmd_bin = config.gripper_max_open
-        # self._last_left_gripper_cmd_bin = config.gripper_max_open
-        # self._last_right_gripper_cmd_bin = config.gripper_max_open
+        self._left_gripper_cmd = config.gripper_max_open
+        self._right_gripper_cmd = config.gripper_max_open
+        # self._last_left_gripper_cmd = config.gripper_max_open
+        # self._last_right_gripper_cmd = config.gripper_max_open
 
         # Action smoothing
         # self._smoothing_alpha = 0.4
@@ -172,13 +172,13 @@ class NeroDualArm(Robot):
         """Motor features for dual-arm system."""
         features = {}
         
-        # # Left arm joint positions
-        # for i in range(self._num_joints_per_arm):
-        #     features[f"left_joint_{i+1}.pos"] = float
+        # Left arm joint positions
+        for i in range(self._num_joints_per_arm):
+            features[f"left_joint_{i+1}.pos"] = float
         
-        # # Right arm joint positions
-        # for i in range(self._num_joints_per_arm):
-        #     features[f"right_joint_{i+1}.pos"] = float
+        # Right arm joint positions
+        for i in range(self._num_joints_per_arm):
+            features[f"right_joint_{i+1}.pos"] = float
         
         # Left arm end effector pose
         for axis in ["x", "y", "z", "rx", "ry", "rz"]:
@@ -191,9 +191,9 @@ class NeroDualArm(Robot):
         # Gripper states
         if self.config.use_gripper:
             # features["left_gripper_state_norm"] = float
-            features["left_gripper_cmd_bin"] = float
+            features["left_gripper_cmd"] = float
             # features["right_gripper_state_norm"] = float
-            features["right_gripper_cmd_bin"] = float
+            features["right_gripper_cmd"] = float
         
         return features
     
@@ -201,13 +201,13 @@ class NeroDualArm(Robot):
     def action_features(self) -> dict[str, type]:
         features = {}
 
-        # # Left arm joint positions
-        # for i in range(self._num_joints_per_arm):
-        #     features[f"left_joint_{i+1}.pos"] = float
+        # Left arm joint positions
+        for i in range(self._num_joints_per_arm):
+            features[f"left_joint_{i+1}.pos"] = float
         
-        # # Right arm joint positions
-        # for i in range(self._num_joints_per_arm):
-        #     features[f"right_joint_{i+1}.pos"] = float
+        # Right arm joint positions
+        for i in range(self._num_joints_per_arm):
+            features[f"right_joint_{i+1}.pos"] = float
 
         # Left arm delta pose
         for axis in ["x", "y", "z", "rx", "ry", "rz"]:
@@ -216,8 +216,8 @@ class NeroDualArm(Robot):
         for axis in ["x", "y", "z", "rx", "ry", "rz"]:
             features[f"right_delta_ee_pose.{axis}"] = float
         if self.config.use_gripper:
-            features["left_gripper_cmd_bin"] = float
-            features["right_gripper_cmd_bin"] = float
+            features["left_gripper_cmd"] = float
+            features["right_gripper_cmd"] = float
         return features
 
     def handle_gripper(self, arm_side: str, gripper_value: float, is_binary: bool = False) -> None:
@@ -226,8 +226,8 @@ class NeroDualArm(Robot):
         if not self.config.use_gripper:
             return
         
-        gripper_cmd_bin_attr = f"_{arm_side}_gripper_cmd_bin"
-        last_cmd = getattr(self, gripper_cmd_bin_attr)
+        gripper_cmd_attr = f"_{arm_side}_gripper_cmd"
+        last_cmd = getattr(self, gripper_cmd_attr)
         
         if not is_binary:
             gripper_cmd_bin = gripper_value
@@ -257,7 +257,7 @@ class NeroDualArm(Robot):
                     force=self._gripper_force
                 )
             # print(f"width: {gripper_cmd_bin * self.config.gripper_max_open}")
-            setattr(self, gripper_cmd_bin_attr, gripper_cmd_bin)
+            setattr(self, gripper_cmd_attr, gripper_cmd_bin)
         except Exception as e:
             logger.warning(f"[{arm_side.upper()} GRIPPER] zerorpc error: {e}")
         
@@ -295,10 +295,10 @@ class NeroDualArm(Robot):
                 logger.warning(f"[ROBOT] Action failed: {e}")
         
         # Handle grippers
-        if "left_gripper_cmd_bin" in action:
-            self.handle_gripper("left", action["left_gripper_cmd_bin"], is_binary=False)
-        if "right_gripper_cmd_bin" in action:
-            self.handle_gripper("right", action["right_gripper_cmd_bin"], is_binary=False)
+        if "left_gripper_cmd" in action:
+            self.handle_gripper("left", action["left_gripper_cmd"], is_binary=False)
+        if "right_gripper_cmd" in action:
+            self.handle_gripper("right", action["right_gripper_cmd"], is_binary=False)
 
         # t_send_end = time.perf_counter()
         # logger.info(f"[TIMING] send_action total: {(t_send_end-t_send_start)*1000:.2f}ms")
@@ -350,13 +350,13 @@ class NeroDualArm(Robot):
         
         try:
             # t_query_start = time.perf_counter()
-            # left_joint_pos = self._robot.left_robot_get_joint_positions()
+            left_joint_pos = self._robot.left_robot_get_joint_positions()
             left_ee_pose = self._robot.left_robot_get_ee_pose()
             # t_query_end = time.perf_counter()
             # logger.info(f"[TIMING] left robot query: {(t_query_end-t_query_start)*1000:.2f}ms")
             
             # t_query_start = time.perf_counter()
-            # right_joint_pos = self._robot.right_robot_get_joint_positions()
+            right_joint_pos = self._robot.right_robot_get_joint_positions()
             right_ee_pose = self._robot.right_robot_get_ee_pose()
             # t_query_end = time.perf_counter()
             # logger.info(f"[TIMING] right robot query: {(t_query_end-t_query_start)*1000:.2f}ms")
@@ -371,26 +371,26 @@ class NeroDualArm(Robot):
         obs_dict = {}
         
         # Left arm observations
-        # for i in range(len(left_joint_pos)):
-        #     obs_dict[f"left_joint_{i+1}.pos"] = float(left_joint_pos[i])
+        for i in range(len(left_joint_pos)):
+            obs_dict[f"left_joint_{i+1}.pos"] = float(left_joint_pos[i])
 
         for i, axis in enumerate(["x", "y", "z", "rz", "ry", "rx"]):
             obs_dict[f"left_ee_pose.{axis}"] = float(left_ee_pose[i])
         
         # Right arm observations
-        # for i in range(len(right_joint_pos)):
-        #     obs_dict[f"right_joint_{i+1}.pos"] = float(right_joint_pos[i])
+        for i in range(len(right_joint_pos)):
+            obs_dict[f"right_joint_{i+1}.pos"] = float(right_joint_pos[i])
 
         for i, axis in enumerate(["x", "y", "z", "rz", "ry", "rx"]):
             obs_dict[f"right_ee_pose.{axis}"] = float(right_ee_pose[i])
         
         # Gripper states
         if self.config.use_gripper:
-            obs_dict["left_gripper_cmd_bin"] = self._left_gripper_cmd_bin
-            obs_dict["right_gripper_cmd_bin"] = self._right_gripper_cmd_bin
+            obs_dict["left_gripper_cmd"] = self._left_gripper_cmd
+            obs_dict["right_gripper_cmd"] = self._right_gripper_cmd
         else:
-            obs_dict["left_gripper_cmd_bin"] = None
-            obs_dict["right_gripper_cmd_bin"] = None
+            obs_dict["left_gripper_cmd"] = None
+            obs_dict["right_gripper_cmd"] = None
 
         # TODO: Camera images
         # t_cam_total_start = time.perf_counter()
