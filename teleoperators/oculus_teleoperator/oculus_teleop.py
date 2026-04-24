@@ -63,8 +63,8 @@ class OculusTeleop(Teleoperator):
         
         # Gripper commands
         if self.cfg.use_gripper:
-            features["left_gripper_cmd_bin"] = float
-            features["right_gripper_cmd_bin"] = float
+            features["left_gripper_cmd"] = float
+            features["right_gripper_cmd"] = float
         
         return features
     
@@ -131,8 +131,13 @@ class OculusTeleop(Teleoperator):
         
         # Gripper commands
         if self.cfg.use_gripper:
-            action["left_gripper_cmd_bin"] = float(obs.get("left_gripper_cmd_bin", 1.0))
-            action["right_gripper_cmd_bin"] = float(obs.get("right_gripper_cmd_bin", 1.0))
+            # Accept both new and legacy key names to avoid key-mismatch regressions.
+            action["left_gripper_cmd"] = float(
+                obs.get("left_gripper_cmd", obs.get("left_gripper_cmd_bin", 1.0))
+            )
+            action["right_gripper_cmd"] = float(
+                obs.get("right_gripper_cmd", obs.get("right_gripper_cmd_bin", 1.0))
+            )
         
         # Reset request flag (for external use)
         action["reset_requested"] = obs.get("reset_requested", False)
@@ -190,9 +195,9 @@ if __name__ == "__main__":
             reset_flag = " [RESET]" if action.get("reset_requested", False) else ""
             
             print(f"\rL: X={action['left_delta_ee_pose.x']:+.4f} Y={action['left_delta_ee_pose.y']:+.4f} "
-                  f"Z={action['left_delta_ee_pose.z']:+.4f} G={action['left_gripper_cmd_bin']:.2f} | "
+                  f"Z={action['left_delta_ee_pose.z']:+.4f} G={action['left_gripper_cmd']:.2f} | "
                   f"R: X={action['right_delta_ee_pose.x']:+.4f} Y={action['right_delta_ee_pose.y']:+.4f} "
-                  f"Z={action['right_delta_ee_pose.z']:+.4f} G={action['right_gripper_cmd_bin']:.2f}"
+                  f"Z={action['right_delta_ee_pose.z']:+.4f} G={action['right_gripper_cmd']:.2f}"
                   f"{reset_flag}    ", end="")
             
             time.sleep(0.01)

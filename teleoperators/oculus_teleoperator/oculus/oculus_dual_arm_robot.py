@@ -252,8 +252,10 @@ class OculusDualArmRobot(Robot):
         Returns dict with keys:
             left_delta_ee_pose.{x,y,z,rx,ry,rz}
             right_delta_ee_pose.{x,y,z,rx,ry,rz}
-            left_gripper_cmd_bin
-            right_gripper_cmd_bin
+            left_gripper_cmd
+            right_gripper_cmd
+            left_gripper_cmd_bin (legacy alias)
+            right_gripper_cmd_bin (legacy alias)
             reset_requested
         """
         action_data = self.get_action()
@@ -274,9 +276,16 @@ class OculusDualArmRobot(Robot):
         
         # Gripper positions
         if self._use_gripper:
-            obs_dict["left_gripper_cmd_bin"] = float(action_data[6])
-            obs_dict["right_gripper_cmd_bin"] = float(action_data[13])
+            left_gripper = float(action_data[6])
+            right_gripper = float(action_data[13])
+            # Provide both key names so old and new pipelines keep working.
+            obs_dict["left_gripper_cmd"] = left_gripper
+            obs_dict["right_gripper_cmd"] = right_gripper
+            obs_dict["left_gripper_cmd_bin"] = left_gripper
+            obs_dict["right_gripper_cmd_bin"] = right_gripper
         else:
+            obs_dict["left_gripper_cmd"] = None
+            obs_dict["right_gripper_cmd"] = None
             obs_dict["left_gripper_cmd_bin"] = None
             obs_dict["right_gripper_cmd_bin"] = None
         

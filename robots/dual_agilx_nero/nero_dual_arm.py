@@ -110,14 +110,22 @@ class NeroDualArm(Robot):
             # Get end-effector poses for both arms
             left_ee_pose = robot.left_robot_get_ee_pose()
             right_ee_pose = robot.right_robot_get_ee_pose()
+            left_joint_pos = robot.left_robot_get_joint_positions()
+            right_joint_pos = robot.right_robot_get_joint_positions()
             # print(left_ee_pose)
             # print(right_ee_pose)
-            
+            # print(left_joint_pos)
+            # print(right_joint_pos)
+
             if left_ee_pose is not None and len(left_ee_pose) == 6:
                 logger.info(f"[LEFT ARM] End-effector pose: {[round(j, 4) for j in left_ee_pose]}")
             if right_ee_pose is not None and len(right_ee_pose) == 6:
                 logger.info(f"[RIGHT ARM] End-effector pose: {[round(j, 4) for j in right_ee_pose]}")
-            
+            if left_joint_pos is not None and len(left_joint_pos) == self._num_joints_per_arm:
+                logger.info(f"[LEFT ARM] Joint positions: {[round(j, 4) for j in left_joint_pos]}")
+            if right_joint_pos is not None and len(right_joint_pos) == self._num_joints_per_arm:
+                logger.info(f"[RIGHT ARM] Joint positions: {[round(j, 4) for j in right_joint_pos]}")
+
             logger.info("===== [ROBOT] Nero dual-arm connected successfully =====\n")
             return robot
             
@@ -201,13 +209,13 @@ class NeroDualArm(Robot):
     def action_features(self) -> dict[str, type]:
         features = {}
 
-        # Left arm joint positions
-        for i in range(self._num_joints_per_arm):
-            features[f"left_joint_{i+1}.pos"] = float
+        # # Left arm joint positions
+        # for i in range(self._num_joints_per_arm):
+        #     features[f"left_joint_{i+1}.pos"] = float
         
-        # Right arm joint positions
-        for i in range(self._num_joints_per_arm):
-            features[f"right_joint_{i+1}.pos"] = float
+        # # Right arm joint positions
+        # for i in range(self._num_joints_per_arm):
+        #     features[f"right_joint_{i+1}.pos"] = float
 
         # Left arm delta pose
         for axis in ["x", "y", "z", "rx", "ry", "rz"]:
@@ -230,34 +238,34 @@ class NeroDualArm(Robot):
         last_cmd = getattr(self, gripper_cmd_attr)
         
         if not is_binary:
-            gripper_cmd_bin = gripper_value
+            gripper_cmd = gripper_value
             # print(f"gripper_value: {gripper_value}")
         else:
             if gripper_value < self.config.close_threshold:
-                gripper_cmd_bin = 0.0
+                gripper_cmd = 0.0
             else:
-                gripper_cmd_bin = self.config.gripper_max_open
+                gripper_cmd = self.config.gripper_max_open
         
         if self.config.gripper_reverse:
-            gripper_cmd_bin = self.config.gripper_max_open - gripper_cmd_bin
+            gripper_cmd = self.config.gripper_max_open - gripper_cmd
 
         # Skip redundant command writes to reduce RPC blocking and gripper bus load.
-        if last_cmd is not None and abs(gripper_cmd_bin - last_cmd) < 1e-3:
+        if last_cmd is not None and abs(gripper_cmd - last_cmd) < 1e-3:
             return
         
         try:
             if arm_side == "left":
                 self._robot.left_gripper_goto(
-                    width=gripper_cmd_bin * self.config.gripper_max_open,
+                    width=gripper_cmd * self.config.gripper_max_open,
                     force=self._gripper_force
                 )
             else:
                 self._robot.right_gripper_goto(
-                    width=gripper_cmd_bin * self.config.gripper_max_open,
+                    width=gripper_cmd * self.config.gripper_max_open,
                     force=self._gripper_force
                 )
-            # print(f"width: {gripper_cmd_bin * self.config.gripper_max_open}")
-            setattr(self, gripper_cmd_attr, gripper_cmd_bin)
+            # print(f"width: {gripper_cmd * self.config.gripper_max_open}")
+            setattr(self, gripper_cmd_attr, gripper_cmd)
         except Exception as e:
             logger.warning(f"[{arm_side.upper()} GRIPPER] zerorpc error: {e}")
         
