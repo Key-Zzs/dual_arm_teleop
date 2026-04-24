@@ -63,7 +63,7 @@ TRAIN_CONFIG_NAME = "train_config.json"
 
 def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
     """
-    Build a DAggerPipelineConfig from the existing train_cfg.yaml structure and run DAgger.
+    Build an *offline* DAggerPipelineConfig from existing train_cfg.yaml and train on fixed data only.
 
     Expected extension in train_cfg.yaml:
     train:
@@ -71,11 +71,7 @@ def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
         type: act_dagger
         ...
       dagger:
-        robot: {...}
-        expert: {...}
         dataset: {...}
-        rollout: {...}     # optional
-        beta: {...}        # optional
         training: {...}    # optional
     """
     dagger_section = train_cfg.get("dagger")
@@ -88,51 +84,30 @@ def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
     from lerobot.policies.dagger.configuration_dagger import DAggerPipelineConfig
     from lerobot.policies.dagger.dagger_trainer import train_dagger
 
-    # Import concrete robot/teleop config classes so draccus can resolve ChoiceRegistry types.
-    from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
-    from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig  # noqa: F401
-    from lerobot.robots import (  # noqa: F401
-        bi_so100_follower,
-        hope_jr,
-        koch_follower,
-        so100_follower,
-        so101_follower,
-    )
-    from lerobot.teleoperators import (  # noqa: F401
-        bi_so100_leader,
-        gamepad,
-        homunculus,
-        koch_leader,
-        so100_leader,
-        so101_leader,
-    )
-    from lerobot.utils.import_utils import register_third_party_devices
-
-    register_third_party_devices()
-    # Fallback: explicitly import local third-party plugins in case discovery misses
-    # editable modules in some environments.
-    for plugin_name in ("lerobot_robot_agilex_nero", "lerobot_teleoperator_oculus"):
-        try:
-            __import__(plugin_name)
-        except Exception as exc:
-            logging.warning("Could not import plugin '%s': %s", plugin_name, exc)
-
     policy_cfg = dict(train_cfg.get("policy", {}))
-    # DAgger pipeline uses ACT policy type internally.
+    # Offline DAgger pipeline still trains ACT policy.
     policy_cfg["type"] = "act"
     # Backward compatibility for users who may set `policy.path`.
     if "path" in policy_cfg and "pretrained_path" not in policy_cfg:
         policy_cfg["pretrained_path"] = policy_cfg["path"]
     policy_cfg.pop("path", None)
 
+    dagger_dataset_cfg = dagger_section.get("dataset")
+    if dagger_dataset_cfg is None:
+        raise ValueError("train.dagger.dataset is required for act_dagger offline training.")
+
+    dagger_training_cfg = dict(dagger_section.get("training", {}))
+    dagger_training_cfg.setdefault("rounds", 1)
+    dagger_training_cfg.setdefault("steps_per_round", train_cfg.get("steps", 10_000))
+    dagger_training_cfg.setdefault("batch_size", train_cfg.get("batch_size", 8))
+    dagger_training_cfg.setdefault("num_workers", train_cfg.get("num_workers", 4))
+    dagger_training_cfg.setdefault("log_freq", train_cfg.get("log_freq", 100))
+    dagger_training_cfg.setdefault("save_checkpoint", train_cfg.get("save_checkpoint", True))
+
     dagger_cfg_dict: Dict[str, Any] = {
-        "robot": dagger_section["robot"],
         "policy": policy_cfg,
-        "dataset": dagger_section["dataset"],
-        "expert": dagger_section["expert"],
-        "rollout": dagger_section.get("rollout", {}),
-        "beta": dagger_section.get("beta", {}),
-        "training": dagger_section.get("training", {}),
+        "dataset": dagger_dataset_cfg,
+        "training": dagger_training_cfg,
         # Reuse top-level training metadata for output bookkeeping.
         "output_dir": train_cfg.get("output_dir"),
         "job_name": train_cfg.get("job_name"),
@@ -858,7 +833,7 @@ def main():
     policy_type = train_section.get("policy", {}).get("type")
 
     if policy_type == "act_dagger":
-        # DAgger uses robot/teleop configs that may come from third-party plugins.
+        # `act_dagger` runs offline-only training on collected DAgger data.
         run_act_dagger_from_train_cfg(train_section)
         return
 

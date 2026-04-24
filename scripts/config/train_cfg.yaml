@@ -48,91 +48,24 @@ train:
     mode: "online"  # Allowed values: 'online', 'offline' 'disabled'. Defaults to 'online"
 
   # =========================
-  # DAgger 训练配置（仅当 policy.type=act_dagger 生效）
+  # 离线 DAgger 训练配置（仅当 policy.type=act_dagger 生效）
+  # 只需要:
+  # 1) dataset: 指向已采集好的数据（优先读取 <root>/dagger_data）
+  # 2) training: 每轮离线训练参数
   # =========================
   dagger:
-    robot:
-      # 通过第三方插件自动发现: lerobot_robot_agilex_nero
-      # 也兼容原始类型 "nero_dual_arm"
-      type: &robot_type "agilex_nero"
-      robot_ip: "192.168.110.41"
-      robot_port: 4242
-      use_gripper: true
-      gripper_max_open: 0.1
-      gripper_force: 2.0
-      gripper_speed: 0.1
-      gripper_reverse: false
-      close_threshold: 0.05
-      control_mode: "oculus"
-      debug: false
-      cameras:
-        left_wrist_image:
-          type: "intelrealsense"
-          serial_number_or_name: "412622270929"
-          width: 424
-          height: 240
-          fps: 30
-          use_depth: false
-        right_wrist_image:
-          type: "intelrealsense"
-          serial_number_or_name: "412622270701"
-          width: 424
-          height: 240
-          fps: 30
-          use_depth: false
-        head_image:
-          type: "intelrealsense"
-          serial_number_or_name: "339322074423"
-          width: 424
-          height: 240
-          fps: 30
-          use_depth: false
-
-    expert:
-      # teleop: 用遥操作做expert
-      # callable: 用IK/脚本标注（callable_path: "your_module:your_fn"）
-      mode: "teleop"
-      teleop:
-        # 通过第三方插件自动发现: lerobot_teleoperator_oculus
-        # 也兼容原始类型 "oculus_teleop"
-        type: "oculus"
-        ip: "192.168.110.62"
-        use_gripper: true
-        left_pose_scaler: [1.2, 1.2]
-        right_pose_scaler: [1.2, 1.2]
-        left_channel_signs: [-1, -1, 1, 1, 1, 1]
-        right_channel_signs: [-1, -1, 1, 1, 1, 1]
-        action_smoothing_alpha: 0.35
-        visualize_placo: false
-      # callable_path: "your_pkg.your_module:expert_fn"
-
     dataset:
-      # seed_* 是你现有BC数据集
-      seed_repo_id: "nero_task3_step1/2mL_empty_merged"
-      seed_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged"
-      # aggregated_* 是DAgger聚合后的数据集目录
+      # 若 aggregated_root 下存在 dagger_data/，会优先从 dagger_data 读取
       aggregated_repo_id: "nero_task3_step1/2mL_empty_merged_dagger"
       aggregated_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_dagger"
+      # 若 aggregated_root 不存在，回退到 seed 数据集
+      seed_repo_id: "nero_task3_step1/2mL_empty_merged"
+      seed_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged"
       resume_aggregation: true
       copy_seed_if_missing: true
 
-    rollout:
-      episodes_per_round: 2
-      episode_time_s: 86400.0  # 24小时，实际由键盘控制
-      reset_time_s: 0.0  # 禁用自动reset，由键盘控制
-      fps: 30
-      single_task: "Seat a 2 mL vial into the 2 mL empty rack"
-      reset_with_expert: true
-      keyboard_control: true  # 启用键盘控制
-
-    beta:
-      schedule: "linear"  # linear | exponential | constant
-      beta_start: 1.0
-      beta_end: 0.1
-      exp_decay: 0.8
-
     training:
-      rounds: 2
+      rounds: 1
       steps_per_round: 2000
       batch_size: 8
       num_workers: 4
