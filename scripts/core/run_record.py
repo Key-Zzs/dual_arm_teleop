@@ -1,6 +1,7 @@
 import yaml
 from pathlib import Path
 from typing import Dict, Any
+import numpy as np
 from scripts.utils.dataset_utils import generate_dataset_name, update_dataset_info
 from robots import (
     SUPPORTED_ROBOTS,
@@ -20,13 +21,20 @@ from lerobot.utils.control_utils import init_keyboard_listener
 # from send2trash import send2trash
 import shutil
 import termios, sys
+import time
 from lerobot.utils.constants import HF_LEROBOT_HOME
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.utils import hw_to_dataset_features
+from lerobot.datasets.utils import hw_to_dataset_features, build_dataset_frame
 from lerobot.utils.control_utils import sanity_check_dataset_robot_compatibility
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.factory import make_policy, make_pre_post_processors
+from lerobot.policies.utils import make_robot_action
 from lerobot.processor.rename_processor import rename_stats
+from lerobot.utils.constants import ACTION, OBS_STR
+from lerobot.utils.control_utils import predict_action
+from lerobot.utils.robot_utils import busy_wait
+from lerobot.utils.utils import get_safe_torch_device
+from lerobot.utils.visualization_utils import log_rerun_data
 from dataclasses import field
 
 import logging
@@ -224,10 +232,166 @@ def handle_incomplete_dataset(dataset_path):
         else:
             print("====== [KEEP] Incomplete dataset folder retained, please check manually. ======")
 
+
+def _resolve_record_dataset_root(dataset_name: str, run_mode: str) -> Path:
+    base = Path(HF_LEROBOT_HOME) / dataset_name
+    if run_mode == "run_mix":
+        return base / "dagger_data"
+    return base
+
+
+def _is_expert_override_active(
+    teleop_raw_action: dict[str, Any],
+    last_teleop_raw_action: dict[str, Any] | None,
+    movement_eps: float = 1e-4,
+    change_eps: float = 5e-3,
+) -> bool:
+    """Detect if teleop currently provides an active override signal."""
+
+    if bool(teleop_raw_action.get("reset_requested", False)):
+        return True
+
+    # Detect non-trivial instantaneous motion signal.
+    for key, value in teleop_raw_action.items():
+        if key == "reset_requested":
+            continue
+        try:
+            num = float(value)
+        except (TypeError, ValueError):
+            continue
+
+        lower_key = key.lower()
+        if "delta" in lower_key or "pose" in lower_key:
+            if abs(num) > movement_eps:
+                return True
+
+    # Detect any action channel change relative to previous frame (e.g. gripper trigger changes).
+    if last_teleop_raw_action is not None:
+        for key, value in teleop_raw_action.items():
+            if key == "reset_requested":
+                continue
+            try:
+                current = float(value)
+                previous = float(last_teleop_raw_action.get(key, current))
+            except (TypeError, ValueError):
+                continue
+            if abs(current - previous) > change_eps:
+                return True
+
+    return False
+
+
+def run_mix_record_loop(
+    robot,
+    teleop,
+    policy,
+    preprocessor,
+    postprocessor,
+    dataset: LeRobotDataset | None,
+    teleop_action_processor,
+    robot_action_processor,
+    robot_observation_processor,
+    events: dict,
+    fps: int,
+    control_time_s: int | float,
+    single_task: str,
+    display_data: bool,
+) -> dict[str, int]:
+    policy.reset()
+    preprocessor.reset()
+    postprocessor.reset()
+
+    start_episode_t = time.perf_counter()
+    timestamp_s = 0.0
+    last_teleop_raw_action: dict[str, Any] | None = None
+
+    expert_exec_steps = 0
+    policy_exec_steps = 0
+    saved_expert_steps = 0
+
+    while timestamp_s < control_time_s:
+        loop_start_t = time.perf_counter()
+
+        if events["exit_early"]:
+            events["exit_early"] = False
+            break
+
+        raw_obs = robot.get_observation()
+        obs_processed = robot_observation_processor(raw_obs)
+        observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
+
+        # (1) Policy inference.
+        policy_action = predict_action(
+            observation=observation_frame,
+            policy=policy,
+            device=get_safe_torch_device(policy.config.device),
+            preprocessor=preprocessor,
+            postprocessor=postprocessor,
+            use_amp=policy.config.use_amp,
+            task=single_task,
+            robot_type=robot.robot_type,
+        )
+        policy_action_processed = make_robot_action(policy_action, dataset.features)
+
+        # (2) Default execute policy action.
+        exec_action = policy_action_processed
+        action_source = "policy"
+        is_expert = False
+
+        # (3) Expert override if teleop input is detected.
+        teleop_raw_action = teleop.get_action()
+        if _is_expert_override_active(teleop_raw_action, last_teleop_raw_action):
+            expert_action = teleop_action_processor((teleop_raw_action, raw_obs))
+            exec_action = expert_action
+            action_source = "expert"
+            is_expert = True
+            # Flush ACT chunk cache on expert override to avoid stale queued actions.
+            policy.reset()
+
+        last_teleop_raw_action = teleop_raw_action
+
+        # (4) Execute action.
+        robot_action_to_send = robot_action_processor((exec_action, raw_obs))
+        _ = robot.send_action(robot_action_to_send)
+
+        if action_source == "expert":
+            expert_exec_steps += 1
+        else:
+            policy_exec_steps += 1
+
+        # Record rule: only expert-labeled steps are saved.
+        if dataset is not None and is_expert:
+            action_frame = build_dataset_frame(dataset.features, exec_action, prefix=ACTION)
+            frame = {
+                **observation_frame,
+                **action_frame,
+                "action_source": action_source,
+                "is_expert": np.array([True], dtype=np.bool_),
+                "task": single_task,
+            }
+            dataset.add_frame(frame)
+            saved_expert_steps += 1
+
+        if display_data:
+            log_rerun_data(observation=obs_processed, action=exec_action)
+
+        dt_s = time.perf_counter() - loop_start_t
+        busy_wait(1 / fps - dt_s)
+        timestamp_s = time.perf_counter() - start_episode_t
+
+    return {
+        "expert_exec_steps": expert_exec_steps,
+        "policy_exec_steps": policy_exec_steps,
+        "saved_expert_steps": saved_expert_steps,
+    }
+
 def run_record(record_cfg: RecordConfig):
     print("====== [START] Starting recording ======")
+    dataset_name = None
+    dataset_root = None
     try:
         dataset_name, data_version = generate_dataset_name(record_cfg)
+        dataset_root = _resolve_record_dataset_root(dataset_name, record_cfg.run_mode)
 
         # Check joint offsets
         # if not record_cfg.debug:
@@ -294,10 +458,15 @@ def run_record(record_cfg: RecordConfig):
         action_features = hw_to_dataset_features(robot.action_features, "action")
         obs_features = hw_to_dataset_features(robot.observation_features, "observation", use_video=True)
         dataset_features = {**action_features, **obs_features}
+        if record_cfg.run_mode == "run_mix":
+            # Extend dataset schema for DAgger mixed collection metadata.
+            dataset_features["action_source"] = {"dtype": "string", "shape": (1,), "names": None}
+            dataset_features["is_expert"] = {"dtype": "bool", "shape": (1,), "names": None}
 
         if record_cfg.resume:
             dataset = LeRobotDataset(
                 dataset_name,
+                root=dataset_root,
             )
 
             if hasattr(robot, "cameras") and len(robot.cameras) > 0:
@@ -310,6 +479,7 @@ def run_record(record_cfg: RecordConfig):
                 fps=record_cfg.fps,
                 features=dataset_features,
                 robot_type=robot.name,
+                root=dataset_root,
                 use_videos=True,
                 image_writer_threads=4,
             )
@@ -323,8 +493,6 @@ def run_record(record_cfg: RecordConfig):
         # Rerun visualization can introduce periodic stalls when transport is unstable,
         # so only initialize it when display is explicitly enabled.
         _, events = init_keyboard_listener()
-        if record_cfg.display:
-            init_rerun(session_name="recording")
         if record_cfg.display:
             init_rerun(session_name="recording")
 
@@ -346,6 +514,11 @@ def run_record(record_cfg: RecordConfig):
             logging.info("====== [INFO] Running in mixed mode ======")
             policy = make_policy(record_cfg.policy, ds_meta=dataset.meta)
             teleop = OculusTeleop(teleop_config)
+        else:
+            raise ValueError(
+                f"Unsupported run_mode: {record_cfg.run_mode}. "
+                "Supported: run_record | run_policy | run_mix"
+            )
         
         if policy is not None:
             preprocessor, postprocessor = make_pre_post_processors(
@@ -366,31 +539,68 @@ def run_record(record_cfg: RecordConfig):
 
         while episode_idx < record_cfg.num_episodes and not events["stop_recording"]:
             logging.info(f"====== [RECORD] Recording episode {episode_idx + 1} of {record_cfg.num_episodes} ======")
-            record_loop(
-                robot=robot,
-                events=events,
-                fps=record_cfg.fps,
-                teleop=teleop,
-                policy=policy,
-                preprocessor=preprocessor,
-                postprocessor=postprocessor,
-                teleop_action_processor=teleop_action_processor,
-                robot_action_processor=robot_action_processor,
-                robot_observation_processor=robot_observation_processor,
-                dataset=dataset,
-                control_time_s=record_cfg.episode_time_sec,
-                single_task=record_cfg.task_description,
-                display_data=record_cfg.display,
-            )
+            if record_cfg.run_mode == "run_mix":
+                mix_stats = run_mix_record_loop(
+                    robot=robot,
+                    teleop=teleop,
+                    policy=policy,
+                    preprocessor=preprocessor,
+                    postprocessor=postprocessor,
+                    dataset=dataset,
+                    teleop_action_processor=teleop_action_processor,
+                    robot_action_processor=robot_action_processor,
+                    robot_observation_processor=robot_observation_processor,
+                    events=events,
+                    fps=record_cfg.fps,
+                    control_time_s=record_cfg.episode_time_sec,
+                    single_task=record_cfg.task_description,
+                    display_data=record_cfg.display,
+                )
+                logging.info(
+                    "[run_mix] policy_exec_steps=%d expert_exec_steps=%d saved_expert_steps=%d",
+                    mix_stats["policy_exec_steps"],
+                    mix_stats["expert_exec_steps"],
+                    mix_stats["saved_expert_steps"],
+                )
+            else:
+                record_loop(
+                    robot=robot,
+                    events=events,
+                    fps=record_cfg.fps,
+                    teleop=teleop,
+                    policy=policy,
+                    preprocessor=preprocessor,
+                    postprocessor=postprocessor,
+                    teleop_action_processor=teleop_action_processor,
+                    robot_action_processor=robot_action_processor,
+                    robot_observation_processor=robot_observation_processor,
+                    dataset=dataset,
+                    control_time_s=record_cfg.episode_time_sec,
+                    single_task=record_cfg.task_description,
+                    display_data=record_cfg.display,
+                )
 
             if events["rerecord_episode"]:
                 logging.info("Re-recording episode")
                 events["rerecord_episode"] = False
                 events["exit_early"] = False
-                dataset.clear_episode_buffer()
+                if dataset.episode_buffer is not None:
+                    dataset.clear_episode_buffer()
                 continue
 
-            dataset.save_episode()
+            if record_cfg.run_mode == "run_mix":
+                has_expert_frames = (
+                    dataset.episode_buffer is not None and dataset.episode_buffer.get("size", 0) > 0
+                )
+                if has_expert_frames:
+                    dataset.save_episode()
+                else:
+                    logging.warning(
+                        "[run_mix] episode %d has no expert override frames; skip saving this episode.",
+                        episode_idx + 1,
+                    )
+            else:
+                dataset.save_episode()
 
             # Reset the environment if not stopping or re-recording
             if not events["stop_recording"] and (episode_idx < record_cfg.num_episodes - 1 or events["rerecord_episode"]):
@@ -434,20 +644,6 @@ def run_record(record_cfg: RecordConfig):
         else:
             logging.info("[INFO] Skip robot.disconnect() to avoid stop/e-stop at session end.")
 
-
-        # Reset robot to home position at the end (same intent as pressing A in teleop).
-        if record_cfg.reset_on_finish:
-            try:
-                robot.reset()
-            except Exception as reset_err:
-                logging.warning(f"[WARNING] reset_on_finish failed: {reset_err}")
-
-        # Optional disconnect. For Nero, disconnect triggers client.close() -> robot_stop on server.
-        if record_cfg.disconnect_on_finish:
-            robot.disconnect()
-        else:
-            logging.info("[INFO] Skip robot.disconnect() to avoid stop/e-stop at session end.")
-
         if teleop is not None:
             teleop.disconnect()
         dataset.finalize()
@@ -458,13 +654,13 @@ def run_record(record_cfg: RecordConfig):
 
     except Exception as e:
         logging.info(f"====== [ERROR] {e} ======")
-        dataset_path = Path(HF_LEROBOT_HOME) / dataset_name
+        dataset_path = dataset_root if dataset_root is not None else Path(HF_LEROBOT_HOME) / str(dataset_name)
         handle_incomplete_dataset(dataset_path)
         sys.exit(1)
 
     except KeyboardInterrupt:
         logging.info("\n====== [INFO] Ctrl+C detected, cleaning up incomplete dataset... ======")
-        dataset_path = Path(HF_LEROBOT_HOME) / dataset_name
+        dataset_path = dataset_root if dataset_root is not None else Path(HF_LEROBOT_HOME) / str(dataset_name)
         handle_incomplete_dataset(dataset_path)
         sys.exit(1)
 
