@@ -370,6 +370,14 @@ def _copy_arm_channels(target_action: dict[str, Any], expert_action: dict[str, A
         target_action["reset_requested"] = True
 
 
+def _clip_gripper_channels(action: dict[str, Any]) -> None:
+    for arm in ("left", "right"):
+        key = f"{arm}_gripper_cmd"
+        value = _float_or_none(action.get(key))
+        if value is not None:
+            action[key] = _clip_gripper_cmd(value)
+
+
 def _apply_gripper_channel_control(
     arm: str,
     target_action: dict[str, Any],
@@ -590,6 +598,7 @@ def run_mix_record_loop(
         else:
             pass
 
+        _clip_gripper_channels(exec_action)
         last_action_source = action_source
 
         logging.debug(
@@ -867,15 +876,15 @@ def run_record(record_cfg: RecordConfig):
                     display_data=record_cfg.display,
                 )
 
-            if events["rerecord_episode"]:
-                logging.info("Re-recording episode")
+            rerecord_requested = bool(events["rerecord_episode"])
+            if rerecord_requested:
+                logging.info("Re-recording episode requested: discard current episode and enter reset state.")
                 events["rerecord_episode"] = False
+                # Left arrow also sets exit_early=True. Clear it here so reset phase does not exit immediately.
                 events["exit_early"] = False
                 if dataset.episode_buffer is not None:
                     dataset.clear_episode_buffer()
-                continue
-
-            if record_cfg.run_mode == "run_mix":
+            elif record_cfg.run_mode == "run_mix":
                 has_expert_frames = (
                     dataset.episode_buffer is not None and dataset.episode_buffer.get("size", 0) > 0
                 )
@@ -889,8 +898,8 @@ def run_record(record_cfg: RecordConfig):
             else:
                 dataset.save_episode()
 
-            # Reset the environment if not stopping or re-recording
-            if not events["stop_recording"] and (episode_idx < record_cfg.num_episodes - 1 or events["rerecord_episode"]):
+            # Reset the environment between episodes, and also before a re-record attempt.
+            if not events["stop_recording"] and (episode_idx < record_cfg.num_episodes - 1 or rerecord_requested):
                 while True:
                     termios.tcflush(sys.stdin, termios.TCIFLUSH)
                     user_input = input("====== [WAIT] Press Enter to reset the environment ======")
@@ -912,6 +921,9 @@ def run_record(record_cfg: RecordConfig):
                     single_task=record_cfg.task_description,
                     display_data=record_cfg.display,
                 )
+
+            if rerecord_requested:
+                continue
 
             episode_idx += 1
 

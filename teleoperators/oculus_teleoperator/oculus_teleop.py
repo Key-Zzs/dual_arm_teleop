@@ -28,8 +28,8 @@ class OculusTeleop(Teleoperator):
     Controls:
     - LG (Left Grip):    Must be pressed to enable left arm action recording
     - RG (Right Grip):   Must be pressed to enable right arm action recording
-    - LTr (Left Trigger):  Controls left gripper  (0.0 = open, 1.0 = closed)
-    - RTr (Right Trigger): Controls right gripper (0.0 = open, 1.0 = closed)
+    - LTr (Left Trigger):  Controls left gripper  (1.0 = open, 0.0 = closed)
+    - RTr (Right Trigger): Controls right gripper (1.0 = open, 0.0 = closed)
     - Left controller pose:  Controls left arm end-effector delta pose
     - Right controller pose: Controls right arm end-effector delta pose
     - A button: Request robot reset

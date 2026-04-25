@@ -19,8 +19,8 @@ train:
     n_action_steps: 5
     pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty/[test_worked]act_20260424_E75/checkpoints/last/pretrained_model"  # 从ACT模型开始DAgger训练
 
-  output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty/act_dagger_20260425_E75" # 模型和日志的输出目录
-  job_name: "2mL_empty_act_dagger_20260425_E75"
+  output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty/act_dagger_20260425_E75_V01" # 模型和日志的输出目录
+  job_name: "2mL_empty_act_dagger_20260425_E75_V01"
 
   resume: false
   seed: 1000
@@ -56,8 +56,8 @@ train:
   dagger:
     dataset:
       # 若 aggregated_root 下存在 dagger_data/，会优先从 dagger_data 读取
-      aggregated_repo_id: "nero_task3_step1/2mL_empty_dagger_E75_20260425_v01"
-      aggregated_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_dagger_E75_20260425_v01"
+      aggregated_repo_id: "nero_task3_step1/2mL_empty_dagger_E75_20260425_v02"
+      aggregated_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_dagger_E75_20260425_v02"
       # 若 aggregated_root 不存在，回退到 seed 数据集
       seed_repo_id: "nero_task3_step1/2mL_empty_merged_20260424_E75"
       seed_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_20260424_E75"
@@ -66,8 +66,8 @@ train:
 
     training:
       rounds: 1
-      steps_per_round: 8000
-      batch_size: 16
+      steps_per_round: 4000
+      batch_size: 32
       num_workers: 4
       log_freq: 100
       save_checkpoint: true

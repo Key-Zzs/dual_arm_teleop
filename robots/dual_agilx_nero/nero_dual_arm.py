@@ -45,8 +45,8 @@ class NeroDualArm(Robot):
         self._gripper_force = config.gripper_force
         self._left_gripper_cmd = 1.0
         self._right_gripper_cmd = 1.0
-        # self._last_left_gripper_cmd = config.gripper_max_open
-        # self._last_right_gripper_cmd = config.gripper_max_open
+        # self._last_left_gripper_cmd = 1.0
+        # self._last_right_gripper_cmd = 1.0
 
         # Action smoothing
         # self._smoothing_alpha = 0.4
@@ -232,6 +232,10 @@ class NeroDualArm(Robot):
             features["right_gripper_cmd"] = float
         return features
 
+    @staticmethod
+    def _clip_gripper_cmd(value: float) -> float:
+        return min(1.0, max(0.0, float(value)))
+
     def handle_gripper(self, arm_side: str, gripper_value: float, is_binary: bool = False) -> None:
         t_handle_start = time.perf_counter()
         
@@ -241,17 +245,17 @@ class NeroDualArm(Robot):
         gripper_cmd_attr = f"_{arm_side}_gripper_cmd"
         last_cmd = getattr(self, gripper_cmd_attr)
         
-        if not is_binary:
-            gripper_cmd = gripper_value
-            # print(f"gripper_value: {gripper_value}")
-        else:
+        if is_binary:
             if gripper_value < self.config.close_threshold:
                 gripper_cmd = 0.0
             else:
-                gripper_cmd = self.config.gripper_max_open
+                gripper_cmd = 1.0
+        else:
+            gripper_cmd = self._clip_gripper_cmd(gripper_value)
+            # print(f"gripper_value: {gripper_value}")
         
         if self.config.gripper_reverse:
-            gripper_cmd = self.config.gripper_max_open - gripper_cmd
+            gripper_cmd = 1.0 - gripper_cmd
 
         # Skip redundant command writes to reduce RPC blocking and gripper bus load.
         if last_cmd is not None and abs(gripper_cmd - last_cmd) < 1e-3:
