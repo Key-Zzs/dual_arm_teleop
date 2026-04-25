@@ -41,7 +41,6 @@ from lerobot.utils.utils import (
 )
 import builtins
 import os
-import tempfile
 
 from pathlib import Path
 
@@ -63,7 +62,7 @@ TRAIN_CONFIG_NAME = "train_config.json"
 
 def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
     """
-    Build an *offline* DAggerPipelineConfig from existing train_cfg.yaml and train on fixed data only.
+    Train ACT offline on an already aggregated DAgger dataset.
 
     Expected extension in train_cfg.yaml:
     train:
@@ -80,12 +79,12 @@ def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
             "When train.policy.type='act_dagger', a 'train.dagger' section is required in train_cfg.yaml."
         )
 
-    # Import DAgger types lazily to avoid impacting BC-only startup.
-    from lerobot.policies.dagger.configuration_dagger import DAggerPipelineConfig
-    from lerobot.policies.dagger.dagger_trainer import train_dagger
+    # Import DAgger dataset helpers lazily to avoid impacting BC-only startup.
+    from lerobot.policies.dagger.configuration_dagger import DAggerDatasetConfig
+    from lerobot.policies.dagger.dataset import ensure_aggregated_dataset_ready
 
     policy_cfg = dict(train_cfg.get("policy", {}))
-    # Offline DAgger pipeline still trains ACT policy.
+    # Offline DAgger still trains the underlying ACT policy.
     policy_cfg["type"] = "act"
     # Backward compatibility for users who may set `policy.path`.
     if "path" in policy_cfg and "pretrained_path" not in policy_cfg:
@@ -104,34 +103,27 @@ def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
     dagger_training_cfg.setdefault("log_freq", train_cfg.get("log_freq", 100))
     dagger_training_cfg.setdefault("save_checkpoint", train_cfg.get("save_checkpoint", True))
 
-    dagger_cfg_dict: Dict[str, Any] = {
-        "policy": policy_cfg,
-        "dataset": dagger_dataset_cfg,
-        "training": dagger_training_cfg,
-        # Reuse top-level training metadata for output bookkeeping.
-        "output_dir": train_cfg.get("output_dir"),
-        "job_name": train_cfg.get("job_name"),
-        "resume": train_cfg.get("resume", False),
-        "seed": train_cfg.get("seed", 1000),
-        "use_policy_training_preset": train_cfg.get("use_policy_training_preset", True),
+    aggregated_repo_id, aggregated_root = ensure_aggregated_dataset_ready(
+        DAggerDatasetConfig(**dagger_dataset_cfg)
+    )
+
+    offline_train_cfg = dict(train_cfg)
+    offline_train_cfg["policy"] = policy_cfg
+    offline_train_cfg["dataset"] = {
+        "repo_id": aggregated_repo_id,
+        "root": str(aggregated_root),
     }
+    offline_train_cfg["steps"] = (
+        int(dagger_training_cfg["rounds"]) * int(dagger_training_cfg["steps_per_round"])
+    )
+    offline_train_cfg["batch_size"] = dagger_training_cfg["batch_size"]
+    offline_train_cfg["num_workers"] = dagger_training_cfg["num_workers"]
+    offline_train_cfg["log_freq"] = dagger_training_cfg["log_freq"]
+    offline_train_cfg["save_checkpoint"] = dagger_training_cfg["save_checkpoint"]
 
-    # Optional manual optimizer/scheduler passthrough when not using presets.
-    if "optimizer" in train_cfg:
-        dagger_cfg_dict["optimizer"] = train_cfg["optimizer"]
-    if "scheduler" in train_cfg:
-        dagger_cfg_dict["scheduler"] = train_cfg["scheduler"]
+    train_cfg_obj = TrainPipelineConfig(offline_train_cfg)
+    run_train(train_cfg_obj)
 
-    with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
-        yaml.safe_dump(dagger_cfg_dict, f, allow_unicode=True, sort_keys=False)
-        temp_cfg_path = f.name
-
-    try:
-        dagger_cfg = draccus.parse(DAggerPipelineConfig, config_path=temp_cfg_path, args=[])
-    finally:
-        os.unlink(temp_cfg_path)
-
-    train_dagger(dagger_cfg)
 
 class TrainPipelineConfig(HubMixin):
     def __init__(self, cfg: Dict[str, Any]):
@@ -188,12 +180,13 @@ class TrainPipelineConfig(HubMixin):
                 device = policy["device"],
                 repo_id = policy["repo_id"],
                 push_to_hub = policy["push_to_hub"],
+                pretrained_path = policy.get("pretrained_path"),
                 temporal_ensemble_coeff = temporal_ensemble_coeff,
                 chunk_size = policy.get("chunk_size", 100),
                 n_action_steps = policy.get("n_action_steps", 1),
             )
         elif policy_type == "act_dagger":
-            # NOTE: `act_dagger` is dispatched in main() to train_dagger.
+            # NOTE: `act_dagger` is dispatched in main() to offline DAgger training.
             # This branch keeps compatibility for places that still instantiate TrainPipelineConfig.
             from lerobot.policies import ACTConfig
             temporal_ensemble_coeff = normalize_temporal_ensemble_coeff(
@@ -203,6 +196,7 @@ class TrainPipelineConfig(HubMixin):
                 device = policy["device"],
                 repo_id = policy["repo_id"],
                 push_to_hub = policy["push_to_hub"],
+                pretrained_path = policy.get("pretrained_path"),
                 temporal_ensemble_coeff = temporal_ensemble_coeff,
                 chunk_size = policy.get("chunk_size", 100),
                 n_action_steps = policy.get("n_action_steps", 1),
