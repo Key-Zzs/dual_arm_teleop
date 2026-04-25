@@ -80,6 +80,8 @@ class OculusDualArmRobot(Robot):
         
         # Reset request
         self._reset_requested = False
+        self._left_grip_pressed = False
+        self._right_grip_pressed = False
 
     def _ema_smooth(self, current: np.ndarray, prev: Optional[np.ndarray]) -> np.ndarray:
         """Apply EMA smoothing to a 6D delta vector."""
@@ -172,8 +174,10 @@ class OculusDualArmRobot(Robot):
         lg_pressed = buttons.get('LG', False)
         rg_pressed = buttons.get('RG', False)
         a_pressed = buttons.get('A', False)
+        self._left_grip_pressed = bool(lg_pressed)
+        self._right_grip_pressed = bool(rg_pressed)
         
-        self._reset_requested = a_pressed
+        self._reset_requested = bool(a_pressed)
         
         dof_per_arm = 7 if self._use_gripper else 6
         action = np.zeros(dof_per_arm * 2)
@@ -238,7 +242,7 @@ class OculusDualArmRobot(Robot):
             right_gripper = 1.0 - rt_value  # Invert: trigger pressed = closed (0.0)
             self._right_last_gripper_position = right_gripper
             action[13] = right_gripper
-        
+
         return action
 
     def is_reset_requested(self) -> bool:
@@ -283,11 +287,18 @@ class OculusDualArmRobot(Robot):
             obs_dict["right_gripper_cmd"] = right_gripper
             obs_dict["left_gripper_cmd_bin"] = left_gripper
             obs_dict["right_gripper_cmd_bin"] = right_gripper
+
         else:
             obs_dict["left_gripper_cmd"] = None
             obs_dict["right_gripper_cmd"] = None
             obs_dict["left_gripper_cmd_bin"] = None
             obs_dict["right_gripper_cmd_bin"] = None
+
+        obs_dict["left_grip_pressed"] = bool(self._left_grip_pressed)
+        obs_dict["right_grip_pressed"] = bool(self._right_grip_pressed)
+        obs_dict["is_expert_override"] = bool(
+            self._left_grip_pressed or self._right_grip_pressed
+        )
         
         # Reset request flag
         obs_dict["reset_requested"] = self._reset_requested

@@ -41,6 +41,9 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+RUN_MIX_MOVEMENT_EPS = 1e-4
+RUN_MIX_CHANGE_EPS = 5e-3
+
 
 class RecordConfig:
     """Configuration class for recording sessions."""
@@ -235,21 +238,27 @@ def handle_incomplete_dataset(dataset_path):
 
 def _resolve_record_dataset_root(dataset_name: str, run_mode: str) -> Path:
     base = Path(HF_LEROBOT_HOME) / dataset_name
-    if run_mode == "run_mix":
-        return base / "dagger_data"
     return base
 
 
 def _is_expert_override_active(
     teleop_raw_action: dict[str, Any],
     last_teleop_raw_action: dict[str, Any] | None,
-    movement_eps: float = 1e-4,
-    change_eps: float = 5e-3,
-) -> bool:
+    movement_eps: float = RUN_MIX_MOVEMENT_EPS,
+    change_eps: float = RUN_MIX_CHANGE_EPS,
+) -> tuple[bool, str]:
     """Detect if teleop currently provides an active override signal."""
 
     if bool(teleop_raw_action.get("reset_requested", False)):
-        return True
+        return True, "reset_requested"
+
+    # Explicit hand-over control request via Oculus grip buttons.
+    if bool(teleop_raw_action.get("left_grip_pressed", False)):
+        return True, "left_grip_pressed"
+    if bool(teleop_raw_action.get("right_grip_pressed", False)):
+        return True, "right_grip_pressed"
+    if bool(teleop_raw_action.get("is_expert_override", False)):
+        return True, "is_expert_override"
 
     # Detect non-trivial instantaneous motion signal.
     for key, value in teleop_raw_action.items():
@@ -263,7 +272,7 @@ def _is_expert_override_active(
         lower_key = key.lower()
         if "delta" in lower_key or "pose" in lower_key:
             if abs(num) > movement_eps:
-                return True
+                return True, f"{key} motion={num:.4f}"
 
     # Detect any action channel change relative to previous frame (e.g. gripper trigger changes).
     if last_teleop_raw_action is not None:
@@ -276,9 +285,9 @@ def _is_expert_override_active(
             except (TypeError, ValueError):
                 continue
             if abs(current - previous) > change_eps:
-                return True
+                return True, f"{key} change={current - previous:.4f}"
 
-    return False
+    return False, "no_override_signal"
 
 
 def run_mix_record_loop(
@@ -309,6 +318,7 @@ def run_mix_record_loop(
     policy_exec_steps = 0
     saved_expert_steps = 0
 
+    last_action_source = "policy"
     while timestamp_s < control_time_s:
         loop_start_t = time.perf_counter()
 
@@ -340,13 +350,38 @@ def run_mix_record_loop(
 
         # (3) Expert override if teleop input is detected.
         teleop_raw_action = teleop.get_action()
-        if _is_expert_override_active(teleop_raw_action, last_teleop_raw_action):
+        is_expert_override, override_reason = _is_expert_override_active(
+            teleop_raw_action, last_teleop_raw_action
+        )
+        if is_expert_override:
             expert_action = teleop_action_processor((teleop_raw_action, raw_obs))
             exec_action = expert_action
             action_source = "expert"
             is_expert = True
             # Flush ACT chunk cache on expert override to avoid stale queued actions.
             policy.reset()
+            if last_action_source != "expert":
+                logging.info(
+                    "[run_mix] source->expert (teleop override). reason=%s",
+                    override_reason,
+                )
+        elif last_action_source == "expert":
+            logging.info(
+                "[run_mix] source->policy (no expert override detected). last_reason=%s",
+                override_reason,
+            )
+
+        last_action_source = action_source
+
+        logging.debug(
+            "[run_mix] action_source=%s reason=%s"
+            " left_grip=%s right_grip=%s reset=%s",
+            action_source,
+            override_reason,
+            teleop_raw_action.get("left_grip_pressed", False),
+            teleop_raw_action.get("right_grip_pressed", False),
+            teleop_raw_action.get("reset_requested", False),
+        )
 
         last_teleop_raw_action = teleop_raw_action
 
@@ -462,6 +497,37 @@ def run_record(record_cfg: RecordConfig):
             # Extend dataset schema for DAgger mixed collection metadata.
             dataset_features["action_source"] = {"dtype": "string", "shape": (1,), "names": None}
             dataset_features["is_expert"] = {"dtype": "bool", "shape": (1,), "names": None}
+
+        if record_cfg.run_mode == "run_mix":
+            logging.info("====== [RUN_MIX] Mix mode config ======")
+            logging.info(
+                "[run_mix] robot_type=%s control_mode=%s fps=%s episode_time=%s reset_time=%s",
+                record_cfg.robot_type,
+                record_cfg.control_mode,
+                record_cfg.fps,
+                record_cfg.episode_time_sec,
+                record_cfg.reset_time_sec,
+            )
+            logging.info(
+                "[run_mix] policy=%s policy_device=%s pretrained_path=%s",
+                type(record_cfg.policy).__name__,
+                record_cfg.policy.device,
+                record_cfg.policy.pretrained_path,
+            )
+            logging.info(
+                "[run_mix] teleop dual_arm=%s oculus_ip=%s left_scaler=%s left_signs=%s right_scaler=%s right_signs=%s",
+                record_cfg.dual_arm,
+                getattr(record_cfg, "oculus_ip", "n/a"),
+                getattr(record_cfg, "left_pose_scaler", None),
+                getattr(record_cfg, "left_channel_signs", None),
+                getattr(record_cfg, "right_pose_scaler", None),
+                getattr(record_cfg, "right_channel_signs", None),
+            )
+            logging.info(
+                "[run_mix] override detection: movement_eps=%.4f change_eps=%.4f",
+                RUN_MIX_MOVEMENT_EPS,
+                RUN_MIX_CHANGE_EPS,
+            )
 
         if record_cfg.resume:
             dataset = LeRobotDataset(

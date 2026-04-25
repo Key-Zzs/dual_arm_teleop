@@ -1,9 +1,9 @@
 train:
   dataset:
-    repo_id: "nero_task3_step1/2mL_empty_merged" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
+    repo_id: "nero_task3_step1/2mL_empty_merged_20260424_E75" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
   # 指向包含数据集 repo 的本地目录（要包含 repo_id 子目录），
   # 例如本地缓存路径下的 physbrain3/pick_and_place_merged
-    root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged"
+    root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_20260424_E75"
 
   env:
 
@@ -15,18 +15,18 @@ train:
     repo_id: "shenzhaolong/act_policy"
     push_to_hub: false  # 禁用模型推送
     # temporal_ensemble_coeff: null # 关闭时序加权，减少动作启动迟滞
-    chunk_size: 15
+    chunk_size: 30
     n_action_steps: 5
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_task3_step1_2mL_empty_20260422_v04/checkpoints/last"  # 从ACT模型开始DAgger训练
+    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty/[test_worked]act_20260424_E75/checkpoints/last/pretrained_model"  # 从ACT模型开始DAgger训练
 
-  output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_dagger_task3_step1_2mL_empty_20260423_v01" # 模型和日志的输出目录
-  job_name: "nero_act_dagger_task3_step1_2mL_empty_20260423_v01"
+  output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty/act_20260424_E75" # 模型和日志的输出目录
+  job_name: "2mL_empty_act_20260424_E75"
 
   resume: false
   seed: 1000
   # Number of workers for the dataloader.
   num_workers: 4
-  batch_size: 16
+  batch_size: 32
   steps: 10_000
   eval_freq: 20_00
   log_freq: 200

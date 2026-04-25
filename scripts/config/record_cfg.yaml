@@ -1,5 +1,5 @@
 record:
-  repo_id: &repo_id "nero_task3_step1/2mL_empty"
+  repo_id: &repo_id "nero_task3_step1/2mL_empty_dagger_E75"
   # Suggested format: <robot_task<num>_step<num>>/<description>, e.g. nero_task3_step1/2mL_empty
   # <description>: (https://github.com/wbcdcompetition/wbcd_tasks/tree/main/track-3-lab-experiments)
     ## step1
@@ -21,7 +21,7 @@ record:
   fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
   use_gripper: &use_gripper true  # whether to use gripper
-  run_mode: "run_policy" # "run_record" or "run_policy" or "run_mix"
+  run_mode: "run_mix" # "run_record" or "run_policy" or "run_mix"
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka
   robot_type: &robot_type "nero_dual_arm"
@@ -66,14 +66,14 @@ record:
     device: "cuda"  # 运行设备 (cuda, cpu)
     push_to_hub: False  # 禁用模型推送
     temporal_ensemble_coeff: null  # 关闭时序加权，降低启动迟滞
-    chunk_size: 15
+    chunk_size: 30
     n_action_steps: 5
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/nero_act_dagger_task3_step1_2mL_empty_20260423_v01/final"  # 预训练模型路径下要包括config.json
+    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty/[test_worked]act_20260424_E75/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
 
   task:
-    description: "Seat a 2 mL vial into the 2 mL empty rack" # task description
+    description: "pick up small vials and place them in the empty rack" # task description
     # description: "pick up the red cube with the right hand and transfer it to the right hand" # task description
-    num_episodes: 25 # number of episodes to record
+    num_episodes: 15 # number of episodes to record
     display: True # Whether to display the data during recording
     resume: false # whether to resume from an existing dataset
     resume_dataset: roboticiq/pick_all_yellow_cube_to_brown_basket_20260208_v01 # dataset to resume from if resume is True
@@ -87,9 +87,9 @@ record:
     left_wrist_cam_serial: "412622270929"   # left wrist camera serial number
     right_wrist_cam_serial: "412622270701"  # right wrist camera serial number
     head_cam_serial: "339322074423"         # head (overhead) camera serial number
-    left_wrist_cam_serial: "412622270929"   # left wrist camera serial number
-    right_wrist_cam_serial: "412622270701"  # right wrist camera serial number
-    head_cam_serial: "339322074423"         # head (overhead) camera serial number
+    # left_wrist_cam_serial: "412622270929"   # left wrist camera serial number
+    # right_wrist_cam_serial: "412622270701"  # right wrist camera serial number
+    # head_cam_serial: "339322074423"         # head (overhead) camera serial number
     width: 424 # 640 424
     height: 240 # 360 240
 
@@ -97,8 +97,8 @@ record:
     push_to_hub: False # whether to push the dataset to your huggingface repo after recording
 
 replay:
-  dataset_name: nero_task3_step1/2mL_empty_merged
-  episode_idx: 18 # episode index to replay
+  dataset_name: nero_task3_step1/2mL_empty_merged_20260424
+  episode_idx: 99 # episode index to replay
   robot_type: *robot_type  # robot type to use for replay
   robot:
     ip: *ip
@@ -106,5 +106,5 @@ replay:
   control_mode: *control_mode 
 
 visualize:
-  dataset_name: nero_task3_step1/2mL_empty_merged
-  episode_index: 18 # episode index to visualize
+  dataset_name: nero_task3_step1/2mL_empty_merged_20260424_E75
+  episode_index: 15 # episode index to visualize
