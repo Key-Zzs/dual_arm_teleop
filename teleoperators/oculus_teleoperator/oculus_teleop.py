@@ -141,6 +141,17 @@ class OculusTeleop(Teleoperator):
         
         # Reset request flag (for external use)
         action["reset_requested"] = obs.get("reset_requested", False)
+        for key in [
+            "left_grip_pressed",
+            "right_grip_pressed",
+            "is_expert_override",
+            "left_trigger_value",
+            "right_trigger_value",
+            "left_trigger_pressed",
+            "right_trigger_pressed",
+        ]:
+            if key in obs:
+                action[key] = obs[key]
         
         return action
     

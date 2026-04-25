@@ -43,6 +43,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 RUN_MIX_MOVEMENT_EPS = 1e-4
 RUN_MIX_CHANGE_EPS = 5e-3
+RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS = 0.08
 
 
 class RecordConfig:
@@ -290,6 +291,91 @@ def _is_expert_override_active(
     return False, "no_override_signal"
 
 
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clip_gripper_cmd(value: float) -> float:
+    return min(1.0, max(0.0, value))
+
+
+def _reset_gripper_soft_takeover(state: dict[str, dict[str, Any]]) -> None:
+    for arm_state in state.values():
+        arm_state["active"] = False
+        arm_state["hold"] = None
+        arm_state["waiting_logged"] = False
+
+
+def _current_gripper_cmd(
+    arm: str,
+    raw_obs: dict[str, Any],
+    last_exec_action: dict[str, Any] | None,
+    fallback_action: dict[str, Any],
+) -> float | None:
+    key = f"{arm}_gripper_cmd"
+    for source in (last_exec_action, raw_obs, fallback_action):
+        if source is None or key not in source:
+            continue
+        value = _float_or_none(source[key])
+        if value is not None:
+            return _clip_gripper_cmd(value)
+    return None
+
+
+def _apply_gripper_soft_takeover(
+    expert_action: dict[str, Any],
+    teleop_raw_action: dict[str, Any],
+    raw_obs: dict[str, Any],
+    last_exec_action: dict[str, Any] | None,
+    fallback_action: dict[str, Any],
+    state: dict[str, dict[str, Any]],
+) -> None:
+    """Hold grippers on hand-over until the trigger reaches the current gripper command."""
+    for arm in ("left", "right"):
+        key = f"{arm}_gripper_cmd"
+        if key not in expert_action:
+            continue
+
+        teleop_cmd = _float_or_none(expert_action[key])
+        if teleop_cmd is None:
+            continue
+        teleop_cmd = _clip_gripper_cmd(teleop_cmd)
+        expert_action[key] = teleop_cmd
+
+        arm_state = state[arm]
+        if arm_state["active"]:
+            continue
+
+        if arm_state["hold"] is None:
+            hold = _current_gripper_cmd(arm, raw_obs, last_exec_action, fallback_action)
+            arm_state["hold"] = teleop_cmd if hold is None else hold
+
+        hold = arm_state["hold"]
+        if abs(teleop_cmd - hold) <= RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS:
+            arm_state["active"] = True
+            if arm_state["waiting_logged"]:
+                logging.info(
+                    "[run_mix] %s gripper soft takeover acquired. hold=%.3f teleop=%.3f",
+                    arm,
+                    hold,
+                    teleop_cmd,
+                )
+            continue
+
+        expert_action[key] = hold
+        if not arm_state["waiting_logged"]:
+            logging.info(
+                "[run_mix] %s gripper soft takeover waiting. hold=%.3f teleop=%.3f",
+                arm,
+                hold,
+                teleop_cmd,
+            )
+            arm_state["waiting_logged"] = True
+
+
 def run_mix_record_loop(
     robot,
     teleop,
@@ -319,6 +405,11 @@ def run_mix_record_loop(
     saved_expert_steps = 0
 
     last_action_source = "policy"
+    last_exec_action: dict[str, Any] | None = None
+    gripper_soft_takeover = {
+        "left": {"active": False, "hold": None, "waiting_logged": False},
+        "right": {"active": False, "hold": None, "waiting_logged": False},
+    }
     while timestamp_s < control_time_s:
         loop_start_t = time.perf_counter()
 
@@ -354,7 +445,15 @@ def run_mix_record_loop(
             teleop_raw_action, last_teleop_raw_action
         )
         if is_expert_override:
-            expert_action = teleop_action_processor((teleop_raw_action, raw_obs))
+            expert_action = dict(teleop_action_processor((teleop_raw_action, raw_obs)))
+            _apply_gripper_soft_takeover(
+                expert_action=expert_action,
+                teleop_raw_action=teleop_raw_action,
+                raw_obs=raw_obs,
+                last_exec_action=last_exec_action,
+                fallback_action=policy_action_processed,
+                state=gripper_soft_takeover,
+            )
             exec_action = expert_action
             action_source = "expert"
             is_expert = True
@@ -370,6 +469,9 @@ def run_mix_record_loop(
                 "[run_mix] source->policy (no expert override detected). last_reason=%s",
                 override_reason,
             )
+            _reset_gripper_soft_takeover(gripper_soft_takeover)
+        else:
+            _reset_gripper_soft_takeover(gripper_soft_takeover)
 
         last_action_source = action_source
 
@@ -388,6 +490,7 @@ def run_mix_record_loop(
         # (4) Execute action.
         robot_action_to_send = robot_action_processor((exec_action, raw_obs))
         _ = robot.send_action(robot_action_to_send)
+        last_exec_action = dict(exec_action)
 
         if action_source == "expert":
             expert_exec_steps += 1
@@ -524,9 +627,10 @@ def run_record(record_cfg: RecordConfig):
                 getattr(record_cfg, "right_channel_signs", None),
             )
             logging.info(
-                "[run_mix] override detection: movement_eps=%.4f change_eps=%.4f",
+                "[run_mix] override detection: movement_eps=%.4f change_eps=%.4f gripper_soft_takeover_eps=%.4f",
                 RUN_MIX_MOVEMENT_EPS,
                 RUN_MIX_CHANGE_EPS,
+                RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS,
             )
 
         if record_cfg.resume:

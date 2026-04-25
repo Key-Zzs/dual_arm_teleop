@@ -82,6 +82,10 @@ class OculusDualArmRobot(Robot):
         self._reset_requested = False
         self._left_grip_pressed = False
         self._right_grip_pressed = False
+        self._left_trigger_value = 0.0
+        self._right_trigger_value = 0.0
+        self._left_trigger_pressed = False
+        self._right_trigger_pressed = False
 
     def _ema_smooth(self, current: np.ndarray, prev: Optional[np.ndarray]) -> np.ndarray:
         """Apply EMA smoothing to a 6D delta vector."""
@@ -229,6 +233,8 @@ class OculusDualArmRobot(Robot):
                 lt_value = left_trigger[0]
             else:
                 lt_value = 0.0
+            self._left_trigger_value = float(lt_value)
+            self._left_trigger_pressed = bool(buttons.get('LTr', False)) or self._left_trigger_value > 0.05
             left_gripper = 1.0 - lt_value  # Invert: trigger pressed = closed (0.0)
             self._left_last_gripper_position = left_gripper
             action[6] = left_gripper
@@ -239,6 +245,8 @@ class OculusDualArmRobot(Robot):
                 rt_value = right_trigger[0]
             else:
                 rt_value = 0.0
+            self._right_trigger_value = float(rt_value)
+            self._right_trigger_pressed = bool(buttons.get('RTr', False)) or self._right_trigger_value > 0.05
             right_gripper = 1.0 - rt_value  # Invert: trigger pressed = closed (0.0)
             self._right_last_gripper_position = right_gripper
             action[13] = right_gripper
@@ -299,6 +307,10 @@ class OculusDualArmRobot(Robot):
         obs_dict["is_expert_override"] = bool(
             self._left_grip_pressed or self._right_grip_pressed
         )
+        obs_dict["left_trigger_value"] = float(self._left_trigger_value)
+        obs_dict["right_trigger_value"] = float(self._right_trigger_value)
+        obs_dict["left_trigger_pressed"] = bool(self._left_trigger_pressed)
+        obs_dict["right_trigger_pressed"] = bool(self._right_trigger_pressed)
         
         # Reset request flag
         obs_dict["reset_requested"] = self._reset_requested

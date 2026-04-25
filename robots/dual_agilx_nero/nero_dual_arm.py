@@ -43,8 +43,8 @@ class NeroDualArm(Robot):
         
         # Gripper settings
         self._gripper_force = config.gripper_force
-        self._left_gripper_cmd = config.gripper_max_open
-        self._right_gripper_cmd = config.gripper_max_open
+        self._left_gripper_cmd = 1.0
+        self._right_gripper_cmd = 1.0
         # self._last_left_gripper_cmd = config.gripper_max_open
         # self._last_right_gripper_cmd = config.gripper_max_open
 
@@ -149,6 +149,8 @@ class NeroDualArm(Robot):
                 width=self.config.gripper_max_open,
                 force=self._gripper_force
                 )
+            self._left_gripper_cmd = 1.0
+            self._right_gripper_cmd = 1.0
             logger.info("[RIGHT GRIPPER] Initialized successfully")
             logger.info("===== [GRIPPER] Grippers initialized successfully =====\n")
         except Exception as e:
@@ -172,6 +174,8 @@ class NeroDualArm(Robot):
                 width=self.config.gripper_max_open,
                 force=self._gripper_force
             )
+            self._left_gripper_cmd = 1.0
+            self._right_gripper_cmd = 1.0
         
         logger.info("===== [ROBOT] Dual-arm system reset successfully =====\n")
     
