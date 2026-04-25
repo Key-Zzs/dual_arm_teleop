@@ -86,6 +86,8 @@ class OculusDualArmRobot(Robot):
         self._right_trigger_value = 0.0
         self._left_trigger_pressed = False
         self._right_trigger_pressed = False
+        self._left_gripper_release_requested = False
+        self._right_gripper_release_requested = False
 
     def _ema_smooth(self, current: np.ndarray, prev: Optional[np.ndarray]) -> np.ndarray:
         """Apply EMA smoothing to a 6D delta vector."""
@@ -180,6 +182,8 @@ class OculusDualArmRobot(Robot):
         a_pressed = buttons.get('A', False)
         self._left_grip_pressed = bool(lg_pressed)
         self._right_grip_pressed = bool(rg_pressed)
+        self._left_gripper_release_requested = bool(buttons.get('X', False))
+        self._right_gripper_release_requested = bool(buttons.get('B', False))
         
         self._reset_requested = bool(a_pressed)
         
@@ -311,6 +315,8 @@ class OculusDualArmRobot(Robot):
         obs_dict["right_trigger_value"] = float(self._right_trigger_value)
         obs_dict["left_trigger_pressed"] = bool(self._left_trigger_pressed)
         obs_dict["right_trigger_pressed"] = bool(self._right_trigger_pressed)
+        obs_dict["left_gripper_release_requested"] = bool(self._left_gripper_release_requested)
+        obs_dict["right_gripper_release_requested"] = bool(self._right_gripper_release_requested)
         
         # Reset request flag
         obs_dict["reset_requested"] = self._reset_requested

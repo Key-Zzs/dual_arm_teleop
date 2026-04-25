@@ -43,7 +43,7 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 RUN_MIX_MOVEMENT_EPS = 1e-4
 RUN_MIX_CHANGE_EPS = 5e-3
-RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS = 0.08
+RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS = 0.1
 
 
 class RecordConfig:
@@ -242,18 +242,15 @@ def _resolve_record_dataset_root(dataset_name: str, run_mode: str) -> Path:
     return base
 
 
-def _is_expert_override_active(
+def _is_arm_override_active(
     teleop_raw_action: dict[str, Any],
-    last_teleop_raw_action: dict[str, Any] | None,
     movement_eps: float = RUN_MIX_MOVEMENT_EPS,
-    change_eps: float = RUN_MIX_CHANGE_EPS,
 ) -> tuple[bool, str]:
-    """Detect if teleop currently provides an active override signal."""
+    """Detect if teleop currently provides an arm/body override signal."""
 
     if bool(teleop_raw_action.get("reset_requested", False)):
         return True, "reset_requested"
 
-    # Explicit hand-over control request via Oculus grip buttons.
     if bool(teleop_raw_action.get("left_grip_pressed", False)):
         return True, "left_grip_pressed"
     if bool(teleop_raw_action.get("right_grip_pressed", False)):
@@ -261,7 +258,6 @@ def _is_expert_override_active(
     if bool(teleop_raw_action.get("is_expert_override", False)):
         return True, "is_expert_override"
 
-    # Detect non-trivial instantaneous motion signal.
     for key, value in teleop_raw_action.items():
         if key == "reset_requested":
             continue
@@ -275,20 +271,7 @@ def _is_expert_override_active(
             if abs(num) > movement_eps:
                 return True, f"{key} motion={num:.4f}"
 
-    # Detect any action channel change relative to previous frame (e.g. gripper trigger changes).
-    if last_teleop_raw_action is not None:
-        for key, value in teleop_raw_action.items():
-            if key == "reset_requested":
-                continue
-            try:
-                current = float(value)
-                previous = float(last_teleop_raw_action.get(key, current))
-            except (TypeError, ValueError):
-                continue
-            if abs(current - previous) > change_eps:
-                return True, f"{key} change={current - previous:.4f}"
-
-    return False, "no_override_signal"
+    return False, "no_arm_override_signal"
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -306,6 +289,8 @@ def _reset_gripper_soft_takeover(state: dict[str, dict[str, Any]]) -> None:
     for arm_state in state.values():
         arm_state["active"] = False
         arm_state["hold"] = None
+        arm_state["manual"] = False
+        arm_state["ignore_until_released"] = False
         arm_state["waiting_logged"] = False
 
 
@@ -325,36 +310,123 @@ def _current_gripper_cmd(
     return None
 
 
-def _apply_gripper_soft_takeover(
-    expert_action: dict[str, Any],
+def _gripper_request_reason(
+    arm: str,
     teleop_raw_action: dict[str, Any],
+    last_teleop_raw_action: dict[str, Any] | None,
+    state: dict[str, dict[str, Any]],
+    change_eps: float = RUN_MIX_CHANGE_EPS,
+) -> str | None:
+    arm_state = state[arm]
+    if bool(teleop_raw_action.get(f"{arm}_gripper_release_requested", False)):
+        should_log_release = (
+            arm_state["active"]
+            or arm_state["manual"]
+            or not arm_state.get("ignore_until_released", False)
+        )
+        arm_state["active"] = False
+        arm_state["hold"] = None
+        arm_state["manual"] = False
+        arm_state["ignore_until_released"] = True
+        arm_state["waiting_logged"] = False
+        if should_log_release:
+            logging.info(
+                "[run_mix] %s gripper released to policy. waiting for trigger release before reacquire.",
+                arm,
+            )
+        return None
+
+    if arm_state.get("ignore_until_released", False):
+        if bool(teleop_raw_action.get(f"{arm}_trigger_pressed", False)):
+            return None
+        arm_state["ignore_until_released"] = False
+
+    if bool(teleop_raw_action.get(f"{arm}_trigger_pressed", False)):
+        return f"{arm}_trigger_pressed"
+
+    key = f"{arm}_gripper_cmd"
+    if last_teleop_raw_action is None or key not in teleop_raw_action:
+        return None
+
+    current = _float_or_none(teleop_raw_action.get(key))
+    previous = _float_or_none(last_teleop_raw_action.get(key))
+    if current is None or previous is None:
+        return None
+
+    delta = current - previous
+    if abs(delta) > change_eps:
+        return f"{arm}_gripper_trigger_changed"
+    return None
+
+
+def _copy_arm_channels(target_action: dict[str, Any], expert_action: dict[str, Any]) -> None:
+    for arm in ("left", "right"):
+        for axis in ("x", "y", "z", "rx", "ry", "rz"):
+            key = f"{arm}_delta_ee_pose.{axis}"
+            if key in expert_action:
+                target_action[key] = expert_action[key]
+
+    if expert_action.get("reset_requested", False):
+        target_action["reset_requested"] = True
+
+
+def _apply_gripper_channel_control(
+    arm: str,
+    target_action: dict[str, Any],
+    expert_action: dict[str, Any],
     raw_obs: dict[str, Any],
     last_exec_action: dict[str, Any] | None,
+    last_teleop_raw_action: dict[str, Any] | None,
     fallback_action: dict[str, Any],
     state: dict[str, dict[str, Any]],
-) -> None:
-    """Hold grippers on hand-over until the trigger reaches the current gripper command."""
-    for arm in ("left", "right"):
-        key = f"{arm}_gripper_cmd"
-        if key not in expert_action:
-            continue
+    gripper_request_reason: str | None,
+    hold_without_manual: bool,
+) -> tuple[bool, str | None]:
+    """Apply per-gripper teleop control without letting policy fight that gripper."""
+    key = f"{arm}_gripper_cmd"
+    if key not in target_action or key not in expert_action:
+        return False, None
 
-        teleop_cmd = _float_or_none(expert_action[key])
-        if teleop_cmd is None:
-            continue
-        teleop_cmd = _clip_gripper_cmd(teleop_cmd)
-        expert_action[key] = teleop_cmd
+    arm_state = state[arm]
+    if gripper_request_reason is not None:
+        arm_state["manual"] = True
 
-        arm_state = state[arm]
-        if arm_state["active"]:
-            continue
-
-        if arm_state["hold"] is None:
+    if not arm_state["manual"]:
+        if hold_without_manual:
             hold = _current_gripper_cmd(arm, raw_obs, last_exec_action, fallback_action)
-            arm_state["hold"] = teleop_cmd if hold is None else hold
+            if hold is not None:
+                target_action[key] = hold
+            return False, None
 
-        hold = arm_state["hold"]
-        if abs(teleop_cmd - hold) <= RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS:
+        arm_state["hold"] = None
+        arm_state["active"] = False
+        arm_state["waiting_logged"] = False
+        return False, None
+
+    teleop_cmd = _float_or_none(expert_action[key])
+    if teleop_cmd is None:
+        return False, None
+    teleop_cmd = _clip_gripper_cmd(teleop_cmd)
+
+    if arm_state["hold"] is None:
+        hold = _current_gripper_cmd(arm, raw_obs, last_exec_action, fallback_action)
+        arm_state["hold"] = teleop_cmd if hold is None else hold
+
+    hold = arm_state["hold"]
+    if not arm_state["active"]:
+        previous_teleop_cmd = None
+        if last_teleop_raw_action is not None:
+            previous_teleop_cmd = _float_or_none(last_teleop_raw_action.get(key))
+            if previous_teleop_cmd is not None:
+                previous_teleop_cmd = _clip_gripper_cmd(previous_teleop_cmd)
+
+        takeover_matched = abs(teleop_cmd - hold) <= RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS
+        if previous_teleop_cmd is not None:
+            takeover_matched = takeover_matched or (
+                abs(previous_teleop_cmd - hold) <= RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS
+            )
+
+        if takeover_matched:
             arm_state["active"] = True
             if arm_state["waiting_logged"]:
                 logging.info(
@@ -363,17 +435,20 @@ def _apply_gripper_soft_takeover(
                     hold,
                     teleop_cmd,
                 )
-            continue
+        else:
+            target_action[key] = hold
+            if not arm_state["waiting_logged"]:
+                logging.info(
+                    "[run_mix] %s gripper soft takeover waiting. hold=%.3f teleop=%.3f",
+                    arm,
+                    hold,
+                    teleop_cmd,
+                )
+                arm_state["waiting_logged"] = True
+            return True, f"{arm}_gripper_waiting"
 
-        expert_action[key] = hold
-        if not arm_state["waiting_logged"]:
-            logging.info(
-                "[run_mix] %s gripper soft takeover waiting. hold=%.3f teleop=%.3f",
-                arm,
-                hold,
-                teleop_cmd,
-            )
-            arm_state["waiting_logged"] = True
+    target_action[key] = teleop_cmd
+    return True, gripper_request_reason or f"{arm}_gripper_active"
 
 
 def run_mix_record_loop(
@@ -407,8 +482,20 @@ def run_mix_record_loop(
     last_action_source = "policy"
     last_exec_action: dict[str, Any] | None = None
     gripper_soft_takeover = {
-        "left": {"active": False, "hold": None, "waiting_logged": False},
-        "right": {"active": False, "hold": None, "waiting_logged": False},
+        "left": {
+            "active": False,
+            "hold": None,
+            "manual": False,
+            "ignore_until_released": False,
+            "waiting_logged": False,
+        },
+        "right": {
+            "active": False,
+            "hold": None,
+            "manual": False,
+            "ignore_until_released": False,
+            "waiting_logged": False,
+        },
     }
     while timestamp_s < control_time_s:
         loop_start_t = time.perf_counter()
@@ -434,44 +521,74 @@ def run_mix_record_loop(
         )
         policy_action_processed = make_robot_action(policy_action, dataset.features)
 
-        # (2) Default execute policy action.
-        exec_action = policy_action_processed
+        # (2) Default execute policy action. Teleop may override selected channels below.
+        exec_action = dict(policy_action_processed)
         action_source = "policy"
         is_expert = False
 
-        # (3) Expert override if teleop input is detected.
+        # (3) Expert override is split by channel: arm/body and grippers are independent.
         teleop_raw_action = teleop.get_action()
-        is_expert_override, override_reason = _is_expert_override_active(
-            teleop_raw_action, last_teleop_raw_action
+        is_arm_override, arm_override_reason = _is_arm_override_active(teleop_raw_action)
+        gripper_request_reasons = {
+            arm: _gripper_request_reason(
+                arm,
+                teleop_raw_action,
+                last_teleop_raw_action,
+                gripper_soft_takeover,
+            )
+            for arm in ("left", "right")
+        }
+        needs_teleop_action = (
+            is_arm_override
+            or any(reason is not None for reason in gripper_request_reasons.values())
+            or any(arm_state["manual"] for arm_state in gripper_soft_takeover.values())
         )
-        if is_expert_override:
+
+        override_reasons: list[str] = []
+        if needs_teleop_action:
             expert_action = dict(teleop_action_processor((teleop_raw_action, raw_obs)))
-            _apply_gripper_soft_takeover(
+        else:
+            expert_action = {}
+
+        if is_arm_override:
+            _copy_arm_channels(exec_action, expert_action)
+            override_reasons.append(arm_override_reason)
+            # Flush ACT chunk cache only for arm/body interventions. Gripper-only
+            # control should not disturb policy arm motion.
+            policy.reset()
+
+        for arm, gripper_reason in gripper_request_reasons.items():
+            gripper_overridden, gripper_override_reason = _apply_gripper_channel_control(
+                arm=arm,
+                target_action=exec_action,
                 expert_action=expert_action,
-                teleop_raw_action=teleop_raw_action,
                 raw_obs=raw_obs,
                 last_exec_action=last_exec_action,
+                last_teleop_raw_action=last_teleop_raw_action,
                 fallback_action=policy_action_processed,
                 state=gripper_soft_takeover,
+                gripper_request_reason=gripper_reason,
+                hold_without_manual=is_arm_override,
             )
-            exec_action = expert_action
+            if gripper_overridden and gripper_override_reason is not None:
+                override_reasons.append(gripper_override_reason)
+
+        if override_reasons:
             action_source = "expert"
             is_expert = True
-            # Flush ACT chunk cache on expert override to avoid stale queued actions.
-            policy.reset()
             if last_action_source != "expert":
                 logging.info(
                     "[run_mix] source->expert (teleop override). reason=%s",
-                    override_reason,
+                    ", ".join(override_reasons),
                 )
         elif last_action_source == "expert":
             logging.info(
                 "[run_mix] source->policy (no expert override detected). last_reason=%s",
-                override_reason,
+                "no_channel_override_signal",
             )
             _reset_gripper_soft_takeover(gripper_soft_takeover)
         else:
-            _reset_gripper_soft_takeover(gripper_soft_takeover)
+            pass
 
         last_action_source = action_source
 
@@ -479,7 +596,7 @@ def run_mix_record_loop(
             "[run_mix] action_source=%s reason=%s"
             " left_grip=%s right_grip=%s reset=%s",
             action_source,
-            override_reason,
+            ",".join(override_reasons) if override_reasons else "no_channel_override_signal",
             teleop_raw_action.get("left_grip_pressed", False),
             teleop_raw_action.get("right_grip_pressed", False),
             teleop_raw_action.get("reset_requested", False),

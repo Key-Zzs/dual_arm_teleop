@@ -56,8 +56,8 @@ train:
   dagger:
     dataset:
       # 若 aggregated_root 下存在 dagger_data/，会优先从 dagger_data 读取
-      aggregated_repo_id: "nero_task3_step1/2mL_empty_dagger_E75"
-      aggregated_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_dagger_E75"
+      aggregated_repo_id: "nero_task3_step1/2mL_empty_dagger_E75_20260425_v01"
+      aggregated_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_dagger_E75_20260425_v01"
       # 若 aggregated_root 不存在，回退到 seed 数据集
       seed_repo_id: "nero_task3_step1/2mL_empty_merged_20260424_E75"
       seed_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_20260424_E75"
