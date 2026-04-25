@@ -68,8 +68,8 @@ record:
     temporal_ensemble_coeff: null  # 关闭时序加权，降低启动迟滞
     chunk_size: 30
     n_action_steps: 5
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty/\
-                      [test_worked]act_20260424_E75/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
+    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
+                      /[test_worked]act_20260424_E75/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
 
   task:
     description: "pick up small vials and place them in the empty rack" # task description

@@ -1,9 +1,9 @@
 train:
   dataset:
-    repo_id: "nero_task3_step1/2mL_empty_merged_20260424_E75" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
+    repo_id: "nero_task3_step1/2mL_empty_dagger_merged_20260425" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
   # 指向包含数据集 repo 的本地目录（要包含 repo_id 子目录），
   # 例如本地缓存路径下的 physbrain3/pick_and_place_merged
-    root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_20260424_E75"
+    root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_dagger_merged_20260425"
 
   env:
 
@@ -17,10 +17,12 @@ train:
     # temporal_ensemble_coeff: null # 关闭时序加权，减少动作启动迟滞
     chunk_size: 30
     n_action_steps: 5
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty/[test_worked]act_20260424_E75/checkpoints/last/pretrained_model"  # 从ACT模型开始DAgger训练
+    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
+                      /task3_step1/2mL_empty/[worked]act_20260424_E75/checkpoints/010000/pretrained_model"  # 从ACT模型开始DAgger训练
 
-  output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty/act_dagger_20260425_E75_V01" # 模型和日志的输出目录
-  job_name: "2mL_empty_act_dagger_20260425_E75_V01"
+  output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
+              /task3_step1/2mL_empty/act_dagger_20260425_E75_merged_V02" # 模型和日志的输出目录
+  job_name: "2mL_empty_act_dagger_20260425_E75_merged_V02"
 
   resume: false
   seed: 1000
@@ -56,8 +58,8 @@ train:
   dagger:
     dataset:
       # 若 aggregated_root 下存在 dagger_data/，会优先从 dagger_data 读取
-      aggregated_repo_id: "nero_task3_step1/2mL_empty_dagger_E75_20260425_v02"
-      aggregated_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_dagger_E75_20260425_v02"
+      aggregated_repo_id: "nero_task3_step1/2mL_empty_dagger_merged_20260425"
+      aggregated_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_dagger_merged_20260425"
       # 若 aggregated_root 不存在，回退到 seed 数据集
       seed_repo_id: "nero_task3_step1/2mL_empty_merged_20260424_E75"
       seed_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_20260424_E75"
@@ -66,7 +68,7 @@ train:
 
     training:
       rounds: 1
-      steps_per_round: 4000
+      steps_per_round: 2000
       batch_size: 32
       num_workers: 4
       log_freq: 100

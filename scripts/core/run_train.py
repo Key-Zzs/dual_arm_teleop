@@ -60,6 +60,33 @@ from lerobot.utils.hub import HubMixin
 TRAIN_CONFIG_NAME = "train_config.json"
 
 
+def _validate_local_pretrained_path(pretrained_path: str | Path | None) -> None:
+    """Fail early when an absolute local checkpoint path is misspelled."""
+    if not pretrained_path:
+        return
+
+    raw_path = str(pretrained_path)
+    path = Path(raw_path).expanduser()
+    is_local_reference = path.is_absolute() or raw_path.startswith(("~", ".")) or path.exists()
+    if not is_local_reference:
+        return
+
+    if not path.is_dir():
+        raise FileNotFoundError(
+            "Local pretrained_path does not exist or is not a directory: "
+            f"{path}\n"
+            "Expected a checkpoint directory containing config.json and model.safetensors. "
+            "For example: .../checkpoints/010000/pretrained_model"
+        )
+
+    missing = [name for name in ("config.json", "model.safetensors") if not (path / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Local pretrained_path is missing required file(s): {missing}\n"
+            f"Path: {path}"
+        )
+
+
 def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
     """
     Train ACT offline on an already aggregated DAgger dataset.
@@ -581,6 +608,7 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     if is_main_process:
         logging.info("Creating policy")
+    _validate_local_pretrained_path(cfg.policy.pretrained_path)
     policy = make_policy(
         cfg=cfg.policy,
         ds_meta=dataset.meta,
