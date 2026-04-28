@@ -1,5 +1,5 @@
 record:
-  repo_id: &repo_id "nero_task3_step1/2mL_empty_dagger_E75"
+  repo_id: &repo_id "nero_task3_step1/2mL_empty"
   # Suggested format: <robot_task<num>_step<num>>/<description>, e.g. nero_task3_step1/2mL_empty
   # <description>: (https://github.com/wbcdcompetition/wbcd_tasks/tree/main/track-3-lab-experiments)
     ## step1
@@ -21,7 +21,7 @@ record:
   fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
   use_gripper: &use_gripper true  # whether to use gripper
-  run_mode: "run_mix" # "run_record" or "run_policy" or "run_mix"
+  run_mode: "run_policy" # "run_record" or "run_policy" or "run_mix"
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka
   robot_type: &robot_type "nero_dual_arm"
@@ -65,11 +65,13 @@ record:
     type: "act"
     device: "cuda"  # 运行设备 (cuda, cpu)
     push_to_hub: False  # 禁用模型推送
-    temporal_ensemble_coeff: null  # 关闭时序加权，降低启动迟滞
+    temporal_ensemble_coeff: 0.01  # 关闭时序加权，降低启动迟滞
     chunk_size: 30
-    n_action_steps: 5
+    n_action_steps: 1
     pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
-                      /[test_worked]act_20260424_E75/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
+                      /[worked]act_20260427_merged_v2/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
+    # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
+    #                   /fused_act_chunk30_fuser_gst_020000_pretrained_model"
 
   task:
     description: "pick up small vials and place them in the empty rack" # task description

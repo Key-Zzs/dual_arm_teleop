@@ -39,7 +39,7 @@ from dataclasses import field
 
 import logging
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 
 RUN_MIX_MOVEMENT_EPS = 1e-4
 RUN_MIX_CHANGE_EPS = 5e-3
