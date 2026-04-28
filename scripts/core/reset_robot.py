@@ -8,7 +8,7 @@ from robots import (
 )
 import logging
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 
 def main():
     parent_path = Path(__file__).resolve().parent

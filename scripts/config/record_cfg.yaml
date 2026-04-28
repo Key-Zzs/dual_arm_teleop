@@ -21,7 +21,7 @@ record:
   fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
   use_gripper: &use_gripper true  # whether to use gripper
-  run_mode: "run_record" # "run_record" or "run_policy" or "run_mix"
+  run_mode: "run_policy" # "run_record" or "run_policy" or "run_mix"
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka
   robot_type: &robot_type "nero_dual_arm"
@@ -65,14 +65,19 @@ record:
     type: "act"
     device: "cuda"  # 运行设备 (cuda, cpu)
     push_to_hub: False  # 禁用模型推送
-    temporal_ensemble_coeff: null  # 关闭时序加权，降低启动迟滞
+    temporal_ensemble_coeff: 0.01  # 关闭时序加权；旧 step-wise checkpoint 保持与训练配置一致
     chunk_size: 30
-    n_action_steps: 5
+    n_action_steps: 1
     # step_wise: 旧行为，servo_p_OL(delta=True) 执行增量；
     # chunk_wise: policy 输出相对 chunk 起点的 delta，客户端先解码为绝对目标，再 servo_p_OL(delta=False)。
     action_delta_alignment: "step_wise"
+    # auto: nero_dual_arm chunk-wise 推理时只对 chunk_ref_pose 使用 legacy x/y/z/rz/ry/rx 轴序修正；
+    # 其他机器人按 feature_names 的 x/y/z/rx/ry/rz 读取。
+    # chunkwise_ref_state_pose_axis_order: "auto"
+    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
+                      /[worked]act_20260427_merged_v2/checkpoints/last/pretrained_model"  # 从ACT模型开始DAgger训练，预训练模型路径下要包括config.json
     # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
-    #                   /[worked]act_20260427_merged_v2/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
+    #                   /act_20260427_E100_CW/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
 
   task:
     description: "pick up small vials and place them in the empty rack" # task description

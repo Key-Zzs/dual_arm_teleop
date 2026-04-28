@@ -49,6 +49,8 @@ RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS = 0.1
 
 def _annotate_policy_action_delta_execution(action: dict[str, Any], policy) -> None:
     action_delta_alignment = getattr(policy.config, "action_delta_alignment", "step_wise")
+    if action_delta_alignment == "step_wise":
+        return
     action["action_delta_alignment"] = action_delta_alignment
     action["servo_delta"] = servo_delta_flag_for_action_delta_alignment(action_delta_alignment)
 
@@ -193,6 +195,9 @@ class RecordConfig:
                 chunk_size=policy.get("chunk_size", 100),
                 n_action_steps=policy.get("n_action_steps", 100),
                 action_delta_alignment=policy.get("action_delta_alignment", "step_wise"),
+                chunkwise_ref_state_pose_axis_order=policy.get(
+                    "chunkwise_ref_state_pose_axis_order", "auto"
+                ),
             )
         elif policy_type == "diffusion":
             from lerobot.policies import DiffusionConfig
@@ -569,8 +574,9 @@ def run_mix_record_loop(
 
         if is_arm_override:
             _copy_arm_channels(exec_action, expert_action)
-            exec_action["action_delta_alignment"] = "step_wise"
-            exec_action["servo_delta"] = True
+            if exec_action.get("servo_delta") is False:
+                exec_action["action_delta_alignment"] = "step_wise"
+                exec_action["servo_delta"] = True
             override_reasons.append(arm_override_reason)
             # Flush ACT chunk cache only for arm/body interventions. Gripper-only
             # control should not disturb policy arm motion.

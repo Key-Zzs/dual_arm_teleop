@@ -40,6 +40,12 @@ class NeroDualArm(Robot):
         self._robot: Optional[NeroDualArmClient] = None
         self._prev_observation = None
         self._num_joints_per_arm = 7
+        self._ee_pose_observation_axis_order = tuple(config.ee_pose_observation_axis_order)
+        if self._ee_pose_observation_axis_order != ("x", "y", "z", "rz", "ry", "rx"):
+            raise ValueError(
+                "NeroDualArmConfig.ee_pose_observation_axis_order must currently be "
+                "['x', 'y', 'z', 'rz', 'ry', 'rx'] for compatibility with existing datasets."
+            )
         
         # Gripper settings
         self._gripper_force = config.gripper_force
@@ -335,6 +341,26 @@ class NeroDualArm(Robot):
         right_delta = np.array([
             action[f"right_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ])
+        has_delta_metadata = "servo_delta" in action or "action_delta_alignment" in action
+        if not has_delta_metadata:
+            if not self.config.debug:
+                try:
+                    if np.linalg.norm(left_delta) >= 0.001:
+                        # t_servo_start = time.perf_counter()
+                        self._robot.servo_p_OL("left_robot", left_delta, delta=True)
+                        # t_servo_end = time.perf_counter()
+                        # logger.info(f"[TIMING] left servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
+
+                    if np.linalg.norm(right_delta) >= 0.001:
+                        # t_servo_start = time.perf_counter()
+                        self._robot.servo_p_OL("right_robot", right_delta, delta=True)
+                        # t_servo_end = time.perf_counter()
+                        # logger.info(f"[TIMING] right servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
+
+                except Exception as e:
+                    logger.warning(f"[DUAL ARM] servo_p_OL failed: {e}")
+            return
+
         servo_delta = bool(action.get("servo_delta", True))
         action_delta_alignment = action.get(
             "action_delta_alignment",
@@ -403,14 +429,18 @@ class NeroDualArm(Robot):
         for i in range(len(left_joint_pos)):
             obs_dict[f"left_joint_{i+1}.pos"] = float(left_joint_pos[i])
 
-        for i, axis in enumerate(["x", "y", "z", "rz", "ry", "rx"]):
+        # Legacy dataset compatibility: existing Nero datasets stored the
+        # hardware TCP orientation feedback under x/y/z/rz/ry/rx names. Do not
+        # change this in-place for old policies; chunk-wise absolute decoding
+        # reorders only the reference pose before sending IK targets.
+        for i, axis in enumerate(self._ee_pose_observation_axis_order):
             obs_dict[f"left_ee_pose.{axis}"] = float(left_ee_pose[i])
         
         # Right arm observations
         for i in range(len(right_joint_pos)):
             obs_dict[f"right_joint_{i+1}.pos"] = float(right_joint_pos[i])
 
-        for i, axis in enumerate(["x", "y", "z", "rz", "ry", "rx"]):
+        for i, axis in enumerate(self._ee_pose_observation_axis_order):
             obs_dict[f"right_ee_pose.{axis}"] = float(right_ee_pose[i])
         
         # Gripper states

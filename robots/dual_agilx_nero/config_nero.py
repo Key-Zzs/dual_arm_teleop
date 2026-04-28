@@ -37,6 +37,13 @@ class NeroDualArmConfig(RobotConfig):
     
     # Joint configuration (7 DOF per arm)
     num_joints_per_arm: int = 7
+    # Existing Nero datasets store TCP feedback under this observation axis order.
+    # The server/client TCP pose itself is [x, y, z, rx, ry, rz]; this mapping
+    # intentionally writes rx/ry/rz feedback into rz/ry/rx feature names for
+    # backward compatibility with recorded datasets and trained policies.
+    ee_pose_observation_axis_order: List[str] = field(
+        default_factory=lambda: ["x", "y", "z", "rz", "ry", "rx"]
+    )
     
     # Cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
@@ -45,4 +52,3 @@ class NeroDualArmConfig(RobotConfig):
     max_joint_velocity: float = 2.0  # rad/s
     max_ee_velocity: float = 0.5  # m/s
     max_joint_delta: float = 0.3  # rad - max joint change per step
-

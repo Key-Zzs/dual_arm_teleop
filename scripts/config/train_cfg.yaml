@@ -20,6 +20,8 @@ train:
     # step_wise: 旧行为，action chunk 内每步都是相对上一执行状态的增量；
     # chunk_wise: 训练时把旧 step-wise delta chunk 转成相对 chunk 起点的 delta label。
     action_delta_alignment: "chunk_wise"
+    # auto: 训练不使用该项；推理时 nero_dual_arm 的 chunk_ref_pose 使用 legacy x/y/z/rz/ry/rx 轴序修正。
+    chunkwise_ref_state_pose_axis_order: "auto"
     # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
     #                   /task3_step1/2mL_empty/[worked]act_20260424_E75/checkpoints/010000/pretrained_model"  # 从ACT模型开始DAgger训练
 

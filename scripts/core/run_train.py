@@ -212,6 +212,9 @@ class TrainPipelineConfig(HubMixin):
                 chunk_size = policy.get("chunk_size", 100),
                 n_action_steps = policy.get("n_action_steps", 1),
                 action_delta_alignment = policy.get("action_delta_alignment", "step_wise"),
+                chunkwise_ref_state_pose_axis_order = policy.get(
+                    "chunkwise_ref_state_pose_axis_order", "auto"
+                ),
             )
         elif policy_type == "act_dagger":
             # NOTE: `act_dagger` is dispatched in main() to offline DAgger training.
@@ -229,6 +232,9 @@ class TrainPipelineConfig(HubMixin):
                 chunk_size = policy.get("chunk_size", 100),
                 n_action_steps = policy.get("n_action_steps", 1),
                 action_delta_alignment = policy.get("action_delta_alignment", "step_wise"),
+                chunkwise_ref_state_pose_axis_order = policy.get(
+                    "chunkwise_ref_state_pose_axis_order", "auto"
+                ),
             )
         elif policy_type == "diffusion":
             from lerobot.policies import DiffusionConfig
