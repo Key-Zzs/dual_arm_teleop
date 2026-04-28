@@ -211,6 +211,7 @@ class TrainPipelineConfig(HubMixin):
                 temporal_ensemble_coeff = temporal_ensemble_coeff,
                 chunk_size = policy.get("chunk_size", 100),
                 n_action_steps = policy.get("n_action_steps", 1),
+                action_delta_alignment = policy.get("action_delta_alignment", "step_wise"),
             )
         elif policy_type == "act_dagger":
             # NOTE: `act_dagger` is dispatched in main() to offline DAgger training.
@@ -227,6 +228,7 @@ class TrainPipelineConfig(HubMixin):
                 temporal_ensemble_coeff = temporal_ensemble_coeff,
                 chunk_size = policy.get("chunk_size", 100),
                 n_action_steps = policy.get("n_action_steps", 1),
+                action_delta_alignment = policy.get("action_delta_alignment", "step_wise"),
             )
         elif policy_type == "diffusion":
             from lerobot.policies import DiffusionConfig

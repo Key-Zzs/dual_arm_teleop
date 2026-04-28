@@ -57,6 +57,7 @@ class NeroDualArm(Robot):
         self.action_send_freq = 100.0  # 50Hz
         self.action_send_dt = 1.0 / self.action_send_freq
         self.last_action_send_time = 0.0
+        self._logged_servo_delta_modes = set()
 
     def _should_send_action(self) -> bool:
         """检查是否应该发送action（频率限制）"""
@@ -334,20 +335,32 @@ class NeroDualArm(Robot):
         right_delta = np.array([
             action[f"right_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ])
+        servo_delta = bool(action.get("servo_delta", True))
+        action_delta_alignment = action.get(
+            "action_delta_alignment",
+            "step_wise" if servo_delta else "chunk_wise",
+        )
+        log_key = (action_delta_alignment, servo_delta)
+        if log_key not in self._logged_servo_delta_modes:
+            logger.info(
+                "[ROBOT] action_delta_alignment=%s; executing servo_p_OL(delta=%s).",
+                action_delta_alignment,
+                servo_delta,
+            )
+            self._logged_servo_delta_modes.add(log_key)
 
         if not self.config.debug:
             try:
-                # 左臂：直接传入增量
+                # step_wise: pass deltas to the server. chunk_wise: pass absolute targets decoded client-side.
                 if np.linalg.norm(left_delta) >= 0.001:
                     # t_servo_start = time.perf_counter()
-                    self._robot.servo_p_OL("left_robot", left_delta, delta=True)
+                    self._robot.servo_p_OL("left_robot", left_delta, delta=servo_delta)
                     # t_servo_end = time.perf_counter()
                     # logger.info(f"[TIMING] left servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
                 
-                # 右臂：直接传入增量
                 if np.linalg.norm(right_delta) >= 0.001:
                     # t_servo_start = time.perf_counter()
-                    self._robot.servo_p_OL("right_robot", right_delta, delta=True)
+                    self._robot.servo_p_OL("right_robot", right_delta, delta=servo_delta)
                     # t_servo_end = time.perf_counter()
                     # logger.info(f"[TIMING] right servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
                     

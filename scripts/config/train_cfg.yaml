@@ -1,35 +1,38 @@
 train:
   dataset:
-    repo_id: "nero_task3_step1/2mL_empty_dagger_merged_20260425" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
+    repo_id: "nero_task3_step1/2mL_empty_merged_20260427" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
   # 指向包含数据集 repo 的本地目录（要包含 repo_id 子目录），
   # 例如本地缓存路径下的 physbrain3/pick_and_place_merged
-    root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_dagger_merged_20260425"
+    root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_20260427"
 
   env:
 
   policy:
     # 纯BC: "act"
     # DAgger: "act_dagger"（会走 core/run_train.py 中的 DAgger 分支）
-    type: "act_dagger"
+    type: "act"
     device: "cuda"
     repo_id: "shenzhaolong/act_policy"
     push_to_hub: false  # 禁用模型推送
     # temporal_ensemble_coeff: null # 关闭时序加权，减少动作启动迟滞
     chunk_size: 30
     n_action_steps: 5
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
-                      /task3_step1/2mL_empty/[worked]act_20260424_E75/checkpoints/010000/pretrained_model"  # 从ACT模型开始DAgger训练
+    # step_wise: 旧行为，action chunk 内每步都是相对上一执行状态的增量；
+    # chunk_wise: 训练时把旧 step-wise delta chunk 转成相对 chunk 起点的 delta label。
+    action_delta_alignment: "chunk_wise"
+    # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
+    #                   /task3_step1/2mL_empty/[worked]act_20260424_E75/checkpoints/010000/pretrained_model"  # 从ACT模型开始DAgger训练
 
   output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
-              /task3_step1/2mL_empty/act_dagger_20260425_E75_merged_V02" # 模型和日志的输出目录
-  job_name: "2mL_empty_act_dagger_20260425_E75_merged_V02"
+              /task3_step1/2mL_empty/act_20260427_E100_CW" # 模型和日志的输出目录
+  job_name: "2mL_empty_act_20260427_E100_CW"
 
   resume: false
   seed: 1000
   # Number of workers for the dataloader.
   num_workers: 4
   batch_size: 32
-  steps: 10_000
+  steps: 20_000
   eval_freq: 20_00
   log_freq: 200
   save_checkpoint: True
