@@ -40,7 +40,7 @@ from dataclasses import field
 
 import logging
 
-logging.basicConfig(level=logging.INFO, format="%(message)s")
+logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 
 RUN_MIX_MOVEMENT_EPS = 1e-4
 RUN_MIX_CHANGE_EPS = 5e-3
@@ -667,6 +667,7 @@ def run_record(record_cfg: RecordConfig):
     try:
         dataset_name, data_version = generate_dataset_name(record_cfg)
         dataset_root = _resolve_record_dataset_root(dataset_name, record_cfg.run_mode)
+        logging.info("====== [DATASET] name=%s root=%s ======", dataset_name, dataset_root)
 
         # Check joint offsets
         # if not record_cfg.debug:
@@ -788,6 +789,7 @@ def run_record(record_cfg: RecordConfig):
             sanity_check_dataset_robot_compatibility(dataset, robot, record_cfg.fps, dataset_features)
         else:
             # # Create the dataset
+            logging.info("====== [DATASET] Creating dataset ======")
             dataset = LeRobotDataset.create(
                 repo_id=dataset_name,
                 fps=record_cfg.fps,
@@ -797,6 +799,7 @@ def run_record(record_cfg: RecordConfig):
                 use_videos=True,
                 image_writer_threads=4,
             )
+            logging.info("====== [DATASET] Dataset created ======")
         # Set the episode metadata buffer size to 1, so that each episode is saved immediately
         dataset.meta.metadata_buffer_size = record_cfg.save_meta_period
 
@@ -806,9 +809,13 @@ def run_record(record_cfg: RecordConfig):
         # Initialize keyboard listener.
         # Rerun visualization can introduce periodic stalls when transport is unstable,
         # so only initialize it when display is explicitly enabled.
+        logging.info("====== [INPUT] Initializing keyboard listener ======")
         _, events = init_keyboard_listener()
+        logging.info("====== [INPUT] Keyboard listener initialized ======")
         if record_cfg.display:
+            logging.info("====== [DISPLAY] Initializing rerun ======")
             init_rerun(session_name="recording")
+            logging.info("====== [DISPLAY] Rerun initialized ======")
 
         # Create processor
         teleop_action_processor, robot_action_processor, robot_observation_processor = make_default_processors()
@@ -853,6 +860,10 @@ def run_record(record_cfg: RecordConfig):
 
         while episode_idx < record_cfg.num_episodes and not events["stop_recording"]:
             logging.info(f"====== [RECORD] Recording episode {episode_idx + 1} of {record_cfg.num_episodes} ======")
+            # print(
+            #     f"====== [RECORD] Episode {episode_idx + 1}/{record_cfg.num_episodes} started. "
+            #     "Press Right Arrow to finish this episode, Left Arrow to rerecord, Esc to stop. ======"
+            # )
             if record_cfg.run_mode == "run_mix":
                 mix_stats = run_mix_record_loop(
                     robot=robot,
@@ -969,8 +980,8 @@ def run_record(record_cfg: RecordConfig):
         if record_cfg.push_to_hub:
             dataset.push_to_hub()
 
-    except Exception as e:
-        logging.info(f"====== [ERROR] {e} ======")
+    except Exception:
+        logging.exception("====== [ERROR] Recording failed ======")
         dataset_path = dataset_root if dataset_root is not None else Path(HF_LEROBOT_HOME) / str(dataset_name)
         handle_incomplete_dataset(dataset_path)
         sys.exit(1)

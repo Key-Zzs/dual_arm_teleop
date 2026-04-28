@@ -5,7 +5,7 @@ from datetime import datetime
 def generate_dataset_name(cfg):
     """
     Generate dataset name: [description]_[YYYYMMDD]_[vXX]
-    Determine next version based on existing folders in the dataset root parent.
+    Determine next version based on existing folders for the current date.
     Return (dataset_name, version_str).
     """
     if cfg.resume:
@@ -28,12 +28,15 @@ def generate_dataset_name(cfg):
         # ensure the parent directory exists
         base_path.mkdir(parents=True, exist_ok=True)
 
-        # list folders that start with the description
-        existing = [p.name for p in base_path.iterdir() if p.is_dir() and p.name.startswith(description + "_")]
+        today_str = datetime.today().strftime("%Y%m%d")
+        dataset_prefix = f"{description}_{today_str}_"
 
-        # find the largest existing vNN for this description
+        # list folders for the same description and the current date
+        existing = [p.name for p in base_path.iterdir() if p.is_dir() and p.name.startswith(dataset_prefix)]
+
+        # find the largest existing vNN for this description on the current date
         max_v = 0
-        pattern = re.compile(rf"^{re.escape(description)}_\d{{8}}_v(\d+)$")
+        pattern = re.compile(rf"^{re.escape(description)}_{today_str}_v(\d+)$")
         for name in existing:
             m = pattern.match(name)
             if m:
@@ -45,7 +48,6 @@ def generate_dataset_name(cfg):
                     continue
 
         next_v = max_v + 1
-        today_str = datetime.today().strftime("%Y%m%d")
         version_str = f"v{str(next_v).zfill(2)}"
         dataset_name = f"{user}/{description}_{today_str}_{version_str}"
 

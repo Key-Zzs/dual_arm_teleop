@@ -71,8 +71,8 @@ record:
     # step_wise: 旧行为，servo_p_OL(delta=True) 执行增量；
     # chunk_wise: policy 输出相对 chunk 起点的 delta，客户端先解码为绝对目标，再 servo_p_OL(delta=False)。
     action_delta_alignment: "step_wise"
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
-                      /[worked]act_20260427_merged_v2/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
+    # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
+    #                   /[worked]act_20260427_merged_v2/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
 
   task:
     description: "pick up small vials and place them in the empty rack" # task description
