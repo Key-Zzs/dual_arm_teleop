@@ -22,6 +22,9 @@ class ReplayConfig:
         self.robot_ip: str = robot.get("robot_ip", robot.get("ip", "localhost"))
         self.robot_port: int = robot.get("robot_port", 4242)
         self.control_mode: str = cfg.get("control_mode", "oculus")
+        # Finish behavior: mirror run_record defaults.
+        self.reset_on_finish: bool = cfg.get("reset_on_finish", True)
+        self.disconnect_on_finish: bool = cfg.get("disconnect_on_finish", False)
         
         # Robot type selection (default to dobot_dual_arm for backward compatibility)
         self.robot_type: str = cfg.get("robot_type", "dobot_dual_arm")
@@ -73,7 +76,17 @@ def run_replay(replay_cfg: ReplayConfig):
 
         busy_wait(1.0 / dataset.fps - (time.perf_counter() - t0))
 
-    robot.disconnect()
+    # Match run_record finish behavior: reset to home first, then optional disconnect.
+    if replay_cfg.reset_on_finish:
+        try:
+            robot.reset()
+        except Exception as reset_err:
+            logging.warning(f"[WARNING] reset_on_finish failed: {reset_err}")
+
+    if replay_cfg.disconnect_on_finish:
+        robot.disconnect()
+    else:
+        logging.warning("[INFO] Skip robot.disconnect() to avoid stop/e-stop at session end.")
 
 def main():
     parent_path = Path(__file__).resolve().parent

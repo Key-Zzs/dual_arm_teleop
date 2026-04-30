@@ -21,7 +21,7 @@ record:
   fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
   use_gripper: &use_gripper true  # whether to use gripper
-  run_mode: "run_policy" # "run_record" or "run_policy" or "run_mix"
+  run_mode: "run_record" # "run_record" or "run_policy" or "run_mix"
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka
   robot_type: &robot_type "nero_dual_arm"
@@ -41,7 +41,7 @@ record:
       visualize_placo: false  # whether to visualize robot using placo
       
   robot:
-    robot_ip: &ip "192.168.110.41" # dobot server ip
+    robot_ip: &ip "192.168.110.203" # dobot server ip
     # robot_ip: &ip "localhost" # nero server ip
     robot_port: 4242  # dual-arm zerorpc port (single port for both arms)
     use_gripper: *use_gripper
@@ -76,7 +76,7 @@ record:
   task:
     description: "pick up small vials and place them in the empty rack" # task description
     # description: "pick up the red cube with the right hand and transfer it to the right hand" # task description
-    num_episodes: 15 # number of episodes to record
+    num_episodes: 25 # number of episodes to record
     display: True # Whether to display the data during recording
     resume: false # whether to resume from an existing dataset
     resume_dataset: roboticiq/pick_all_yellow_cube_to_brown_basket_20260208_v01 # dataset to resume from if resume is True
@@ -100,8 +100,10 @@ record:
     push_to_hub: False # whether to push the dataset to your huggingface repo after recording
 
 replay:
-  dataset_name: nero_task3_step1/2mL_empty_merged_20260424
-  episode_idx: 99 # episode index to replay
+  dataset_name: nero_task3_step1/2mL_empty_20260430_v01
+  episode_idx: 15 # episode index to replay
+  reset_on_finish: true # replay结束后回home
+  disconnect_on_finish: false # 默认不断开，避免触发server stop/e-stop
   robot_type: *robot_type  # robot type to use for replay
   robot:
     ip: *ip
@@ -109,5 +111,5 @@ replay:
   control_mode: *control_mode 
 
 visualize:
-  dataset_name: nero_task3_step1/2mL_empty_merged_20260424_E75
+  dataset_name: nero_task3_step1/2mL_empty_20260430_v01
   episode_index: 15 # episode index to visualize
