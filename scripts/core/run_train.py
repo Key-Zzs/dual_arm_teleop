@@ -211,6 +211,11 @@ class TrainPipelineConfig(HubMixin):
                 temporal_ensemble_coeff = temporal_ensemble_coeff,
                 chunk_size = policy.get("chunk_size", 100),
                 n_action_steps = policy.get("n_action_steps", 1),
+                # These two fields wire the YAML config into the training-only ACT label conversion:
+                # - `action_delta_alignment` selects step-wise vs chunk-wise supervision.
+                # - `action_feature_names` is an escape hatch when dataset metadata does not expose names.
+                action_delta_alignment = policy.get("action_delta_alignment", "step_wise"),
+                action_feature_names = tuple(policy.get("action_feature_names", ())),
             )
         elif policy_type == "act_dagger":
             # NOTE: `act_dagger` is dispatched in main() to offline DAgger training.
@@ -227,6 +232,10 @@ class TrainPipelineConfig(HubMixin):
                 temporal_ensemble_coeff = temporal_ensemble_coeff,
                 chunk_size = policy.get("chunk_size", 100),
                 n_action_steps = policy.get("n_action_steps", 1),
+                # Keep `act_dagger` aligned with plain ACT: offline DAgger still trains the underlying ACT
+                # model, so the same training-side label conversion options must be forwarded here as well.
+                action_delta_alignment = policy.get("action_delta_alignment", "step_wise"),
+                action_feature_names = tuple(policy.get("action_feature_names", ())),
             )
         elif policy_type == "diffusion":
             from lerobot.policies import DiffusionConfig

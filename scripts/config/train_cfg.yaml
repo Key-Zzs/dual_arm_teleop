@@ -17,6 +17,24 @@ train:
     # temporal_ensemble_coeff: null # 关闭时序加权，减少动作启动迟滞
     chunk_size: 30
     n_action_steps: 5
+    # `step_wise`: 保持旧训练行为不变，直接使用数据原始 action chunk
+    # `chunk_wise`: 训练时将 step-wise delta chunk 动态转换为 chunk-wise delta chunk
+    action_delta_alignment: "chunk_wise"
+    # 一般可留空，训练时会优先从 dataset metadata 的 action.names 自动推断。
+    # 只有在自动推断不到 action 维度语义时，才需要在这里显式填写。
+    # action_feature_names:
+    #   - "left_delta_ee_pose.x"
+    #   - "left_delta_ee_pose.y"
+    #   - "left_delta_ee_pose.z"
+    #   - "left_delta_ee_pose.rx"
+    #   - "left_delta_ee_pose.ry"
+    #   - "left_delta_ee_pose.rz"
+    #   - "right_delta_ee_pose.x"
+    #   - "right_delta_ee_pose.y"
+    #   - "right_delta_ee_pose.z"
+    #   - "right_delta_ee_pose.rx"
+    #   - "right_delta_ee_pose.ry"
+    #   - "right_delta_ee_pose.rz"
     pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
                       /task3_step1/2mL_empty/[worked]act_20260424_E75/checkpoints/010000/pretrained_model"  # 从ACT模型开始DAgger训练
 
