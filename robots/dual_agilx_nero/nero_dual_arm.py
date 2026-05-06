@@ -57,6 +57,7 @@ class NeroDualArm(Robot):
         self.action_send_freq = 100.0  # 50Hz
         self.action_send_dt = 1.0 / self.action_send_freq
         self.last_action_send_time = 0.0
+        self._logged_execution_alignment = False
 
     def _should_send_action(self) -> bool:
         """检查是否应该发送action（频率限制）"""
@@ -65,6 +66,37 @@ class NeroDualArm(Robot):
             self.last_action_send_time = current_time
             return True
         return False
+
+    def _get_action_delta_alignment(self) -> str:
+        # Execution must not infer semantics from feature names alone:
+        # both modes still use the legacy `*_delta_ee_pose.*` keys for compatibility, but the numeric meaning
+        # differs once ACT chunk-wise inference is enabled.
+        alignment = getattr(self.config, "action_delta_alignment", "step_wise")
+        if alignment not in {"step_wise", "chunk_wise"}:
+            raise ValueError(
+                "`action_delta_alignment` must be either 'step_wise' or 'chunk_wise'. "
+                f"Got {alignment}."
+            )
+        return alignment
+
+    def _execute_cartesian_as_delta(self) -> bool:
+        # `step_wise` preserves the old deployment contract: action values are per-step deltas.
+        # `chunk_wise` means ACT inference has already decoded them into absolute target poses.
+        return self._get_action_delta_alignment() == "step_wise"
+
+    def _log_execution_alignment_once(self) -> None:
+        if self._logged_execution_alignment:
+            return
+
+        execute_as_delta = self._execute_cartesian_as_delta()
+        action_semantics = "delta ee pose" if execute_as_delta else "absolute target pose"
+        logger.info(
+            "[EXEC] action_delta_alignment=%s | cartesian actions interpreted as %s | servo_p_OL(delta=%s)",
+            self._get_action_delta_alignment(),
+            action_semantics,
+            execute_as_delta,
+        )
+        self._logged_execution_alignment = True
 
     def connect(self, calibrate: bool = True) -> None:
         """Connect to the robot.
@@ -305,6 +337,9 @@ class NeroDualArm(Robot):
         # Use joint servo control if joint positions are provided
         if not self.config.debug:
             try:
+                # Action field names remain `*_delta_ee_pose.*` for backward compatibility with the existing
+                # dataset / postprocessing stack. The execution semantics are selected from
+                # `action_delta_alignment`, not from the legacy feature-name prefix.
                 self.send_action_cartesian(action)
                     
             except Exception as e:
@@ -327,27 +362,44 @@ class NeroDualArm(Robot):
         # 频率限制
         if not self._should_send_action():
             return
-        
-        left_delta = np.array([
+
+        execute_as_delta = self._execute_cartesian_as_delta()
+        self._log_execution_alignment_once()
+
+        # Keep the legacy feature names for compatibility. In `chunk_wise` mode ACT inference has already
+        # decoded these values to absolute target poses, so execution must switch the `delta` flag instead of
+        # trying to re-interpret or re-integrate the numeric values here.
+        left_pose_command = np.array([
             action[f"left_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
-        ])
-        right_delta = np.array([
+        ], dtype=float)
+        right_pose_command = np.array([
             action[f"right_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
-        ])
+        ], dtype=float)
 
         if not self.config.debug:
             try:
-                # 左臂：直接传入增量
-                if np.linalg.norm(left_delta) >= 0.001:
+                # `servo_p_OL` already supports both semantic modes through its `delta` flag, so the execution
+                # layer's job is only to choose the correct interpretation path here. We intentionally do not
+                # re-implement any delta<->absolute conversion in the robot class.
+                # The small-norm suppression only makes sense for per-step delta actions. In absolute mode we
+                # should forward the target pose directly, otherwise a valid non-zero absolute target would be
+                # interpreted as "always large" and the old delta threshold would become meaningless.
+                if execute_as_delta:
+                    left_should_send = np.linalg.norm(left_pose_command) >= 0.001
+                    right_should_send = np.linalg.norm(right_pose_command) >= 0.001
+                else:
+                    left_should_send = np.isfinite(left_pose_command).all()
+                    right_should_send = np.isfinite(right_pose_command).all()
+
+                if left_should_send:
                     # t_servo_start = time.perf_counter()
-                    self._robot.servo_p_OL("left_robot", left_delta, delta=True)
+                    self._robot.servo_p_OL("left_robot", left_pose_command, delta=execute_as_delta)
                     # t_servo_end = time.perf_counter()
                     # logger.info(f"[TIMING] left servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
                 
-                # 右臂：直接传入增量
-                if np.linalg.norm(right_delta) >= 0.001:
+                if right_should_send:
                     # t_servo_start = time.perf_counter()
-                    self._robot.servo_p_OL("right_robot", right_delta, delta=True)
+                    self._robot.servo_p_OL("right_robot", right_pose_command, delta=execute_as_delta)
                     # t_servo_end = time.perf_counter()
                     # logger.info(f"[TIMING] right servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
                     

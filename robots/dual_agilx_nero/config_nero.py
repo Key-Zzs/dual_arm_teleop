@@ -3,7 +3,7 @@ Configuration for Nero dual-arm robot system.
 Each arm has 7 DOF
 """
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from lerobot.cameras import CameraConfig
 from lerobot.robots.config import RobotConfig
@@ -34,6 +34,10 @@ class NeroDualArmConfig(RobotConfig):
     # Control configuration
     control_mode: str = "oculus"
     debug: bool = True
+    # Execution-side interpretation of cartesian action values.
+    # `step_wise`: actions are delta ee poses -> call servo_p_OL(..., delta=True)
+    # `chunk_wise`: ACT inference already decoded actions to absolute targets -> call servo_p_OL(..., delta=False)
+    action_delta_alignment: Literal["step_wise", "chunk_wise"] = "step_wise"
     
     # Joint configuration (7 DOF per arm)
     num_joints_per_arm: int = 7
@@ -45,4 +49,3 @@ class NeroDualArmConfig(RobotConfig):
     max_joint_velocity: float = 2.0  # rad/s
     max_ee_velocity: float = 0.5  # m/s
     max_joint_delta: float = 0.3  # rad - max joint change per step
-

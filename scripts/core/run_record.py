@@ -185,6 +185,10 @@ class RecordConfig:
                 temporal_ensemble_coeff=temporal_ensemble_coeff,
                 chunk_size=policy.get("chunk_size", 100),
                 n_action_steps=policy.get("n_action_steps", 100),
+                # Reuse the same ACT config switch for inference and execution. This keeps `step_wise` as the
+                # default and lets run_policy / run_mix drive both policy output semantics and robot execution
+                # semantics from one field in `record_cfg.yaml`.
+                action_delta_alignment=policy.get("action_delta_alignment", "step_wise"),
             )
         elif policy_type == "diffusion":
             from lerobot.policies import DiffusionConfig
@@ -194,9 +198,13 @@ class RecordConfig:
             )
         else:
             raise ValueError(f"No config for policy type: {policy_type}")
-        
+
         if policy.get("pretrained_path"):
             self.policy.pretrained_path = policy["pretrained_path"]
+        # Keep one source of truth for deployment semantics:
+        # the same `action_delta_alignment` that controls ACT inference output meaning is forwarded to the
+        # robot so execution can choose `servo_p_OL(delta=True/False)` consistently.
+        self.action_delta_alignment = getattr(self.policy, "action_delta_alignment", "step_wise")
     
     def create_teleop_config(self):
         """Create teleoperation configuration object."""
@@ -713,6 +721,9 @@ def run_record(record_cfg: RecordConfig):
             close_threshold=record_cfg.close_threshold,
             gripper_reverse=record_cfg.gripper_reverse,
             control_mode=record_cfg.control_mode,
+            # Robot execution only needs the semantic switch, not the policy internals. Passing the same field
+            # through the robot config keeps deployment behavior aligned without introducing a second flag.
+            action_delta_alignment=record_cfg.action_delta_alignment,
         )
         
         # Initialize the robot dynamically based on robot_type
