@@ -725,6 +725,13 @@ def run_record(record_cfg: RecordConfig):
             # through the robot config keeps deployment behavior aligned without introducing a second flag.
             action_delta_alignment=record_cfg.action_delta_alignment,
         )
+        if hasattr(record_cfg.policy, "observation_state_pose_axis_order"):
+            # Keep chunk-wise reference-pose decoding aligned with the active robot's observation packing.
+            # This preserves legacy ee-pose value order for deployment without changing the observation tensor
+            # layout that the checkpoint already expects as network input.
+            record_cfg.policy.observation_state_pose_axis_order = tuple(
+                getattr(robot_config, "ee_pose_observation_axis_order", ("x", "y", "z", "rx", "ry", "rz"))
+            )
         
         # Initialize the robot dynamically based on robot_type
         robot = create_robot(record_cfg.robot_type, robot_config)

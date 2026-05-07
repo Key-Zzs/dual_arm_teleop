@@ -442,14 +442,14 @@ class NeroDualArm(Robot):
         for i in range(len(left_joint_pos)):
             obs_dict[f"left_joint_{i+1}.pos"] = float(left_joint_pos[i])
 
-        for i, axis in enumerate(["x", "y", "z", "rz", "ry", "rx"]):
+        for i, axis in enumerate(self.config.ee_pose_observation_axis_order):
             obs_dict[f"left_ee_pose.{axis}"] = float(left_ee_pose[i])
         
         # Right arm observations
         for i in range(len(right_joint_pos)):
             obs_dict[f"right_joint_{i+1}.pos"] = float(right_joint_pos[i])
 
-        for i, axis in enumerate(["x", "y", "z", "rz", "ry", "rx"]):
+        for i, axis in enumerate(self.config.ee_pose_observation_axis_order):
             obs_dict[f"right_ee_pose.{axis}"] = float(right_ee_pose[i])
         
         # Gripper states

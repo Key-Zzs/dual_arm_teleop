@@ -38,6 +38,12 @@ class NeroDualArmConfig(RobotConfig):
     # `step_wise`: actions are delta ee poses -> call servo_p_OL(..., delta=True)
     # `chunk_wise`: ACT inference already decoded actions to absolute targets -> call servo_p_OL(..., delta=False)
     action_delta_alignment: Literal["step_wise", "chunk_wise"] = "step_wise"
+    # Legacy Nero datasets keep the `left/right_ee_pose.rx/ry/rz` feature names, but the values recorded in
+    # `observation.state` follow this compatibility axis order. Chunk-wise ACT deployment uses this hint when
+    # interpreting the current absolute ee pose as the chunk reference pose.
+    ee_pose_observation_axis_order: list[str] = field(
+        default_factory=lambda: ["x", "y", "z", "rz", "ry", "rx"]
+    )
     
     # Joint configuration (7 DOF per arm)
     num_joints_per_arm: int = 7
