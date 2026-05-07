@@ -83,6 +83,18 @@ class NeroDualArmClient:
             return np.zeros(6)
         # Server returns meters and radians
         return np.array(self.server.right_robot_get_ee_pose())
+
+    def left_robot_get_servo_p_ol_reference_pose(self) -> np.ndarray:
+        """Get the left-arm pose used by server servo_p_OL(delta=True) as its current reference."""
+        if self.server is None:
+            return np.zeros(6)
+        return np.array(self.server.get_servo_p_ol_reference_pose("left_robot"))
+
+    def right_robot_get_servo_p_ol_reference_pose(self) -> np.ndarray:
+        """Get the right-arm pose used by server servo_p_OL(delta=True) as its current reference."""
+        if self.server is None:
+            return np.zeros(6)
+        return np.array(self.server.get_servo_p_ol_reference_pose("right_robot"))
     
     # ==================== MoveIt Motion ====================
     
@@ -164,17 +176,41 @@ class NeroDualArmClient:
             return True
         return self.server.servo_p(robot_arm, pose.tolist(), delta)
     
-    def servo_p_OL(self, robot_arm: str, pose: np.ndarray, delta: bool = False) -> bool:
+    def servo_p_OL(
+        self,
+        robot_arm: str,
+        pose: np.ndarray,
+        delta: bool = False,
+        debug_target_abs_pose: Optional[np.ndarray] = None,
+        debug_step_idx: Optional[int] = None,
+        debug_queue_idx: Optional[Any] = None,
+    ) -> bool:
         """
         Send ServoP open loop with target pose [x, y, z, rx, ry, rz] (m, radians).
         Args:
             robot_arm: 'left_robot' or 'right_robot'
             pose: Target pose in METERS and RADIANS
             delta: False=absolute, True=relative
+            debug_target_abs_pose: Optional chunk-wise absolute target for client/server alignment logs.
+            debug_step_idx: Optional execution step index for aligning logs.
+            debug_queue_idx: Optional action queue index / label for aligning logs.
         """
         if self.server is None:
             return True
-        return self.server.servo_p_OL(robot_arm, pose.tolist(), delta)
+        if debug_target_abs_pose is None and debug_step_idx is None and debug_queue_idx is None:
+            return self.server.servo_p_OL(robot_arm, pose.tolist(), delta)
+
+        target_abs_payload = (
+            None if debug_target_abs_pose is None else np.asarray(debug_target_abs_pose, dtype=float).tolist()
+        )
+        return self.server.servo_p_OL(
+            robot_arm,
+            pose.tolist(),
+            delta,
+            target_abs_payload,
+            debug_step_idx,
+            debug_queue_idx,
+        )
     
     # ==================== Gripper ========
     

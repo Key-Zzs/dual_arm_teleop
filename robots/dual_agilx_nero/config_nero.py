@@ -39,6 +39,24 @@ class NeroDualArmConfig(RobotConfig):
     # `chunk_wise`: ACT inference already decoded actions to absolute targets; execution converts each target
     # to a one-shot delta against the current reference pose, then calls servo_p_OL(..., delta=True)
     action_delta_alignment: Literal["step_wise", "chunk_wise"] = "step_wise"
+    # Reference pose source used only by chunk-wise execution-side absolute->delta conversion.
+    # `servo_ol`: query the server's own servo_p_OL(delta=True) reference pose, i.e. IK-state q_prev FK.
+    # `direct_ee`: query the robot TCP pose directly through *_robot_get_ee_pose().
+    # `observation`: use the most recent local observation cache. This is useful only as an experiment because
+    # it can differ from the server's open-loop IK reference and cause target reconstruction error.
+    chunkwise_reference_pose_source: Literal["servo_ol", "direct_ee", "observation"] = "servo_ol"
+    # Debug/diagnostic controls for chunk-wise execution. All default to off so old step-wise behavior and
+    # normal deployment logs stay unchanged. They can also be overridden with NERO_CHUNKWISE_* env vars.
+    chunkwise_execution_debug: bool = False
+    chunkwise_debug_every_n: int = 1
+    chunkwise_fallback_to_delta_false: bool = False
+    chunkwise_debug_clamp_delta: bool = False
+    chunkwise_debug_max_delta_xyz_norm: float = 0.03
+    chunkwise_debug_max_delta_rpy_norm: float = 0.35
+    chunkwise_debug_reconstruction_error_xyz_warn_m: float = 0.005
+    chunkwise_debug_reconstruction_error_rpy_warn_rad: float = 0.05
+    chunkwise_debug_stop_on_reconstruction_error: bool = False
+    chunkwise_debug_reconstruction_error_max_consecutive: int = 3
     # Legacy Nero datasets keep the `left/right_ee_pose.rx/ry/rz` feature names, but the values recorded in
     # `observation.state` follow this compatibility axis order. Chunk-wise ACT deployment uses this hint when
     # interpreting the current absolute ee pose as the chunk reference pose.

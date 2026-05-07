@@ -206,6 +206,27 @@ class RecordConfig:
         # robot so execution can keep step-wise actions as deltas and convert chunk-wise absolute targets at
         # the send boundary.
         self.action_delta_alignment = getattr(self.policy, "action_delta_alignment", "step_wise")
+        # Chunk-wise execution diagnostics live on the robot side. Keep them next to the policy semantic switch
+        # in record_cfg.yaml for convenience, but do not feed them back into ACT training/inference.
+        self.chunkwise_reference_pose_source = policy.get("chunkwise_reference_pose_source", "servo_ol")
+        self.chunkwise_execution_debug = policy.get("chunkwise_execution_debug", False)
+        self.chunkwise_debug_every_n = policy.get("chunkwise_debug_every_n", 1)
+        self.chunkwise_fallback_to_delta_false = policy.get("chunkwise_fallback_to_delta_false", False)
+        self.chunkwise_debug_clamp_delta = policy.get("chunkwise_debug_clamp_delta", False)
+        self.chunkwise_debug_max_delta_xyz_norm = policy.get("chunkwise_debug_max_delta_xyz_norm", 0.03)
+        self.chunkwise_debug_max_delta_rpy_norm = policy.get("chunkwise_debug_max_delta_rpy_norm", 0.35)
+        self.chunkwise_debug_reconstruction_error_xyz_warn_m = policy.get(
+            "chunkwise_debug_reconstruction_error_xyz_warn_m", 0.005
+        )
+        self.chunkwise_debug_reconstruction_error_rpy_warn_rad = policy.get(
+            "chunkwise_debug_reconstruction_error_rpy_warn_rad", 0.05
+        )
+        self.chunkwise_debug_stop_on_reconstruction_error = policy.get(
+            "chunkwise_debug_stop_on_reconstruction_error", False
+        )
+        self.chunkwise_debug_reconstruction_error_max_consecutive = policy.get(
+            "chunkwise_debug_reconstruction_error_max_consecutive", 3
+        )
     
     def create_teleop_config(self):
         """Create teleoperation configuration object."""
@@ -709,8 +730,7 @@ def run_record(record_cfg: RecordConfig):
         teleop_config = record_cfg.create_teleop_config()
         
         # Create robot configuration dynamically based on robot_type
-        robot_config = create_robot_config(
-            record_cfg.robot_type,
+        robot_config_kwargs = dict(
             robot_ip=record_cfg.robot_ip,
             robot_port=record_cfg.robot_port,
             cameras=camera_config,
@@ -726,6 +746,29 @@ def run_record(record_cfg: RecordConfig):
             # through the robot config keeps deployment behavior aligned without introducing a second flag.
             action_delta_alignment=record_cfg.action_delta_alignment,
         )
+        if record_cfg.robot_type == "nero_dual_arm":
+            robot_config_kwargs.update(
+                chunkwise_reference_pose_source=record_cfg.chunkwise_reference_pose_source,
+                chunkwise_execution_debug=record_cfg.chunkwise_execution_debug,
+                chunkwise_debug_every_n=record_cfg.chunkwise_debug_every_n,
+                chunkwise_fallback_to_delta_false=record_cfg.chunkwise_fallback_to_delta_false,
+                chunkwise_debug_clamp_delta=record_cfg.chunkwise_debug_clamp_delta,
+                chunkwise_debug_max_delta_xyz_norm=record_cfg.chunkwise_debug_max_delta_xyz_norm,
+                chunkwise_debug_max_delta_rpy_norm=record_cfg.chunkwise_debug_max_delta_rpy_norm,
+                chunkwise_debug_reconstruction_error_xyz_warn_m=(
+                    record_cfg.chunkwise_debug_reconstruction_error_xyz_warn_m
+                ),
+                chunkwise_debug_reconstruction_error_rpy_warn_rad=(
+                    record_cfg.chunkwise_debug_reconstruction_error_rpy_warn_rad
+                ),
+                chunkwise_debug_stop_on_reconstruction_error=(
+                    record_cfg.chunkwise_debug_stop_on_reconstruction_error
+                ),
+                chunkwise_debug_reconstruction_error_max_consecutive=(
+                    record_cfg.chunkwise_debug_reconstruction_error_max_consecutive
+                ),
+            )
+        robot_config = create_robot_config(record_cfg.robot_type, **robot_config_kwargs)
         if hasattr(record_cfg.policy, "observation_state_pose_axis_order"):
             # Keep chunk-wise reference-pose decoding aligned with the active robot's observation packing.
             # This preserves legacy ee-pose value order for deployment without changing the observation tensor
