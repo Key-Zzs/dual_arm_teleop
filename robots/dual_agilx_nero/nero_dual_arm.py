@@ -5,7 +5,6 @@ Uses Oculus Quest for teleoperation control.
 """
 
 import logging
-import os
 import time
 import threading
 from pathlib import Path
@@ -59,10 +58,6 @@ class NeroDualArm(Robot):
         self.action_send_dt = 1.0 / self.action_send_freq
         self.last_action_send_time = 0.0
         self._logged_execution_alignment = False
-        self._execution_debug_logs_remaining = 5
-        self._cartesian_send_step_idx = 0
-        self._chunkwise_reconstruction_error_streak = {"left": 0, "right": 0}
-        self._logged_chunkwise_delta_false_fallback = False
 
     def _should_send_action(self) -> bool:
         """检查是否应该发送action（频率限制）"""
@@ -113,74 +108,14 @@ class NeroDualArm(Robot):
             )
         self._logged_execution_alignment = True
 
-    @staticmethod
-    def _env_flag(name: str, default: bool) -> bool:
-        value = os.getenv(name)
-        if value is None:
-            return default
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-
-    @staticmethod
-    def _env_int(name: str, default: int) -> int:
-        value = os.getenv(name)
-        if value is None:
-            return default
-        try:
-            return int(value)
-        except ValueError:
-            logger.warning("[EXEC DEBUG] Ignoring invalid integer env %s=%r", name, value)
-            return default
-
-    @staticmethod
-    def _env_float(name: str, default: float) -> float:
-        value = os.getenv(name)
-        if value is None:
-            return default
-        try:
-            return float(value)
-        except ValueError:
-            logger.warning("[EXEC DEBUG] Ignoring invalid float env %s=%r", name, value)
-            return default
-
-    def _chunkwise_debug_enabled(self) -> bool:
-        return self._env_flag(
-            "NERO_CHUNKWISE_DEBUG",
-            bool(getattr(self.config, "chunkwise_execution_debug", False)),
-        )
-
-    def _chunkwise_debug_every_n(self) -> int:
-        return max(
-            1,
-            self._env_int(
-                "NERO_CHUNKWISE_DEBUG_EVERY_N",
-                int(getattr(self.config, "chunkwise_debug_every_n", 1)),
-            ),
-        )
-
-    def _should_log_chunkwise_debug(self, step_idx: int) -> bool:
-        return self._chunkwise_debug_enabled() and step_idx % self._chunkwise_debug_every_n() == 0
-
     def _chunkwise_reference_pose_source(self) -> str:
-        source = os.getenv(
-            "NERO_CHUNKWISE_REFERENCE_POSE_SOURCE",
-            getattr(self.config, "chunkwise_reference_pose_source", "servo_ol"),
-        )
+        source = getattr(self.config, "chunkwise_reference_pose_source", "servo_ol")
         if source not in {"servo_ol", "direct_ee", "observation"}:
             raise ValueError(
                 "`chunkwise_reference_pose_source` must be one of 'servo_ol', 'direct_ee', 'observation'. "
                 f"Got {source}."
             )
         return source
-
-    def _chunkwise_fallback_to_delta_false(self) -> bool:
-        return self._env_flag(
-            "NERO_CHUNKWISE_FALLBACK_DELTA_FALSE",
-            bool(getattr(self.config, "chunkwise_fallback_to_delta_false", False)),
-        )
-
-    @staticmethod
-    def _format_pose_values(values: np.ndarray) -> list[float]:
-        return [round(float(value), 5) for value in values.tolist()]
 
     @staticmethod
     def _as_finite_pose(pose: Any, *, name: str) -> np.ndarray:
@@ -275,68 +210,6 @@ class NeroDualArm(Robot):
         delta_pose[3:] = cls._quaternion_to_euler_xyz(delta_quat)
         return delta_pose
 
-    @classmethod
-    def _reconstruct_servo_delta_target(cls, delta_pose: Any, current_pose: Any) -> np.ndarray:
-        """Rebuild the target pose using the same compose rule as server `servo_p_OL(delta=True)`.
-
-        This is the local reconstruction sanity check:
-            target_xyz = current_xyz + delta_xyz
-            target_quat = delta_quat * current_quat
-        If `_convert_absolute_pose_to_servo_delta()` is a true inverse of the server compose math, the
-        reconstructed target should match the original absolute target before any optional debug clamp.
-        """
-        delta_pose = cls._as_finite_pose(delta_pose, name="delta_pose")
-        current_pose = cls._as_finite_pose(current_pose, name="current_pose")
-
-        target_pose = np.zeros(6, dtype=float)
-        target_pose[:3] = current_pose[:3] + delta_pose[:3]
-        current_quat = cls._euler_xyz_to_quaternion(current_pose[3:])
-        delta_quat = cls._euler_xyz_to_quaternion(delta_pose[3:])
-        target_quat = cls._quaternion_multiply(delta_quat, current_quat)
-        target_pose[3:] = cls._quaternion_to_euler_xyz(target_quat)
-        return target_pose
-
-    @staticmethod
-    def _wrap_angle_delta(angle_delta: np.ndarray) -> np.ndarray:
-        return (np.asarray(angle_delta, dtype=float) + np.pi) % (2.0 * np.pi) - np.pi
-
-    @classmethod
-    def _pose_error(cls, reconstructed_pose: Any, target_pose: Any) -> np.ndarray:
-        reconstructed_pose = cls._as_finite_pose(reconstructed_pose, name="reconstructed_pose")
-        target_pose = cls._as_finite_pose(target_pose, name="target_pose")
-        error = reconstructed_pose - target_pose
-        error[3:] = cls._wrap_angle_delta(error[3:])
-        return error
-
-    def _maybe_clamp_chunkwise_delta(self, delta_pose: np.ndarray) -> tuple[np.ndarray, bool]:
-        if not self._env_flag(
-            "NERO_CHUNKWISE_DEBUG_CLAMP_DELTA",
-            bool(getattr(self.config, "chunkwise_debug_clamp_delta", False)),
-        ):
-            return delta_pose, False
-
-        clamped = np.asarray(delta_pose, dtype=float).copy()
-        changed = False
-
-        xyz_norm = float(np.linalg.norm(clamped[:3]))
-        max_xyz_norm = self._env_float(
-            "NERO_CHUNKWISE_DEBUG_MAX_DELTA_XYZ_NORM",
-            float(getattr(self.config, "chunkwise_debug_max_delta_xyz_norm", 0.03)),
-        )
-        if max_xyz_norm > 0 and xyz_norm > max_xyz_norm:
-            clamped[:3] *= max_xyz_norm / xyz_norm
-            changed = True
-
-        rpy_norm = float(np.linalg.norm(clamped[3:]))
-        max_rpy_norm = self._env_float(
-            "NERO_CHUNKWISE_DEBUG_MAX_DELTA_RPY_NORM",
-            float(getattr(self.config, "chunkwise_debug_max_delta_rpy_norm", 0.35)),
-        )
-        if max_rpy_norm > 0 and rpy_norm > max_rpy_norm:
-            clamped[3:] *= max_rpy_norm / rpy_norm
-            changed = True
-
-        return clamped, changed
 
     def _get_prev_semantic_ee_pose(self, arm_side: str) -> Optional[np.ndarray]:
         if self._prev_observation is None:
@@ -365,9 +238,7 @@ class NeroDualArm(Robot):
 
         source = self._chunkwise_reference_pose_source()
         if source == "observation":
-            # Explicit experiment path only. This can differ from the server's open-loop IK state and is a
-            # common cause of chunk-wise target reconstruction error:
-            #   execution_ref != server_delta_ref -> server_target != policy_target_abs.
+            # Compatibility path for setups that cannot query the server-side servo reference directly.
             observation_pose = self._get_prev_semantic_ee_pose(arm_side)
             if observation_pose is None:
                 raise RuntimeError(
@@ -384,10 +255,8 @@ class NeroDualArm(Robot):
                     f"Invalid {arm_side} current execution reference pose in the latest observation."
                 ) from exc
 
-        # Default path: query the server-side reference pose used by servo_p_OL(delta=True). This is the
-        # important fix for the likely oscillation source: the client must invert against the same reference
-        # pose that the server will later use to reconstruct the target. A direct TCP ee pose query remains
-        # available as an explicit A/B/debug source, but `_prev_observation` is no longer the default.
+        # Default path: use the same open-loop reference pose that server servo_p_OL(delta=True) will compose
+        # the incoming delta against.
         if self._robot is None:
             raise RuntimeError(
                 f"Chunk-wise absolute action execution requires current execution reference pose for {arm_side} "
@@ -406,7 +275,8 @@ class NeroDualArm(Robot):
             raise RuntimeError(
                 f"Chunk-wise absolute action execution requires current execution reference pose for {arm_side} "
                 f"arm from {source_description}, but robot client has no `{getter_name}` method. "
-                "Set chunkwise_reference_pose_source='direct_ee' or 'observation' only for explicit A/B debug."
+                "Set chunkwise_reference_pose_source='direct_ee' or 'observation' only when their pose "
+                "semantics match the active controller."
             )
 
         try:
@@ -426,121 +296,6 @@ class NeroDualArm(Robot):
             raise RuntimeError(
                 f"Invalid {arm_side} current execution reference pose returned by `{getter_name}`."
             ) from exc
-
-    def _log_cartesian_command_debug(
-        self,
-        *,
-        execute_as_delta: bool,
-        left_pose_command: np.ndarray,
-        right_pose_command: np.ndarray,
-    ) -> None:
-        if self._execution_debug_logs_remaining <= 0:
-            return
-
-        debug_index = 6 - self._execution_debug_logs_remaining
-        current_left_pose = self._get_prev_semantic_ee_pose("left")
-        current_right_pose = self._get_prev_semantic_ee_pose("right")
-        interpretation = "delta" if execute_as_delta else "absolute"
-        logger.info(
-            "[EXEC DEBUG %d/5] mode=%s | current_left=%s | command_left=%s",
-            debug_index,
-            interpretation,
-            None if current_left_pose is None else self._format_pose_values(current_left_pose),
-            self._format_pose_values(left_pose_command),
-        )
-        logger.info(
-            "[EXEC DEBUG %d/5] mode=%s | current_right=%s | command_right=%s",
-            debug_index,
-            interpretation,
-            None if current_right_pose is None else self._format_pose_values(current_right_pose),
-            self._format_pose_values(right_pose_command),
-        )
-        self._execution_debug_logs_remaining -= 1
-
-    def _log_chunkwise_conversion_debug(
-        self,
-        *,
-        arm_side: str,
-        step_idx: int,
-        queue_idx: Any,
-        reference_source: str,
-        target_abs_pose: np.ndarray,
-        current_ref_pose_client: np.ndarray,
-        delta_to_send: np.ndarray,
-        target_reconstructed_client: np.ndarray,
-        pose_reconstruction_error: np.ndarray,
-        clamp_applied: bool,
-    ) -> None:
-        if not self._should_log_chunkwise_debug(step_idx):
-            return
-
-        xyz_err_norm = float(np.linalg.norm(pose_reconstruction_error[:3]))
-        rpy_err_norm = float(np.linalg.norm(pose_reconstruction_error[3:]))
-        logger.info(
-            "[CW_ALIGN_EXEC step=%s queue=%s arm=%s src=%s] "
-            "target_abs_pose=%s | current_ref_pose_client=%s | delta_to_send=%s | "
-            "target_reconstructed_client=%s | pose_reconstruction_error=%s | "
-            "err_xyz_norm=%.6f | err_rpy_norm=%.6f | clamp_applied=%s | action_delta_alignment=%s",
-            step_idx,
-            queue_idx,
-            arm_side,
-            reference_source,
-            self._format_pose_values(target_abs_pose),
-            self._format_pose_values(current_ref_pose_client),
-            self._format_pose_values(delta_to_send),
-            self._format_pose_values(target_reconstructed_client),
-            self._format_pose_values(pose_reconstruction_error),
-            xyz_err_norm,
-            rpy_err_norm,
-            clamp_applied,
-            self._get_action_delta_alignment(),
-        )
-
-    def _check_chunkwise_reconstruction_error(
-        self,
-        *,
-        arm_side: str,
-        step_idx: int,
-        pose_reconstruction_error: np.ndarray,
-    ) -> None:
-        xyz_err_norm = float(np.linalg.norm(pose_reconstruction_error[:3]))
-        rpy_err_norm = float(np.linalg.norm(pose_reconstruction_error[3:]))
-        xyz_warn = self._env_float(
-            "NERO_CHUNKWISE_RECON_ERROR_XYZ_WARN_M",
-            float(getattr(self.config, "chunkwise_debug_reconstruction_error_xyz_warn_m", 0.005)),
-        )
-        rpy_warn = self._env_float(
-            "NERO_CHUNKWISE_RECON_ERROR_RPY_WARN_RAD",
-            float(getattr(self.config, "chunkwise_debug_reconstruction_error_rpy_warn_rad", 0.05)),
-        )
-        over_threshold = xyz_err_norm > xyz_warn or rpy_err_norm > rpy_warn
-        if over_threshold:
-            self._chunkwise_reconstruction_error_streak[arm_side] += 1
-            logger.warning(
-                "[CW_ALIGN_EXEC_WARN step=%s arm=%s] !!! local reconstruction error above threshold | "
-                "err_xyz_norm=%.6f m | err_rpy_norm=%.6f rad | streak=%d",
-                step_idx,
-                arm_side,
-                xyz_err_norm,
-                rpy_err_norm,
-                self._chunkwise_reconstruction_error_streak[arm_side],
-            )
-        else:
-            self._chunkwise_reconstruction_error_streak[arm_side] = 0
-
-        if self._env_flag(
-            "NERO_CHUNKWISE_STOP_ON_RECON_ERROR",
-            bool(getattr(self.config, "chunkwise_debug_stop_on_reconstruction_error", False)),
-        ):
-            max_consecutive = self._env_int(
-                "NERO_CHUNKWISE_RECON_ERROR_MAX_CONSECUTIVE",
-                int(getattr(self.config, "chunkwise_debug_reconstruction_error_max_consecutive", 3)),
-            )
-            if self._chunkwise_reconstruction_error_streak[arm_side] >= max_consecutive:
-                raise RuntimeError(
-                    f"Stopping chunk-wise cartesian command after {max_consecutive} consecutive local "
-                    f"reconstruction errors for {arm_side} arm."
-                )
 
     def _execute_stepwise_delta_action(
         self,
@@ -570,85 +325,18 @@ class NeroDualArm(Robot):
         *,
         left_target_abs: np.ndarray,
         right_target_abs: np.ndarray,
-        debug_step_idx: int,
-        debug_queue_idx: Any = None,
     ) -> None:
-        if self._chunkwise_fallback_to_delta_false():
-            if not self._logged_chunkwise_delta_false_fallback:
-                logger.warning(
-                    "[CW_ALIGN_EXEC] NERO_CHUNKWISE_FALLBACK_DELTA_FALSE is enabled: chunk-wise absolute "
-                    "targets will be sent through servo_p_OL(delta=False) for A/B diagnosis."
-                )
-                self._logged_chunkwise_delta_false_fallback = True
-            if np.isfinite(left_target_abs).all():
-                self._robot.servo_p_OL("left_robot", left_target_abs, delta=False)
-            if np.isfinite(right_target_abs).all():
-                self._robot.servo_p_OL("right_robot", right_target_abs, delta=False)
-            return
-
         # Chunk-wise policy output remains absolute all the way through the action queue. The conversion below
         # happens only at the send boundary, using the current execution reference pose for this frame.
         #
         # 也就是说，queue 里永远不存“预先算好的 delta chunk”：
         #   policy absolute target -> action queue -> send boundary -> current ref -> one-shot delta
         # 这样可以避免把整段 chunk 锚死在 chunk 起点，也避免把 absolute target 直接交给 delta=False 路径。
-        reference_source = self._chunkwise_reference_pose_source()
         left_current_ref = self._get_current_cartesian_reference_pose("left")
         right_current_ref = self._get_current_cartesian_reference_pose("right")
 
         left_delta_to_send = self._convert_absolute_pose_to_servo_delta(left_target_abs, left_current_ref)
         right_delta_to_send = self._convert_absolute_pose_to_servo_delta(right_target_abs, right_current_ref)
-
-        left_target_reconstructed = self._reconstruct_servo_delta_target(left_delta_to_send, left_current_ref)
-        right_target_reconstructed = self._reconstruct_servo_delta_target(right_delta_to_send, right_current_ref)
-        left_reconstruction_error = self._pose_error(left_target_reconstructed, left_target_abs)
-        right_reconstruction_error = self._pose_error(right_target_reconstructed, right_target_abs)
-        self._check_chunkwise_reconstruction_error(
-            arm_side="left",
-            step_idx=debug_step_idx,
-            pose_reconstruction_error=left_reconstruction_error,
-        )
-        self._check_chunkwise_reconstruction_error(
-            arm_side="right",
-            step_idx=debug_step_idx,
-            pose_reconstruction_error=right_reconstruction_error,
-        )
-
-        left_delta_to_send, left_clamped = self._maybe_clamp_chunkwise_delta(left_delta_to_send)
-        right_delta_to_send, right_clamped = self._maybe_clamp_chunkwise_delta(right_delta_to_send)
-        left_target_reconstructed_to_send = self._reconstruct_servo_delta_target(
-            left_delta_to_send, left_current_ref
-        )
-        right_target_reconstructed_to_send = self._reconstruct_servo_delta_target(
-            right_delta_to_send, right_current_ref
-        )
-        left_reconstruction_error_to_send = self._pose_error(left_target_reconstructed_to_send, left_target_abs)
-        right_reconstruction_error_to_send = self._pose_error(right_target_reconstructed_to_send, right_target_abs)
-
-        self._log_chunkwise_conversion_debug(
-            arm_side="left",
-            step_idx=debug_step_idx,
-            queue_idx=debug_queue_idx,
-            reference_source=reference_source,
-            target_abs_pose=left_target_abs,
-            current_ref_pose_client=left_current_ref,
-            delta_to_send=left_delta_to_send,
-            target_reconstructed_client=left_target_reconstructed_to_send,
-            pose_reconstruction_error=left_reconstruction_error_to_send,
-            clamp_applied=left_clamped,
-        )
-        self._log_chunkwise_conversion_debug(
-            arm_side="right",
-            step_idx=debug_step_idx,
-            queue_idx=debug_queue_idx,
-            reference_source=reference_source,
-            target_abs_pose=right_target_abs,
-            current_ref_pose_client=right_current_ref,
-            delta_to_send=right_delta_to_send,
-            target_reconstructed_client=right_target_reconstructed_to_send,
-            pose_reconstruction_error=right_reconstruction_error_to_send,
-            clamp_applied=right_clamped,
-        )
 
         left_should_send = np.linalg.norm(left_delta_to_send) >= 0.001
         right_should_send = np.linalg.norm(right_delta_to_send) >= 0.001
@@ -656,76 +344,9 @@ class NeroDualArm(Robot):
         # 方案 B 的最终落点：chunk_wise 也复用更稳定的 `servo_p_OL(delta=True)` 控制链路。
         # 这里发送的是刚刚按当前执行参考 pose 算出的 one-shot delta，而不是 policy 返回的 absolute action。
         if left_should_send:
-            self._robot.servo_p_OL(
-                "left_robot",
-                left_delta_to_send,
-                delta=True,
-                debug_target_abs_pose=left_target_abs,
-                debug_step_idx=debug_step_idx,
-                debug_queue_idx=debug_queue_idx,
-            )
+            self._robot.servo_p_OL("left_robot", left_delta_to_send, delta=True)
         if right_should_send:
-            self._robot.servo_p_OL(
-                "right_robot",
-                right_delta_to_send,
-                delta=True,
-                debug_target_abs_pose=right_target_abs,
-                debug_step_idx=debug_step_idx,
-                debug_queue_idx=debug_queue_idx,
-            )
-
-    def debug_reconstruction_sanity_check(self, current_ref_pose: Any, target_abs_pose: Any) -> dict[str, Any]:
-        """Experiment 2: verify local absolute->delta is the inverse of the server delta compose math.
-
-        This does not touch the robot. Use it with a sampled current reference pose and a fixed absolute target:
-            result = robot.debug_reconstruction_sanity_check(current_ref, target_abs)
-        If `pose_reconstruction_error[:3]` is not near zero, the bug is in execution pose math/order, not policy.
-        """
-        current_ref_pose = self._as_finite_pose(current_ref_pose, name="current_ref_pose")
-        target_abs_pose = self._as_finite_pose(target_abs_pose, name="target_abs_pose")
-        delta_to_send = self._convert_absolute_pose_to_servo_delta(target_abs_pose, current_ref_pose)
-        target_reconstructed = self._reconstruct_servo_delta_target(delta_to_send, current_ref_pose)
-        pose_reconstruction_error = self._pose_error(target_reconstructed, target_abs_pose)
-        return {
-            "current_ref_pose": current_ref_pose.tolist(),
-            "target_abs_pose": target_abs_pose.tolist(),
-            "delta_to_send": delta_to_send.tolist(),
-            "target_reconstructed": target_reconstructed.tolist(),
-            "pose_reconstruction_error": pose_reconstruction_error.tolist(),
-            "err_xyz_norm": float(np.linalg.norm(pose_reconstruction_error[:3])),
-            "err_rpy_norm": float(np.linalg.norm(pose_reconstruction_error[3:])),
-        }
-
-    def debug_replay_fixed_absolute_target(
-        self,
-        left_target_abs: Any,
-        right_target_abs: Any,
-        *,
-        cycles: int = 50,
-        sleep_s: float | None = None,
-    ) -> None:
-        """Experiment 1: repeatedly send a fixed absolute target through the chunk-wise execution path.
-
-        This bypasses policy entirely:
-            fixed absolute target -> current server/reference pose -> one-shot delta -> servo_p_OL(delta=True)
-
-        If this fixed-target replay oscillates or diverges, the failure is in execution/client/server pose
-        semantics rather than ACT training quality. Enable `NERO_CHUNKWISE_DEBUG=1` to align client/server logs.
-        """
-        if self._robot is None:
-            raise RuntimeError("Robot client is required for fixed absolute target replay.")
-
-        left_target_abs = self._as_finite_pose(left_target_abs, name="left_target_abs")
-        right_target_abs = self._as_finite_pose(right_target_abs, name="right_target_abs")
-        for replay_step in range(cycles):
-            self._execute_chunkwise_absolute_action_as_delta(
-                left_target_abs=left_target_abs,
-                right_target_abs=right_target_abs,
-                debug_step_idx=replay_step,
-                debug_queue_idx="fixed_abs_replay",
-            )
-            if sleep_s is not None and sleep_s > 0:
-                time.sleep(sleep_s)
+            self._robot.servo_p_OL("right_robot", right_delta_to_send, delta=True)
 
     def connect(self, calibrate: bool = True) -> None:
         """Connect to the robot.
@@ -992,11 +613,7 @@ class NeroDualArm(Robot):
         if not self._should_send_action():
             return
 
-        alignment = self._get_action_delta_alignment()
         execute_as_delta = self._execute_cartesian_as_delta()
-        debug_step_idx = self._cartesian_send_step_idx
-        self._cartesian_send_step_idx += 1
-        debug_queue_idx = action.get("queue_idx", action.get("action_queue_idx", None))
         self._log_execution_alignment_once()
 
         # Keep the legacy feature names for compatibility. In `chunk_wise` mode these values are absolute
@@ -1008,13 +625,6 @@ class NeroDualArm(Robot):
         right_pose_command = np.array([
             action[f"right_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ], dtype=float)
-        if alignment == "step_wise":
-            self._log_cartesian_command_debug(
-                execute_as_delta=True,
-                left_pose_command=left_pose_command,
-                right_pose_command=right_pose_command,
-            )
-
         if not self.config.debug:
             try:
                 # 分支语义总览：
@@ -1031,8 +641,6 @@ class NeroDualArm(Robot):
                     self._execute_chunkwise_absolute_action_as_delta(
                         left_target_abs=left_pose_command,
                         right_target_abs=right_pose_command,
-                        debug_step_idx=debug_step_idx,
-                        debug_queue_idx=debug_queue_idx,
                     )
                     
             except Exception as e:

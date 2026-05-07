@@ -72,20 +72,9 @@ record:
     # `chunk_wise`: ACT 推理返回 absolute target pose；执行层在每次发送前按当前参考 pose 转成一次性 delta，
     #               再调用 servo_p_OL(..., delta=True)
     action_delta_alignment: "chunk_wise"
-    # Chunk-wise execution diagnostics; only used by robot execution, not by training or policy decode.
-    # 推荐默认 `servo_ol`：向 server 查询 servo_p_OL(delta=True) 内部同源 reference pose。
-    # 可选: servo_ol | direct_ee | observation。observation 仅建议作为 A/B 实验路径。
+    # Chunk-wise absolute->delta conversion reference source: servo_ol | direct_ee | observation.
+    # 推荐默认 servo_ol：向 server 查询 servo_p_OL(delta=True) 内部同源 reference pose。
     chunkwise_reference_pose_source: "servo_ol"
-    chunkwise_execution_debug: true  # true 时打印 CW_ALIGN_EXEC / CW_ALIGN_SERVER 对齐日志
-    chunkwise_debug_every_n: 1
-    chunkwise_fallback_to_delta_false: false  # 临时 A/B：chunk_wise absolute 直接走 delta=False
-    chunkwise_debug_clamp_delta: false        # 调试安全钳制，默认关闭
-    chunkwise_debug_max_delta_xyz_norm: 0.03
-    chunkwise_debug_max_delta_rpy_norm: 0.35
-    chunkwise_debug_reconstruction_error_xyz_warn_m: 0.005
-    chunkwise_debug_reconstruction_error_rpy_warn_rad: 0.05
-    chunkwise_debug_stop_on_reconstruction_error: false
-    chunkwise_debug_reconstruction_error_max_consecutive: 3
     # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right\
     #                   /act_20260504_E175_V01/checkpoints/014000/pretrained_model"  # 预训练模型路径下要包括config.json
     pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right\
