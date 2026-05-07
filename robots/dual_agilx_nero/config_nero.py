@@ -36,7 +36,8 @@ class NeroDualArmConfig(RobotConfig):
     debug: bool = True
     # Execution-side interpretation of cartesian action values.
     # `step_wise`: actions are delta ee poses -> call servo_p_OL(..., delta=True)
-    # `chunk_wise`: ACT inference already decoded actions to absolute targets -> call servo_p_OL(..., delta=False)
+    # `chunk_wise`: ACT inference already decoded actions to absolute targets; execution converts each target
+    # to a one-shot delta against the current reference pose, then calls servo_p_OL(..., delta=True)
     action_delta_alignment: Literal["step_wise", "chunk_wise"] = "step_wise"
     # Legacy Nero datasets keep the `left/right_ee_pose.rx/ry/rz` feature names, but the values recorded in
     # `observation.state` follow this compatibility axis order. Chunk-wise ACT deployment uses this hint when

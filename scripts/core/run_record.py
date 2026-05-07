@@ -203,7 +203,8 @@ class RecordConfig:
             self.policy.pretrained_path = policy["pretrained_path"]
         # Keep one source of truth for deployment semantics:
         # the same `action_delta_alignment` that controls ACT inference output meaning is forwarded to the
-        # robot so execution can choose `servo_p_OL(delta=True/False)` consistently.
+        # robot so execution can keep step-wise actions as deltas and convert chunk-wise absolute targets at
+        # the send boundary.
         self.action_delta_alignment = getattr(self.policy, "action_delta_alignment", "step_wise")
     
     def create_teleop_config(self):

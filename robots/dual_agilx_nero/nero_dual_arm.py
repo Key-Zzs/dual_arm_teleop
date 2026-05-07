@@ -81,27 +81,130 @@ class NeroDualArm(Robot):
         return alignment
 
     def _execute_cartesian_as_delta(self) -> bool:
-        # `step_wise` preserves the old deployment contract: action values are per-step deltas.
-        # `chunk_wise` means ACT inference has already decoded them into absolute target poses.
+        # True only when the action values themselves are executable per-step deltas.
+        # In `chunk_wise`, the policy returns absolute target poses; execution converts each target to a
+        # one-shot servo delta immediately before calling `servo_p_OL(delta=True)`.
+        #
+        # 关键语义：
+        # - step_wise: action 数值本身就是「这一帧要走多少」。
+        # - chunk_wise: action 数值是「这一帧想去哪里」，不是「要走多少」。
+        # 所以这个 helper 只回答“action 原始数值能不能直接当 delta 发”，不是回答最终是否走
+        # `servo_p_OL(delta=True)`。方案 B 下两个模式最终都会用 delta=True，只是 chunk_wise 需要先转换。
         return self._get_action_delta_alignment() == "step_wise"
 
     def _log_execution_alignment_once(self) -> None:
         if self._logged_execution_alignment:
             return
 
-        execute_as_delta = self._execute_cartesian_as_delta()
-        action_semantics = "delta ee pose" if execute_as_delta else "absolute target pose"
-        logger.info(
-            "[EXEC] action_delta_alignment=%s | cartesian actions interpreted as %s | servo_p_OL(delta=%s)",
-            self._get_action_delta_alignment(),
-            action_semantics,
-            execute_as_delta,
-        )
+        alignment = self._get_action_delta_alignment()
+        if alignment == "step_wise":
+            logger.info(
+                "[EXEC] action_delta_alignment=step_wise | action is already delta ee pose | "
+                "servo_p_OL(delta=True)"
+            )
+        else:
+            logger.info(
+                "[EXEC] action_delta_alignment=chunk_wise | queued policy actions are absolute target poses | "
+                "execution converts against the current reference pose just before send | servo_p_OL(delta=True)"
+            )
         self._logged_execution_alignment = True
 
     @staticmethod
     def _format_pose_values(values: np.ndarray) -> list[float]:
         return [round(float(value), 4) for value in values.tolist()]
+
+    @staticmethod
+    def _as_finite_pose(pose: Any, *, name: str) -> np.ndarray:
+        if pose is None:
+            raise ValueError(f"{name} is None.")
+
+        pose_array = np.asarray(pose, dtype=float).reshape(-1)
+        if pose_array.size != 6:
+            raise ValueError(f"{name} must contain 6 pose values [x, y, z, rx, ry, rz]. Got {pose_array.size}.")
+        if not np.isfinite(pose_array).all():
+            raise ValueError(f"{name} contains non-finite values: {pose_array.tolist()}.")
+        return pose_array
+
+    @staticmethod
+    def _normalize_quaternion(quaternion: np.ndarray) -> np.ndarray:
+        quaternion = np.asarray(quaternion, dtype=float).reshape(4)
+        norm = np.linalg.norm(quaternion)
+        if norm < 1e-12:
+            raise ValueError("Cannot normalize a near-zero quaternion.")
+        return quaternion / norm
+
+    @classmethod
+    def _quaternion_multiply(cls, lhs: np.ndarray, rhs: np.ndarray) -> np.ndarray:
+        # Returns `lhs * rhs` with the same [x, y, z, w] convention used by `servo_p_OL`.
+        x1, y1, z1, w1 = cls._normalize_quaternion(lhs)
+        x2, y2, z2, w2 = cls._normalize_quaternion(rhs)
+        return cls._normalize_quaternion(
+            np.array(
+                [
+                    w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+                    w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+                    w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+                    w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+                ],
+                dtype=float,
+            )
+        )
+
+    @classmethod
+    def _quaternion_inverse(cls, quaternion: np.ndarray) -> np.ndarray:
+        x, y, z, w = cls._normalize_quaternion(quaternion)
+        return np.array([-x, -y, -z, w], dtype=float)
+
+    @classmethod
+    def _euler_xyz_to_quaternion(cls, euler_xyz: np.ndarray) -> np.ndarray:
+        # Match the ACT conversion helpers and the active server: roll/pitch/yaw increments are converted as
+        # qz * qy * qx, then left-multiplied onto the current orientation in `servo_p_OL(delta=True)`.
+        #
+        # 这里不能随便换成 scipy 默认欧拉顺序，也不能简单逐轴相减。训练侧 chunk-wise delta 累积、
+        # 推理侧 chunk-wise -> absolute 解码、以及 server 端 `servo_p_OL` 都依赖这一套旋转约定：
+        #     target_quat = delta_quat * current_quat
+        # 四元数格式保持 server 使用的 [x, y, z, w]。
+        roll, pitch, yaw = np.asarray(euler_xyz, dtype=float).reshape(3) * 0.5
+        qx = np.array([np.sin(roll), 0.0, 0.0, np.cos(roll)], dtype=float)
+        qy = np.array([0.0, np.sin(pitch), 0.0, np.cos(pitch)], dtype=float)
+        qz = np.array([0.0, 0.0, np.sin(yaw), np.cos(yaw)], dtype=float)
+        return cls._quaternion_multiply(qz, cls._quaternion_multiply(qy, qx))
+
+    @classmethod
+    def _quaternion_to_euler_xyz(cls, quaternion: np.ndarray) -> np.ndarray:
+        x, y, z, w = cls._normalize_quaternion(quaternion)
+        roll = np.arctan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
+        pitch = np.arcsin(np.clip(2.0 * (w * y - z * x), -1.0, 1.0))
+        yaw = np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+        return np.array([roll, pitch, yaw], dtype=float)
+
+    @classmethod
+    def _convert_absolute_pose_to_servo_delta(cls, target_pose: Any, current_pose: Any) -> np.ndarray:
+        """Convert an absolute target pose into the one-shot delta expected by `servo_p_OL(delta=True)`.
+
+        这是方案 B 的核心逆变换：
+        - 输入 target_pose 来自 policy 返回的 chunk_wise absolute target action。
+        - 输入 current_pose 必须是“当前发送这一帧时”的执行参考 pose，不是 chunk 起点 pose。
+        - 输出 delta_pose 只用于本次 `servo_p_OL(delta=True)`，不写回 action queue。
+
+        平移是普通差值；旋转要按 server 的增量欧拉语义反解：
+            server: target_quat = delta_quat * current_quat
+            here:   delta_quat = target_quat * inverse(current_quat)
+        """
+        target_pose = cls._as_finite_pose(target_pose, name="target_pose")
+        current_pose = cls._as_finite_pose(current_pose, name="current_pose")
+
+        delta_pose = np.zeros(6, dtype=float)
+        # Translation is expressed in the same world/base pose frame as the absolute ee pose.
+        delta_pose[:3] = target_pose[:3] - current_pose[:3]
+
+        current_quat = cls._euler_xyz_to_quaternion(current_pose[3:])
+        target_quat = cls._euler_xyz_to_quaternion(target_pose[3:])
+        # Server-side delta mode computes: target_quat = delta_quat * current_quat.
+        # Therefore the inverse conversion is: delta_quat = target_quat * inverse(current_quat).
+        delta_quat = cls._quaternion_multiply(target_quat, cls._quaternion_inverse(current_quat))
+        delta_pose[3:] = cls._quaternion_to_euler_xyz(delta_quat)
+        return delta_pose
 
     def _get_prev_semantic_ee_pose(self, arm_side: str) -> Optional[np.ndarray]:
         if self._prev_observation is None:
@@ -111,6 +214,10 @@ class NeroDualArm(Robot):
         canonical_axes = ("x", "y", "z", "rx", "ry", "rz")
         stored_axes = tuple(getattr(self.config, "ee_pose_observation_axis_order", canonical_axes))
         semantic_values: dict[str, float] = {}
+        # `get_observation()` may store Nero's compatibility order, e.g. x/y/z/rz/ry/rx, while the execution
+        # math below always expects canonical semantic order [x, y, z, rx, ry, rz].
+        # This remap keeps old dataset/feature names stable without letting axis-order compatibility leak into
+        # the pose conversion math.
         for semantic_axis, stored_axis in zip(canonical_axes, stored_axes, strict=True):
             key = f"{prefix}.{stored_axis}"
             if key not in self._prev_observation:
@@ -118,6 +225,69 @@ class NeroDualArm(Robot):
             semantic_values[semantic_axis] = float(self._prev_observation[key])
 
         return np.array([semantic_values[axis] for axis in canonical_axes], dtype=float)
+
+    def _get_current_cartesian_reference_pose(self, arm_side: str) -> np.ndarray:
+        """Return the absolute ee pose used to convert a chunk-wise target just before sending it."""
+        if arm_side not in {"left", "right"}:
+            raise ValueError(f"`arm_side` must be 'left' or 'right'. Got {arm_side}.")
+
+        # Prefer the latest robot observation/state. During queued chunk-wise execution, the queue still stores
+        # absolute targets; this method is called per send, so each action is re-anchored to the current
+        # execution frame rather than the chunk-start pose.
+        #
+        # 为什么不能用 chunk_ref_pose:
+        # policy decode chunk 时用的 chunk_ref_pose 只适合把模型输出从“chunk 起点 delta”解码成 absolute。
+        # 到真正执行第 k 帧时，机器人可能已经因为 IK 限幅、跳帧、控制误差或上一帧执行结果而偏离 chunk 起点。
+        # 因此这里必须在发送前重新读取当前参考 pose，再计算一次性 delta。
+        observation_pose = self._get_prev_semantic_ee_pose(arm_side)
+        if observation_pose is not None:
+            try:
+                return self._as_finite_pose(
+                    observation_pose,
+                    name=f"{arm_side} current execution reference pose from observation",
+                )
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Invalid {arm_side} current execution reference pose in the latest observation."
+                ) from exc
+
+        # Fallback to a direct robot query if no latest observation pose is available. We intentionally do not
+        # fall back to the last commanded target here because that would create a local open-loop integrator and
+        # can silently accumulate pose drift.
+        #
+        # 注意：server 端 `servo_p_OL(delta=True)` 内部使用 IK solver state 作为开环连续基准；当前 client
+        # 没有直接暴露这个 state 对应的 fk pose。因此 execution 层选择“最新 observation / 直接 ee pose 查询”
+        # 作为最接近真实执行时刻的 reference。若这两者都不可用，就显式报错，而不是静默猜测参考系。
+        if self._robot is None:
+            raise RuntimeError(
+                f"Chunk-wise absolute action execution requires current execution reference pose for {arm_side} "
+                "arm, but no latest observation pose or robot client is available."
+            )
+
+        getter_name = f"{arm_side}_robot_get_ee_pose"
+        getter = getattr(self._robot, getter_name, None)
+        if getter is None:
+            raise RuntimeError(
+                f"Chunk-wise absolute action execution requires current execution reference pose for {arm_side} "
+                f"arm, but robot client has no `{getter_name}` method."
+            )
+
+        try:
+            direct_pose = getter()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to query current execution reference pose for {arm_side} arm via `{getter_name}`."
+            ) from exc
+
+        try:
+            return self._as_finite_pose(
+                direct_pose,
+                name=f"{arm_side} current execution reference pose from `{getter_name}`",
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Invalid {arm_side} current execution reference pose returned by `{getter_name}`."
+            ) from exc
 
     def _log_cartesian_command_debug(
         self,
@@ -148,6 +318,95 @@ class NeroDualArm(Robot):
             self._format_pose_values(right_pose_command),
         )
         self._execution_debug_logs_remaining -= 1
+
+    def _log_chunkwise_conversion_debug(
+        self,
+        *,
+        left_current_ref: np.ndarray,
+        right_current_ref: np.ndarray,
+        left_target_abs: np.ndarray,
+        right_target_abs: np.ndarray,
+        left_delta_to_send: np.ndarray,
+        right_delta_to_send: np.ndarray,
+    ) -> None:
+        if self._execution_debug_logs_remaining <= 0:
+            return
+
+        debug_index = 6 - self._execution_debug_logs_remaining
+        logger.info(
+            "[EXEC DEBUG %d/5] mode=chunk_wise absolute->delta | left_ref=%s | target_left=%s | delta_left=%s",
+            debug_index,
+            self._format_pose_values(left_current_ref),
+            self._format_pose_values(left_target_abs),
+            self._format_pose_values(left_delta_to_send),
+        )
+        logger.info(
+            "[EXEC DEBUG %d/5] mode=chunk_wise absolute->delta | right_ref=%s | target_right=%s | delta_right=%s",
+            debug_index,
+            self._format_pose_values(right_current_ref),
+            self._format_pose_values(right_target_abs),
+            self._format_pose_values(right_delta_to_send),
+        )
+        self._execution_debug_logs_remaining -= 1
+
+    def _execute_stepwise_delta_action(
+        self,
+        *,
+        left_delta_command: np.ndarray,
+        right_delta_command: np.ndarray,
+    ) -> None:
+        # Step-wise actions are already executable delta ee poses, so they keep the legacy direct delta path.
+        # 这里故意不读取 current pose，也不做 absolute->delta 转换，避免影响老 checkpoint / 老数据的控制语义。
+        left_should_send = np.linalg.norm(left_delta_command) >= 0.001
+        right_should_send = np.linalg.norm(right_delta_command) >= 0.001
+
+        if left_should_send:
+            # t_servo_start = time.perf_counter()
+            self._robot.servo_p_OL("left_robot", left_delta_command, delta=True)
+            # t_servo_end = time.perf_counter()
+            # logger.info(f"[TIMING] left servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
+
+        if right_should_send:
+            # t_servo_start = time.perf_counter()
+            self._robot.servo_p_OL("right_robot", right_delta_command, delta=True)
+            # t_servo_end = time.perf_counter()
+            # logger.info(f"[TIMING] right servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
+
+    def _execute_chunkwise_absolute_action_as_delta(
+        self,
+        *,
+        left_target_abs: np.ndarray,
+        right_target_abs: np.ndarray,
+    ) -> None:
+        # Chunk-wise policy output remains absolute all the way through the action queue. The conversion below
+        # happens only at the send boundary, using the current execution reference pose for this frame.
+        #
+        # 也就是说，queue 里永远不存“预先算好的 delta chunk”：
+        #   policy absolute target -> action queue -> send boundary -> current ref -> one-shot delta
+        # 这样可以避免把整段 chunk 锚死在 chunk 起点，也避免把 absolute target 直接交给 delta=False 路径。
+        left_current_ref = self._get_current_cartesian_reference_pose("left")
+        right_current_ref = self._get_current_cartesian_reference_pose("right")
+
+        left_delta_to_send = self._convert_absolute_pose_to_servo_delta(left_target_abs, left_current_ref)
+        right_delta_to_send = self._convert_absolute_pose_to_servo_delta(right_target_abs, right_current_ref)
+        self._log_chunkwise_conversion_debug(
+            left_current_ref=left_current_ref,
+            right_current_ref=right_current_ref,
+            left_target_abs=left_target_abs,
+            right_target_abs=right_target_abs,
+            left_delta_to_send=left_delta_to_send,
+            right_delta_to_send=right_delta_to_send,
+        )
+
+        left_should_send = np.linalg.norm(left_delta_to_send) >= 0.001
+        right_should_send = np.linalg.norm(right_delta_to_send) >= 0.001
+
+        # 方案 B 的最终落点：chunk_wise 也复用更稳定的 `servo_p_OL(delta=True)` 控制链路。
+        # 这里发送的是刚刚按当前执行参考 pose 算出的 one-shot delta，而不是 policy 返回的 absolute action。
+        if left_should_send:
+            self._robot.servo_p_OL("left_robot", left_delta_to_send, delta=True)
+        if right_should_send:
+            self._robot.servo_p_OL("right_robot", right_delta_to_send, delta=True)
 
     def connect(self, calibrate: bool = True) -> None:
         """Connect to the robot.
@@ -414,53 +673,46 @@ class NeroDualArm(Robot):
         if not self._should_send_action():
             return
 
+        alignment = self._get_action_delta_alignment()
         execute_as_delta = self._execute_cartesian_as_delta()
         self._log_execution_alignment_once()
 
-        # Keep the legacy feature names for compatibility. In `chunk_wise` mode ACT inference has already
-        # decoded these values to absolute target poses, so execution must switch the `delta` flag instead of
-        # trying to re-interpret or re-integrate the numeric values here.
+        # Keep the legacy feature names for compatibility. In `chunk_wise` mode these values are absolute
+        # target poses returned by ACT inference and stored unchanged in the action queue; only the send
+        # boundary converts them to one-shot deltas for `servo_p_OL(delta=True)`.
         left_pose_command = np.array([
             action[f"left_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ], dtype=float)
         right_pose_command = np.array([
             action[f"right_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ], dtype=float)
-        self._log_cartesian_command_debug(
-            execute_as_delta=execute_as_delta,
-            left_pose_command=left_pose_command,
-            right_pose_command=right_pose_command,
-        )
+        if alignment == "step_wise":
+            self._log_cartesian_command_debug(
+                execute_as_delta=True,
+                left_pose_command=left_pose_command,
+                right_pose_command=right_pose_command,
+            )
 
         if not self.config.debug:
             try:
-                # `servo_p_OL` already supports both semantic modes through its `delta` flag, so the execution
-                # layer's job is only to choose the correct interpretation path here. We intentionally do not
-                # re-implement any delta<->absolute conversion in the robot class.
-                # The small-norm suppression only makes sense for per-step delta actions. In absolute mode we
-                # should forward the target pose directly, otherwise a valid non-zero absolute target would be
-                # interpreted as "always large" and the old delta threshold would become meaningless.
+                # 分支语义总览：
+                # - step_wise: `left/right_pose_command` 已经是可执行 delta，直接发。
+                # - chunk_wise: `left/right_pose_command` 是 absolute target，先在
+                #   `_execute_chunkwise_absolute_action_as_delta()` 里用当前执行参考 pose 转成 delta 再发。
+                # 两条路径最终都调用 `servo_p_OL(delta=True)`，区别只在 action 原始数值是否需要转换。
                 if execute_as_delta:
-                    left_should_send = np.linalg.norm(left_pose_command) >= 0.001
-                    right_should_send = np.linalg.norm(right_pose_command) >= 0.001
+                    self._execute_stepwise_delta_action(
+                        left_delta_command=left_pose_command,
+                        right_delta_command=right_pose_command,
+                    )
                 else:
-                    left_should_send = np.isfinite(left_pose_command).all()
-                    right_should_send = np.isfinite(right_pose_command).all()
-
-                if left_should_send:
-                    # t_servo_start = time.perf_counter()
-                    self._robot.servo_p_OL("left_robot", left_pose_command, delta=execute_as_delta)
-                    # t_servo_end = time.perf_counter()
-                    # logger.info(f"[TIMING] left servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
-                
-                if right_should_send:
-                    # t_servo_start = time.perf_counter()
-                    self._robot.servo_p_OL("right_robot", right_pose_command, delta=execute_as_delta)
-                    # t_servo_end = time.perf_counter()
-                    # logger.info(f"[TIMING] right servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
+                    self._execute_chunkwise_absolute_action_as_delta(
+                        left_target_abs=left_pose_command,
+                        right_target_abs=right_pose_command,
+                    )
                     
             except Exception as e:
-                logger.warning(f"[DUAL ARM] servo_p_OL failed: {e}")
+                logger.warning(f"[DUAL ARM] cartesian action execution failed: {e}")
         
         # t_cart_end = time.perf_counter()
         # logger.info(f"[TIMING] send_action_cartesian total: {(t_cart_end-t_cart_start)*1000:.2f}ms")

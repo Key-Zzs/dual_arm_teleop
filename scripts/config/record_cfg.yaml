@@ -69,7 +69,8 @@ record:
     chunk_size: 30
     n_action_steps: 1
     # `step_wise`: 执行层继续把 action 当作 delta ee pose，调用 servo_p_OL(..., delta=True)
-    # `chunk_wise`: ACT 推理已将 action 解码为 absolute target pose，执行层调用 servo_p_OL(..., delta=False)
+    # `chunk_wise`: ACT 推理返回 absolute target pose；执行层在每次发送前按当前参考 pose 转成一次性 delta，
+    #               再调用 servo_p_OL(..., delta=True)
     action_delta_alignment: "step_wise"
     pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
                       /[worked]act_20260427_merged_v2/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
