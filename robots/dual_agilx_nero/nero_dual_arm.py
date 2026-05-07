@@ -58,6 +58,7 @@ class NeroDualArm(Robot):
         self.action_send_dt = 1.0 / self.action_send_freq
         self.last_action_send_time = 0.0
         self._logged_execution_alignment = False
+        self._execution_debug_logs_remaining = 5
 
     def _should_send_action(self) -> bool:
         """检查是否应该发送action（频率限制）"""
@@ -97,6 +98,56 @@ class NeroDualArm(Robot):
             execute_as_delta,
         )
         self._logged_execution_alignment = True
+
+    @staticmethod
+    def _format_pose_values(values: np.ndarray) -> list[float]:
+        return [round(float(value), 4) for value in values.tolist()]
+
+    def _get_prev_semantic_ee_pose(self, arm_side: str) -> Optional[np.ndarray]:
+        if self._prev_observation is None:
+            return None
+
+        prefix = f"{arm_side}_ee_pose"
+        canonical_axes = ("x", "y", "z", "rx", "ry", "rz")
+        stored_axes = tuple(getattr(self.config, "ee_pose_observation_axis_order", canonical_axes))
+        semantic_values: dict[str, float] = {}
+        for semantic_axis, stored_axis in zip(canonical_axes, stored_axes, strict=True):
+            key = f"{prefix}.{stored_axis}"
+            if key not in self._prev_observation:
+                return None
+            semantic_values[semantic_axis] = float(self._prev_observation[key])
+
+        return np.array([semantic_values[axis] for axis in canonical_axes], dtype=float)
+
+    def _log_cartesian_command_debug(
+        self,
+        *,
+        execute_as_delta: bool,
+        left_pose_command: np.ndarray,
+        right_pose_command: np.ndarray,
+    ) -> None:
+        if self._execution_debug_logs_remaining <= 0:
+            return
+
+        debug_index = 6 - self._execution_debug_logs_remaining
+        current_left_pose = self._get_prev_semantic_ee_pose("left")
+        current_right_pose = self._get_prev_semantic_ee_pose("right")
+        interpretation = "delta" if execute_as_delta else "absolute"
+        logger.info(
+            "[EXEC DEBUG %d/5] mode=%s | current_left=%s | command_left=%s",
+            debug_index,
+            interpretation,
+            None if current_left_pose is None else self._format_pose_values(current_left_pose),
+            self._format_pose_values(left_pose_command),
+        )
+        logger.info(
+            "[EXEC DEBUG %d/5] mode=%s | current_right=%s | command_right=%s",
+            debug_index,
+            interpretation,
+            None if current_right_pose is None else self._format_pose_values(current_right_pose),
+            self._format_pose_values(right_pose_command),
+        )
+        self._execution_debug_logs_remaining -= 1
 
     def connect(self, calibrate: bool = True) -> None:
         """Connect to the robot.
@@ -375,6 +426,11 @@ class NeroDualArm(Robot):
         right_pose_command = np.array([
             action[f"right_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ], dtype=float)
+        self._log_cartesian_command_debug(
+            execute_as_delta=execute_as_delta,
+            left_pose_command=left_pose_command,
+            right_pose_command=right_pose_command,
+        )
 
         if not self.config.debug:
             try:
