@@ -75,9 +75,6 @@ record:
     # Chunk-wise absolute->delta conversion reference source: servo_ol | direct_ee | observation.
     # 推荐默认 servo_ol：振荡是 execution 双参考系问题，执行端向 server 查询 servo_p_OL(delta=True) 同源 reference pose，这是目前修好振荡问题的关键路径。
     chunkwise_reference_pose_source: "servo_ol"
-    # Policy-side drift diagnostics only; does not change training, decoding, ensemble, or execution.
-    debug_chunkwise_policy_drift: true
-    debug_chunkwise_policy_drift_every_n: 1
     # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right\
     #                   /act_20260504_E175_V01/checkpoints/014000/pretrained_model"  # 预训练模型路径下要包括config.json
     pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right\
