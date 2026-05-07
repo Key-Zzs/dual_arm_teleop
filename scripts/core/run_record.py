@@ -46,6 +46,84 @@ RUN_MIX_CHANGE_EPS = 5e-3
 RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS = 0.1
 
 
+def _chunkwise_policy_drift_debug_enabled(policy) -> bool:
+    return bool(
+        getattr(policy.config, "action_delta_alignment", "step_wise") == "chunk_wise"
+        and getattr(policy.config, "debug_chunkwise_policy_drift", False)
+    )
+
+
+def _should_log_chunkwise_policy_drift(policy, step_idx: int) -> bool:
+    if not _chunkwise_policy_drift_debug_enabled(policy):
+        return False
+    every_n = max(1, int(getattr(policy.config, "debug_chunkwise_policy_drift_every_n", 1)))
+    return step_idx % every_n == 0
+
+
+def _action_feature_index(action_names: list[str], feature_name: str) -> int:
+    matches = [index for index, name in enumerate(action_names) if name == feature_name]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Expected exactly one `{feature_name}` entry in action feature names. Got {len(matches)}."
+        )
+    return matches[0]
+
+
+def _right_pose_from_action_dict(action: dict[str, Any]) -> dict[str, float | None]:
+    return {
+        axis: None if f"right_delta_ee_pose.{axis}" not in action else round(float(action[f"right_delta_ee_pose.{axis}"]), 6)
+        for axis in ("x", "y", "z", "rx", "ry", "rz")
+    }
+
+
+def _log_make_robot_action_mapping(
+    *,
+    step_idx: int,
+    policy_action,
+    dataset_features: dict[str, dict],
+    action_dict: dict[str, Any],
+) -> None:
+    action_names = list(dataset_features[ACTION]["names"])
+    right_z_index = _action_feature_index(action_names, "right_delta_ee_pose.z")
+    action_tensor = policy_action.detach().cpu().squeeze(0)
+    right_z_tensor = round(float(action_tensor[right_z_index]), 6)
+    right_z_dict = round(float(action_dict["right_delta_ee_pose.z"]), 6)
+    right_pose_indices = {
+        axis: _action_feature_index(action_names, f"right_delta_ee_pose.{axis}")
+        for axis in ("x", "y", "z", "rx", "ry", "rz")
+    }
+    logging.info(
+        "[POLICY_DRIFT step=%s queue=None stage=make_robot_action_mapping] "
+        "right_z_feature=right_delta_ee_pose.z idx=%s tensor_value=%s action_dict_value=%s | "
+        "right_pose_indices=%s | right_pose_action_dict=%s",
+        step_idx,
+        right_z_index,
+        right_z_tensor,
+        right_z_dict,
+        right_pose_indices,
+        _right_pose_from_action_dict(action_dict),
+    )
+
+
+def _log_final_action_to_execution(
+    *,
+    step_idx: int,
+    action_source: str,
+    is_expert: bool,
+    exec_action: dict[str, Any],
+    robot_action_to_send: dict[str, Any],
+) -> None:
+    logging.info(
+        "[POLICY_DRIFT step=%s queue=None stage=final_action_to_execution] "
+        "action_source=%s is_expert=%s | exec_action_right_pose=%s | robot_action_to_send_right_pose=%s",
+        step_idx,
+        action_source,
+        is_expert,
+        _right_pose_from_action_dict(exec_action),
+        _right_pose_from_action_dict(robot_action_to_send),
+    )
+
+
 class RecordConfig:
     """Configuration class for recording sessions."""
     
@@ -189,6 +267,8 @@ class RecordConfig:
                 # default and lets run_policy / run_mix drive both policy output semantics and robot execution
                 # semantics from one field in `record_cfg.yaml`.
                 action_delta_alignment=policy.get("action_delta_alignment", "step_wise"),
+                debug_chunkwise_policy_drift=policy.get("debug_chunkwise_policy_drift", False),
+                debug_chunkwise_policy_drift_every_n=policy.get("debug_chunkwise_policy_drift_every_n", 1),
             )
         elif policy_type == "diffusion":
             from lerobot.policies import DiffusionConfig
@@ -516,6 +596,7 @@ def run_mix_record_loop(
             "waiting_logged": False,
         },
     }
+    policy_debug_step_idx = 0
     while timestamp_s < control_time_s:
         loop_start_t = time.perf_counter()
 
@@ -539,6 +620,13 @@ def run_mix_record_loop(
             robot_type=robot.robot_type,
         )
         policy_action_processed = make_robot_action(policy_action, dataset.features)
+        if _should_log_chunkwise_policy_drift(policy, policy_debug_step_idx):
+            _log_make_robot_action_mapping(
+                step_idx=policy_debug_step_idx,
+                policy_action=policy_action,
+                dataset_features=dataset.features,
+                action_dict=policy_action_processed,
+            )
 
         # (2) Default execute policy action. Teleop may override selected channels below.
         exec_action = dict(policy_action_processed)
@@ -626,6 +714,14 @@ def run_mix_record_loop(
 
         # (4) Execute action.
         robot_action_to_send = robot_action_processor((exec_action, raw_obs))
+        if _should_log_chunkwise_policy_drift(policy, policy_debug_step_idx):
+            _log_final_action_to_execution(
+                step_idx=policy_debug_step_idx,
+                action_source=action_source,
+                is_expert=is_expert,
+                exec_action=exec_action,
+                robot_action_to_send=robot_action_to_send,
+            )
         _ = robot.send_action(robot_action_to_send)
         last_exec_action = dict(exec_action)
 
@@ -653,6 +749,7 @@ def run_mix_record_loop(
         dt_s = time.perf_counter() - loop_start_t
         busy_wait(1 / fps - dt_s)
         timestamp_s = time.perf_counter() - start_episode_t
+        policy_debug_step_idx += 1
 
     return {
         "expert_exec_steps": expert_exec_steps,
