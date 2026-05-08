@@ -80,6 +80,7 @@ def main() -> None:
         right_z_action_index=right_z_action_index,
         max_samples=args.max_samples,
         sample_stride=args.sample_stride,
+        progress_every=args.progress_every,
     )
 
     _print_time_semantics(dataset, args.chunk_size)
@@ -170,6 +171,12 @@ def _parse_args() -> argparse.Namespace:
         help="Maximum frames to scan for distribution stats. Defaults to the whole dataset.",
     )
     parser.add_argument("--sample-stride", type=int, default=1, help="Scan every Nth dataset frame.")
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=500,
+        help="Print distribution-scan progress every N scanned frames. Set <=0 to disable.",
+    )
     parser.add_argument(
         "--episodes",
         type=str,
@@ -262,9 +269,7 @@ def _read_sample(dataset: LeRobotDataset, index: int) -> dict[str, torch.Tensor]
     item = dataset.hf_dataset[index]
     ep_idx = _to_int(item["episode_index"])
     query_indices, padding = dataset._get_query_indices(index, ep_idx)
-    action_chunk = torch.stack(
-        [_to_tensor(dataset.hf_dataset[action_index][ACTION]) for action_index in query_indices[ACTION]]
-    ).to(dtype=torch.float64)
+    action_chunk = dataset._query_hf_dataset({ACTION: query_indices[ACTION]})[ACTION].to(dtype=torch.float64)
     chunk_ref_state = _to_tensor(item[OBS_STATE]).to(dtype=torch.float64)
     action_is_pad = padding[f"{ACTION}_is_pad"].to(dtype=torch.bool)
 
@@ -388,9 +393,9 @@ def _run_training_order_normalization_check(
     )
     error = _pose_error(decoded_train_order, raw_reference_absolute, action_feature_names)
 
-    _print_header("Training-Order Normalization Check")
+    _print_header("Pre-Fix Normalization-Order Check")
     print(
-        "This simulates the current training order: preprocessor normalizes action, "
+        "This simulates the old buggy order: preprocessor normalizes action, "
         "ACT forward converts labels, postprocessor unnormalizes prediction."
     )
     print(f"right_z_action_stats.mean={float(mean.flatten()[right_z_action_index]):.12g}")
@@ -405,6 +410,33 @@ def _run_training_order_normalization_check(
         decoded=decoded_train_order[0, :, right_z_action_index],
         reference=raw_reference_absolute[0, :, right_z_action_index],
         error=error[0, :, right_z_action_index],
+    )
+
+    raw_chunkwise = convert_stepwise_to_chunkwise_actions(stepwise_actions, action_feature_names)
+    normalized_fixed = (raw_chunkwise - mean) / std
+    postprocessed_fixed = normalized_fixed * std + mean
+    decoded_fixed = decode_chunkwise_actions_to_absolute_actions(
+        postprocessed_fixed,
+        chunk_ref_state=chunk_ref_state,
+        action_feature_names=action_feature_names,
+        observation_state_feature_names=observation_state_feature_names,
+        observation_state_pose_axis_order=observation_state_pose_axis_order,
+    )
+    fixed_error = _pose_error(decoded_fixed, raw_reference_absolute, action_feature_names)
+    _print_header("Fixed Training-Order Check")
+    print(
+        "This simulates the fixed order: raw step-wise action -> chunk-wise conversion -> normalization -> "
+        "postprocess -> decode."
+    )
+    print(f"max_abs_error_vs_raw_semantics={float(torch.max(torch.abs(fixed_error)).item()):.12g}")
+    print(f"xyz_max_abs_error_vs_raw_semantics={_xyz_max_abs_error(fixed_error, action_feature_names):.12g}")
+    print("right z per step after fixed train/postprocess order:")
+    _print_right_z_table(
+        stepwise=stepwise_actions[0, :, right_z_action_index],
+        chunkwise=postprocessed_fixed[0, :, right_z_action_index],
+        decoded=decoded_fixed[0, :, right_z_action_index],
+        reference=raw_reference_absolute[0, :, right_z_action_index],
+        error=fixed_error[0, :, right_z_action_index],
     )
 
 
@@ -466,6 +498,7 @@ def _run_distribution_stats(
     right_z_action_index: int,
     max_samples: int | None,
     sample_stride: int,
+    progress_every: int,
 ) -> None:
     if sample_stride <= 0:
         raise ValueError("--sample-stride must be positive.")
@@ -481,6 +514,8 @@ def _run_distribution_stats(
     for index in range(0, len(dataset), sample_stride):
         if max_samples is not None and scanned >= max_samples:
             break
+        if progress_every > 0 and scanned > 0 and scanned % progress_every == 0:
+            print(f"[distribution] scanned {scanned} frames...", file=sys.stderr, flush=True)
         sample = _read_sample(dataset, index)
         stepwise_actions = sample["action"].unsqueeze(0)
         valid_mask = ~sample["action_is_pad"]
@@ -516,7 +551,7 @@ def _run_distribution_stats(
         print(f"  k={step:02d}: {_format_stats(_summarize(values))}")
 
     if has_mean_std:
-        print("\ncurrent train-order postprocessed chunk-wise right z by step:")
+        print("\npre-fix postprocessed chunk-wise right z by step:")
         print("  (normalize raw step-wise -> convert chunk-wise in normalized space -> unnormalize)")
         for step, values in enumerate(train_order_chunkwise_right_z):
             print(f"  k={step:02d}: {_format_stats(_summarize(values))}")
