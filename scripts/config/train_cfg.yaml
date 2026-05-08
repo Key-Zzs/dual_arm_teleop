@@ -10,7 +10,7 @@ train:
   policy:
     # 纯BC: "act"
     # DAgger: "act_dagger"（会走 core/run_train.py 中的 DAgger 分支）
-    type: "act_dagger"
+    type: "act"
     device: "cuda"
     repo_id: "shenzhaolong/act_policy"
     push_to_hub: false  # 禁用模型推送
@@ -35,8 +35,8 @@ train:
     #   - "right_delta_ee_pose.rx"
     #   - "right_delta_ee_pose.ry"
     #   - "right_delta_ee_pose.rz"
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
-                      /task3_step1/2mL_empty/[worked]act_20260424_E75/checkpoints/010000/pretrained_model"  # 从ACT模型开始DAgger训练
+    # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
+    #                   /task3_step1/2mL_empty/[worked]act_20260424_E75/checkpoints/010000/pretrained_model"  # 从ACT模型开始DAgger训练
 
   output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
               /task3_step1/2mL_empty/act_dagger_20260425_E75_merged_V02" # 模型和日志的输出目录
