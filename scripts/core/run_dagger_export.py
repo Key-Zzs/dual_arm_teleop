@@ -32,6 +32,9 @@ class DAggerExportConfig:
     seed_repo_id: str | None = None
     keep_frame_roles: tuple[str, ...] = DEFAULT_KEEP_FRAME_ROLES
     min_segment_frames: int = 1
+    min_episode_len_for_act: int | None = None
+    pre_takeover_context: int = 0
+    require_complete_expert_action: bool = True
     overwrite: bool = False
     image_writer_processes: int = 0
     image_writer_threads: int = 4
@@ -102,6 +105,95 @@ def _coerce_numpy_feature(value: Any, feature: dict[str, Any]) -> Any:
     return array
 
 
+def _feature_shape(feature: dict[str, Any]) -> tuple:
+    return tuple(feature.get("shape", ()))
+
+
+def _feature_names(feature: dict[str, Any]) -> Any:
+    names = feature.get("names")
+    if isinstance(names, list):
+        return list(names)
+    return names
+
+
+def assert_lerobot_schema_compatible(
+    reference_meta: LeRobotDatasetMetadata,
+    candidate_meta: LeRobotDatasetMetadata,
+    reference_name: str = "reference",
+    candidate_name: str = "candidate",
+) -> None:
+    """Fail loudly when two LeRobot datasets cannot be aggregated for ACT training."""
+
+    errors: list[str] = []
+    if reference_meta.fps != candidate_meta.fps:
+        errors.append(f"fps differs: {reference_name}={reference_meta.fps}, {candidate_name}={candidate_meta.fps}")
+    if reference_meta.robot_type != candidate_meta.robot_type:
+        errors.append(
+            f"robot_type differs: {reference_name}={reference_meta.robot_type}, "
+            f"{candidate_name}={candidate_meta.robot_type}"
+        )
+
+    ref_features = reference_meta.features
+    cand_features = candidate_meta.features
+    ref_keys = set(ref_features)
+    cand_keys = set(cand_features)
+    missing = sorted(ref_keys - cand_keys)
+    extra = sorted(cand_keys - ref_keys)
+    if missing:
+        errors.append(f"{candidate_name} missing feature keys: {missing}")
+    if extra:
+        errors.append(f"{candidate_name} has extra feature keys: {extra}")
+
+    for key in sorted(ref_keys & cand_keys):
+        ref = ref_features[key]
+        cand = cand_features[key]
+        if ref.get("dtype") != cand.get("dtype"):
+            errors.append(
+                f"{key}.dtype differs: {reference_name}={ref.get('dtype')}, "
+                f"{candidate_name}={cand.get('dtype')}"
+            )
+        if _feature_shape(ref) != _feature_shape(cand):
+            errors.append(
+                f"{key}.shape differs: {reference_name}={_feature_shape(ref)}, "
+                f"{candidate_name}={_feature_shape(cand)}"
+            )
+        if _feature_names(ref) != _feature_names(cand):
+            errors.append(
+                f"{key}.names differs: {reference_name}={_feature_names(ref)}, "
+                f"{candidate_name}={_feature_names(cand)}"
+            )
+
+    if ACTION not in ref_features or ACTION not in cand_features:
+        errors.append("Both datasets must contain the standard `action` feature.")
+    elif _feature_shape(ref_features[ACTION]) != _feature_shape(cand_features[ACTION]):
+        errors.append(
+            f"action dimension differs: {reference_name}={_feature_shape(ref_features[ACTION])}, "
+            f"{candidate_name}={_feature_shape(cand_features[ACTION])}"
+        )
+
+    if errors:
+        raise ValueError(
+            "LeRobot dataset schema mismatch; cannot safely aggregate or train ACT:\n"
+            + "\n".join(f"- {error}" for error in errors)
+        )
+
+
+def assert_dataset_roots_schema_compatible(
+    reference_repo_id: str,
+    reference_root: str | Path,
+    candidate_repo_id: str,
+    candidate_root: str | Path,
+) -> None:
+    reference_meta = LeRobotDatasetMetadata(reference_repo_id, root=reference_root)
+    candidate_meta = LeRobotDatasetMetadata(candidate_repo_id, root=candidate_root)
+    assert_lerobot_schema_compatible(
+        reference_meta,
+        candidate_meta,
+        reference_name=str(reference_root),
+        candidate_name=str(candidate_root),
+    )
+
+
 def _frame_role_at(raw_hf_dataset, idx: int) -> str:
     column_names = raw_hf_dataset.column_names
     if "frame_role" in column_names:
@@ -117,16 +209,57 @@ def _segment_id_at(raw_hf_dataset, idx: int, fallback: int) -> int:
     return _to_int(raw_hf_dataset["intervention_segment_id"][idx], default=fallback)
 
 
+def _expert_label_complete_at(raw_hf_dataset, idx: int, require_complete: bool) -> bool:
+    if not require_complete:
+        return True
+    if "expert_label_complete" not in raw_hf_dataset.column_names:
+        raise ValueError(
+            "Raw run_mix dataset is missing `expert_label_complete`. "
+            "Recollect raw logs with the updated run_mix recorder, or set "
+            "require_complete_expert_action=False only if you have manually verified labels."
+        )
+    return _to_bool(raw_hf_dataset["expert_label_complete"][idx])
+
+
+def _context_indices_before(
+    raw_hf_dataset,
+    start: int,
+    first_idx: int,
+    pre_takeover_context: int,
+    require_complete_expert_action: bool,
+) -> list[int]:
+    if pre_takeover_context <= 0:
+        return []
+
+    context: list[int] = []
+    idx = first_idx - 1
+    while idx >= start and len(context) < pre_takeover_context:
+        role = _frame_role_at(raw_hf_dataset, idx)
+        if role in {"reset", "ignore"}:
+            break
+        if not _expert_label_complete_at(raw_hf_dataset, idx, require_complete_expert_action):
+            break
+        context.append(idx)
+        idx -= 1
+
+    context.reverse()
+    return context
+
+
 def _iter_export_segments(
     raw_dataset: LeRobotDataset,
     keep_frame_roles: set[str],
+    pre_takeover_context: int,
+    require_complete_expert_action: bool,
 ) -> list[dict[str, Any]]:
     """Return truly continuous intervention slices from the raw run_mix timeline.
 
-    Export keeps only takeover/recovery roles by default, drops reset/ignore/policy
-    frames, and flushes whenever the raw index or intervention_segment_id is no
-    longer continuous. This prevents sparse takeover frames from being interpreted
-    as one continuous ACT chunk.
+    Export keeps only complete expert-labeled takeover/recovery roles by default,
+    drops reset/ignore/policy frames, and flushes whenever the raw index or
+    intervention_segment_id is no longer continuous. Optional pre-takeover
+    context is included only when it is adjacent and has complete expert labels.
+    This prevents sparse takeover frames from being interpreted as one continuous
+    ACT chunk.
     """
 
     raw_dataset._ensure_hf_dataset_loaded()
@@ -162,12 +295,27 @@ def _iter_export_segments(
                 flush()
                 continue
 
+            if not _expert_label_complete_at(raw_hf_dataset, idx, require_complete_expert_action):
+                flush()
+                continue
+
             segment_id = _segment_id_at(raw_hf_dataset, idx, fallback=idx)
             if (
                 current_indices
                 and (segment_id != current_segment_id or last_idx is None or idx != last_idx + 1)
             ):
                 flush()
+
+            if not current_indices:
+                current_indices.extend(
+                    _context_indices_before(
+                        raw_hf_dataset=raw_hf_dataset,
+                        start=start,
+                        first_idx=idx,
+                        pre_takeover_context=pre_takeover_context,
+                        require_complete_expert_action=require_complete_expert_action,
+                    )
+                )
 
             current_indices.append(idx)
             current_segment_id = segment_id
@@ -211,6 +359,9 @@ def export_dagger_dataset(
     seed_repo_id: str | None = None,
     keep_frame_roles: tuple[str, ...] = DEFAULT_KEEP_FRAME_ROLES,
     min_segment_frames: int = 1,
+    min_episode_len_for_act: int | None = None,
+    pre_takeover_context: int = 0,
+    require_complete_expert_action: bool = True,
     overwrite: bool = False,
     image_writer_processes: int = 0,
     image_writer_threads: int = 4,
@@ -231,6 +382,7 @@ def export_dagger_dataset(
     raw_dataset = LeRobotDataset(raw_repo_id, root=raw_root)
     output_features = seed_meta.features
     use_videos = any(feature["dtype"] == "video" for feature in output_features.values())
+    effective_min_episode_len = max(min_segment_frames, min_episode_len_for_act or 1)
 
     output_dataset = LeRobotDataset.create(
         repo_id=output_repo_id,
@@ -244,7 +396,12 @@ def export_dagger_dataset(
     )
     output_dataset.meta.metadata_buffer_size = 1
 
-    segments = _iter_export_segments(raw_dataset, set(keep_frame_roles))
+    segments = _iter_export_segments(
+        raw_dataset,
+        set(keep_frame_roles),
+        pre_takeover_context=pre_takeover_context,
+        require_complete_expert_action=require_complete_expert_action,
+    )
     exported_segments = 0
     exported_frames = 0
     skipped_short_segments = 0
@@ -253,7 +410,7 @@ def export_dagger_dataset(
 
     for segment in segments:
         indices = segment["indices"]
-        if len(indices) < min_segment_frames:
+        if len(indices) < effective_min_episode_len:
             skipped_short_segments += 1
             continue
 
@@ -270,6 +427,14 @@ def export_dagger_dataset(
         )
 
     output_dataset.finalize()
+    if exported_frames > 0:
+        exported_meta = LeRobotDatasetMetadata(output_repo_id, root=output_root)
+        assert_lerobot_schema_compatible(
+            seed_meta,
+            exported_meta,
+            reference_name="seed",
+            candidate_name="exported_dagger",
+        )
 
     raw_dataset._ensure_hf_dataset_loaded()
     raw_hf_dataset = raw_dataset.hf_dataset
@@ -285,6 +450,18 @@ def export_dagger_dataset(
             segment_id = _to_int(value)
             if segment_id >= 0:
                 intervention_ids.add(segment_id)
+    incomplete_expert_label_frames = None
+    if "expert_label_complete" in raw_hf_dataset.column_names and "is_expert" in raw_hf_dataset.column_names:
+        incomplete_expert_label_frames = sum(
+            1
+            for is_expert, is_complete in zip(
+                raw_hf_dataset["is_expert"],
+                raw_hf_dataset["expert_label_complete"],
+                strict=False,
+            )
+            if _to_bool(is_expert) and not _to_bool(is_complete)
+        )
+    raw_extra_features = sorted(set(raw_dataset.features) - set(output_features))
 
     summary = {
         "raw_dataset": {
@@ -309,6 +486,11 @@ def export_dagger_dataset(
             "keep_frame_roles": list(keep_frame_roles),
             "dropped_frame_roles": ["policy", "reset", "ignore"],
             "min_segment_frames": min_segment_frames,
+            "min_episode_len_for_act": min_episode_len_for_act,
+            "effective_min_episode_len": effective_min_episode_len,
+            "pre_takeover_context": pre_takeover_context,
+            "require_complete_expert_action": require_complete_expert_action,
+            "raw_extra_features_dropped": raw_extra_features,
         },
         "stats": {
             "expert_frame_ratio": expert_frames / max(1, total_raw_frames),
@@ -317,6 +499,7 @@ def export_dagger_dataset(
             if exported_intervention_ids
             else (len(intervention_ids) if intervention_ids else len(segments)),
             "skipped_short_segments": skipped_short_segments,
+            "incomplete_expert_label_frames": incomplete_expert_label_frames,
         },
     }
 

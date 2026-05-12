@@ -16,7 +16,7 @@ import yaml
 from lerobot.datasets.aggregate import aggregate_datasets
 from lerobot.utils.constants import HF_LEROBOT_HOME
 
-from scripts.core.run_dagger_export import export_dagger_dataset
+from scripts.core.run_dagger_export import assert_dataset_roots_schema_compatible, export_dagger_dataset
 from scripts.core.run_record import RecordConfig, run_record
 from scripts.core.run_train import run_act_dagger_from_train_cfg
 
@@ -35,11 +35,19 @@ class DAggerRoundsConfig:
     overwrite: bool = False
     train_round0_if_missing: bool = True
     export_min_segment_frames: int = 1
+    min_episode_len_for_act: int | None = None
+    pre_takeover_context: int = 0
+    require_complete_expert_action: bool = True
 
 
 def _load_yaml(path: str | Path) -> dict[str, Any]:
     with open(path, "r") as f:
         return yaml.safe_load(f)
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    with open(path, "r") as f:
+        return json.load(f)
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
@@ -74,20 +82,32 @@ def _resolve_seed(cfg: DAggerRoundsConfig) -> tuple[str, Path]:
 
 
 def _resolve_latest_pretrained(train_output_dir: Path) -> Path:
+    # Default checkpoint selection is intentionally conservative: use the
+    # training loop's `last` symlink. A future best-checkpoint hook can be added
+    # here once an evaluation/selection signal exists for real-robot ACT.
     last = train_output_dir / "checkpoints" / "last" / "pretrained_model"
     if last.is_dir():
         return last
 
-    checkpoint_root = train_output_dir / "checkpoints"
-    candidates = sorted(checkpoint_root.glob("*/pretrained_model"))
-    candidates = [path for path in candidates if path.is_dir()]
-    if candidates:
-        return candidates[-1]
-
     raise FileNotFoundError(
-        f"No trained checkpoint found under {checkpoint_root}. "
-        "Expected checkpoints/last/pretrained_model or a step checkpoint."
+        f"No selected training checkpoint found: {last}. "
+        "Expected train output to contain checkpoints/last/pretrained_model."
     )
+
+
+def _require_checkpoint_exists(path: Path | None, label: str) -> Path:
+    if path is None:
+        raise ValueError(f"{label} checkpoint path is required.")
+    if not path.is_dir():
+        raise FileNotFoundError(f"{label} checkpoint path does not exist or is not a directory: {path}")
+    missing = [name for name in ("config.json", "model.safetensors") if not (path / name).is_file()]
+    if missing:
+        raise FileNotFoundError(f"{label} checkpoint is missing required file(s) {missing}: {path}")
+    return path
+
+
+def _policy_chunk_size(train_cfg: dict[str, Any]) -> int:
+    return int(train_cfg.get("policy", {}).get("chunk_size", 1))
 
 
 def _make_record_section(
@@ -209,6 +229,8 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
     repo_prefix = seed_repo_id.replace("/", "_")
     base_record_cfg = _load_yaml(config.record_cfg_path)["record"]
     base_train_cfg = _load_yaml(config.train_cfg_path)["train"]
+    act_chunk_size = _policy_chunk_size(base_train_cfg)
+    effective_min_episode_len = int(config.min_episode_len_for_act or act_chunk_size)
 
     current_checkpoint = Path(config.initial_pretrained_path) if config.initial_pretrained_path else None
     previous_aggregated_repo_id = seed_repo_id
@@ -233,15 +255,22 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             seed_root=seed_root,
         )
         round0_state = {
+            "round_id": 0,
             "round": 0,
             "mode": "seed_train",
+            "raw_dataset_path": None,
+            "exported_dataset_path": None,
+            "aggregated_dataset_path": str(seed_root),
             "seed_dataset": {"repo_id": seed_repo_id, "root": str(seed_root)},
             "train_output": str(round0_dir / "train"),
+            "train_output_dir": str(round0_dir / "train"),
             "checkpoint": str(current_checkpoint),
+            "selected_checkpoint_path": str(current_checkpoint),
         }
         _write_json(round0_dir / "round_state.json", round0_state)
         rounds.append(round0_state)
     else:
+        current_checkpoint = _require_checkpoint_exists(current_checkpoint, "initial")
         logging.info("[round 000] reuse initial checkpoint: %s", current_checkpoint)
 
     for round_idx in range(1, int(config.num_rounds) + 1):
@@ -250,6 +279,22 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
         round_dir.mkdir(parents=True, exist_ok=True)
 
         logging.info("========== [DAgger round %03d] ==========", round_idx)
+        previous_state_path = output_root / f"round_{round_idx - 1:03d}" / "round_state.json"
+        if previous_state_path.is_file():
+            previous_state = _load_json(previous_state_path)
+            previous_checkpoint = Path(previous_state["selected_checkpoint_path"])
+            _require_checkpoint_exists(previous_checkpoint, f"round {round_idx - 1:03d} selected")
+            if previous_checkpoint != current_checkpoint:
+                raise RuntimeError(
+                    f"Checkpoint handoff mismatch before round {round_idx:03d}: "
+                    f"state file has {previous_checkpoint}, controller has {current_checkpoint}"
+                )
+            logging.info(
+                "[round %03d] previous selected checkpoint from metadata: %s",
+                round_idx,
+                previous_checkpoint,
+            )
+        current_checkpoint = _require_checkpoint_exists(current_checkpoint, f"round {round_idx:03d} input")
         logging.info("[round %03d] checkpoint: %s", round_idx, current_checkpoint)
 
         record_section = _make_record_section(
@@ -275,6 +320,9 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             seed_repo_id=seed_repo_id,
             seed_root=seed_root,
             min_segment_frames=int(config.export_min_segment_frames),
+            min_episode_len_for_act=effective_min_episode_len,
+            pre_takeover_context=int(config.pre_takeover_context),
+            require_complete_expert_action=bool(config.require_complete_expert_action),
             overwrite=config.overwrite,
         )
         logging.info("[round %03d] exported dagger dataset: %s", round_idx, exported_root)
@@ -291,11 +339,23 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
                 exported_root,
                 aggregated_root,
             )
+            assert_dataset_roots_schema_compatible(
+                previous_aggregated_repo_id,
+                previous_aggregated_root,
+                exported_repo_id,
+                exported_root,
+            )
             aggregate_datasets(
                 repo_ids=[previous_aggregated_repo_id, exported_repo_id],
                 roots=[previous_aggregated_root, exported_root],
                 aggr_repo_id=aggregated_repo_id,
                 aggr_root=aggregated_root,
+            )
+            assert_dataset_roots_schema_compatible(
+                seed_repo_id,
+                seed_root,
+                aggregated_repo_id,
+                aggregated_root,
             )
         else:
             logging.warning(
@@ -306,6 +366,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             aggregated_root = previous_aggregated_root
 
         logging.info("[round %03d] aggregated dataset: %s", round_idx, aggregated_root)
+        assert_dataset_roots_schema_compatible(seed_repo_id, seed_root, aggregated_repo_id, aggregated_root)
         train_checkpoint = _train_round(
             base_train_cfg=base_train_cfg,
             round_idx=round_idx,
@@ -319,8 +380,15 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
         logging.info("[round %03d] next checkpoint: %s", round_idx, train_checkpoint)
 
         round_state = {
+            "round_id": round_idx,
             "round": round_idx,
             "checkpoint_in": str(current_checkpoint),
+            "checkpoint_in_path": str(current_checkpoint),
+            "raw_dataset_path": str(raw_root),
+            "exported_dataset_path": str(exported_root),
+            "aggregated_dataset_path": str(aggregated_root),
+            "train_output_dir": str(round_dir / "train"),
+            "selected_checkpoint_path": str(train_checkpoint),
             "raw_run_mix": {"repo_id": raw_repo_id, "root": str(raw_root)},
             "exported_dagger": {
                 "repo_id": exported_repo_id,

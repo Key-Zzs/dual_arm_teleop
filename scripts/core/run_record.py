@@ -284,6 +284,25 @@ def _complete_action_dict(
     return completed
 
 
+def _missing_or_invalid_action_names(
+    action: dict[str, Any],
+    action_names: list[str],
+) -> list[str]:
+    missing: list[str] = []
+    for name in action_names:
+        if name not in action or action[name] is None:
+            missing.append(name)
+            continue
+        try:
+            value = float(action[name])
+        except (TypeError, ValueError):
+            missing.append(name)
+            continue
+        if not np.isfinite(value):
+            missing.append(name)
+    return missing
+
+
 def _is_arm_override_active(
     teleop_raw_action: dict[str, Any],
     movement_eps: float = RUN_MIX_MOVEMENT_EPS,
@@ -533,6 +552,7 @@ def run_mix_record_loop(
     policy_exec_steps = 0
     saved_steps = 0
     intervention_count = 0
+    complete_expert_label_steps = 0
 
     last_action_source = "policy"
     last_exec_action: dict[str, Any] | None = None
@@ -589,7 +609,9 @@ def run_mix_record_loop(
 
         # (3) Expert override is split by channel: arm/body and grippers are independent.
         teleop_raw_action = teleop.get_action()
-        expert_action = dict(teleop_action_processor((teleop_raw_action, raw_obs)))
+        expert_action_raw = dict(teleop_action_processor((teleop_raw_action, raw_obs)))
+        expert_action_missing_names = _missing_or_invalid_action_names(expert_action_raw, action_names)
+        expert_action = dict(expert_action_raw)
         is_arm_override, arm_override_reason = _is_arm_override_active(teleop_raw_action)
         gripper_request_reasons = {
             arm: _gripper_request_reason(
@@ -653,11 +675,20 @@ def run_mix_record_loop(
             pass
 
         _clip_gripper_channels(exec_action)
-        expert_action = _complete_action_dict(expert_action, action_names, fallback_action=exec_action)
+        # Keep the expert label independent from policy/sent action. Missing
+        # dimensions are zero-filled only so the raw LeRobot schema can be
+        # written; export drops these rows via expert_label_complete=False.
+        expert_action = _complete_action_dict(expert_action_raw, action_names, fallback_action={})
         last_action_source = action_source
 
         reset_requested = bool(teleop_raw_action.get("reset_requested", False))
         waiting_only = bool(override_reasons) and all("waiting" in reason for reason in override_reasons)
+        expert_label_complete = (
+            bool(is_expert)
+            and not waiting_only
+            and not reset_requested
+            and len(expert_action_missing_names) == 0
+        )
         if is_expert and not waiting_only:
             if not intervention_active:
                 intervention_segment_id += 1
@@ -702,10 +733,12 @@ def run_mix_record_loop(
             expert_exec_steps += 1
         else:
             policy_exec_steps += 1
+        if expert_label_complete:
+            complete_expert_label_steps += 1
 
         # Raw run_mix logs intentionally keep the full timeline. `action` remains
         # the actual mixed command sent to the robot; export later rewrites
-        # `action = expert_action` on continuous intervention segments for ACT.
+        # `action = expert_action` only when expert_label_complete=True.
         if dataset is not None:
             action_frame = build_dataset_frame(dataset.features, sent_action, prefix=ACTION)
             policy_action_frame = build_dataset_frame(
@@ -729,6 +762,8 @@ def run_mix_record_loop(
                 "is_expert": np.array([is_expert], dtype=np.bool_),
                 "intervention_segment_id": np.array([frame_segment_id], dtype=np.int64),
                 "frame_role": frame_role,
+                "expert_label_complete": np.array([expert_label_complete], dtype=np.bool_),
+                "expert_action_missing": ",".join(expert_action_missing_names),
                 "task": single_task,
             }
             dataset.add_frame(frame)
@@ -747,6 +782,7 @@ def run_mix_record_loop(
         "saved_steps": saved_steps,
         "expert_frame_ratio": expert_exec_steps / max(1, expert_exec_steps + policy_exec_steps),
         "intervention_count": intervention_count,
+        "complete_expert_label_steps": complete_expert_label_steps,
     }
 
 def run_record(record_cfg: RecordConfig):
@@ -844,6 +880,16 @@ def run_record(record_cfg: RecordConfig):
                 "names": None,
             }
             dataset_features["frame_role"] = {"dtype": "string", "shape": (1,), "names": None}
+            dataset_features["expert_label_complete"] = {
+                "dtype": "bool",
+                "shape": (1,),
+                "names": None,
+            }
+            dataset_features["expert_action_missing"] = {
+                "dtype": "string",
+                "shape": (1,),
+                "names": None,
+            }
 
         if record_cfg.run_mode == "run_mix":
             logging.info("====== [RUN_MIX] Mix mode config ======")
@@ -975,12 +1021,13 @@ def run_record(record_cfg: RecordConfig):
                 run_mix_episode_stats.append(mix_stats)
                 logging.info(
                     "[run_mix] policy_exec_steps=%d expert_exec_steps=%d saved_steps=%d "
-                    "expert_frame_ratio=%.4f interventions=%d",
+                    "expert_frame_ratio=%.4f interventions=%d complete_expert_labels=%d",
                     mix_stats["policy_exec_steps"],
                     mix_stats["expert_exec_steps"],
                     mix_stats["saved_steps"],
                     mix_stats["expert_frame_ratio"],
                     mix_stats["intervention_count"],
+                    mix_stats["complete_expert_label_steps"],
                 )
             else:
                 record_loop(
@@ -1091,6 +1138,9 @@ def run_record(record_cfg: RecordConfig):
                 ),
                 "intervention_count": sum(s["intervention_count"] for s in run_mix_episode_stats),
                 "saved_steps": sum(s["saved_steps"] for s in run_mix_episode_stats),
+                "complete_expert_label_steps": sum(
+                    s["complete_expert_label_steps"] for s in run_mix_episode_stats
+                ),
             }
         return result
 

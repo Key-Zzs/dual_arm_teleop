@@ -18,6 +18,11 @@ dagger_rounds:
   overwrite: false
   train_round0_if_missing: true
   export_min_segment_frames: 1
+  # Defaults to train.policy.chunk_size when null, so exported episodes are long
+  # enough for ACT action chunks without relying on heavy padding.
+  min_episode_len_for_act:
+  pre_takeover_context: 0
+  require_complete_expert_action: true
 
 dagger_export:
   raw_repo_id:
@@ -28,6 +33,9 @@ dagger_export:
   seed_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_20260424_E75"
   keep_frame_roles: ["takeover_start", "recovery"]
   min_segment_frames: 1
+  min_episode_len_for_act: 30
+  pre_takeover_context: 0
+  require_complete_expert_action: true
   overwrite: false
   image_writer_processes: 0
   image_writer_threads: 4
