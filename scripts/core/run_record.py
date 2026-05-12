@@ -62,7 +62,11 @@ class RecordConfig:
         self.repo_id: str = cfg["repo_id"]
         self.debug: bool = cfg.get("debug", True)
         self.fps: str = cfg.get("fps", 15)
-        self.dataset_path: str = HF_LEROBOT_HOME / self.repo_id
+        self.dataset_path: Path = Path(cfg.get("dataset_path", HF_LEROBOT_HOME / self.repo_id))
+        self.dataset_name: str | None = cfg.get("dataset_name")
+        self.dataset_root: Path | None = (
+            Path(cfg["dataset_root"]) if cfg.get("dataset_root") is not None else None
+        )
         self.user_info: str = cfg.get("user_notes", None)
         self.run_mode: str = cfg.get("run_mode", "run_record")
         self.rename_map: dict[str, str] = field(default_factory=dict)
@@ -237,9 +241,47 @@ def handle_incomplete_dataset(dataset_path):
             print("====== [KEEP] Incomplete dataset folder retained, please check manually. ======")
 
 
-def _resolve_record_dataset_root(dataset_name: str, run_mode: str) -> Path:
+def _resolve_record_dataset_root(
+    dataset_name: str,
+    run_mode: str,
+    dataset_root: Path | None = None,
+) -> Path:
+    if dataset_root is not None:
+        return dataset_root
     base = Path(HF_LEROBOT_HOME) / dataset_name
     return base
+
+
+def _clone_action_feature(action_feature: dict[str, Any]) -> dict[str, Any]:
+    names = action_feature.get("names")
+    return {
+        "dtype": action_feature["dtype"],
+        "shape": tuple(action_feature["shape"]),
+        "names": list(names) if isinstance(names, list) else names,
+    }
+
+
+def _action_names_from_dataset(dataset: LeRobotDataset | None) -> list[str]:
+    if dataset is None:
+        return []
+    action_feature = dataset.features.get(ACTION)
+    if action_feature is None:
+        return []
+    names = action_feature.get("names")
+    return list(names) if names is not None else []
+
+
+def _complete_action_dict(
+    action: dict[str, Any],
+    action_names: list[str],
+    fallback_action: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    fallback_action = fallback_action or {}
+    completed = dict(action)
+    for name in action_names:
+        if name not in completed:
+            completed[name] = fallback_action.get(name, 0.0)
+    return completed
 
 
 def _is_arm_override_active(
@@ -359,15 +401,19 @@ def _gripper_request_reason(
     return None
 
 
-def _copy_arm_channels(target_action: dict[str, Any], expert_action: dict[str, Any]) -> None:
+def _copy_arm_channels(target_action: dict[str, Any], expert_action: dict[str, Any]) -> set[str]:
+    copied: set[str] = set()
     for arm in ("left", "right"):
         for axis in ("x", "y", "z", "rx", "ry", "rz"):
             key = f"{arm}_delta_ee_pose.{axis}"
             if key in expert_action:
                 target_action[key] = expert_action[key]
+                copied.add(key)
 
     if expert_action.get("reset_requested", False):
         target_action["reset_requested"] = True
+
+    return copied
 
 
 def _clip_gripper_channels(action: dict[str, Any]) -> None:
@@ -474,7 +520,7 @@ def run_mix_record_loop(
     control_time_s: int | float,
     single_task: str,
     display_data: bool,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     policy.reset()
     preprocessor.reset()
     postprocessor.reset()
@@ -485,10 +531,14 @@ def run_mix_record_loop(
 
     expert_exec_steps = 0
     policy_exec_steps = 0
-    saved_expert_steps = 0
+    saved_steps = 0
+    intervention_count = 0
 
     last_action_source = "policy"
     last_exec_action: dict[str, Any] | None = None
+    action_names = _action_names_from_dataset(dataset)
+    intervention_segment_id = -1
+    intervention_active = False
     gripper_soft_takeover = {
         "left": {
             "active": False,
@@ -528,14 +578,18 @@ def run_mix_record_loop(
             robot_type=robot.robot_type,
         )
         policy_action_processed = make_robot_action(policy_action, dataset.features)
+        policy_action_processed = _complete_action_dict(policy_action_processed, action_names)
 
         # (2) Default execute policy action. Teleop may override selected channels below.
         exec_action = dict(policy_action_processed)
         action_source = "policy"
         is_expert = False
+        frame_role = "policy"
+        frame_segment_id = -1
 
         # (3) Expert override is split by channel: arm/body and grippers are independent.
         teleop_raw_action = teleop.get_action()
+        expert_action = dict(teleop_action_processor((teleop_raw_action, raw_obs)))
         is_arm_override, arm_override_reason = _is_arm_override_active(teleop_raw_action)
         gripper_request_reasons = {
             arm: _gripper_request_reason(
@@ -546,20 +600,12 @@ def run_mix_record_loop(
             )
             for arm in ("left", "right")
         }
-        needs_teleop_action = (
-            is_arm_override
-            or any(reason is not None for reason in gripper_request_reasons.values())
-            or any(arm_state["manual"] for arm_state in gripper_soft_takeover.values())
-        )
 
         override_reasons: list[str] = []
-        if needs_teleop_action:
-            expert_action = dict(teleop_action_processor((teleop_raw_action, raw_obs)))
-        else:
-            expert_action = {}
+        overridden_action_names: set[str] = set()
 
         if is_arm_override:
-            _copy_arm_channels(exec_action, expert_action)
+            overridden_action_names.update(_copy_arm_channels(exec_action, expert_action))
             override_reasons.append(arm_override_reason)
             # Flush ACT chunk cache only for arm/body interventions. Gripper-only
             # control should not disturb policy arm motion.
@@ -579,17 +625,25 @@ def run_mix_record_loop(
                 hold_without_manual=is_arm_override,
             )
             if gripper_overridden and gripper_override_reason is not None:
+                overridden_action_names.update(
+                    name for name in action_names if name.startswith(f"{arm}_gripper_cmd")
+                )
                 override_reasons.append(gripper_override_reason)
 
         if override_reasons:
-            action_source = "expert"
+            action_source = (
+                "expert"
+                if action_names and overridden_action_names.issuperset(set(action_names))
+                else "mixed"
+            )
             is_expert = True
-            if last_action_source != "expert":
+            if last_action_source == "policy":
                 logging.info(
-                    "[run_mix] source->expert (teleop override). reason=%s",
+                    "[run_mix] source->%s (teleop override). reason=%s",
+                    action_source,
                     ", ".join(override_reasons),
                 )
-        elif last_action_source == "expert":
+        elif last_action_source in {"expert", "mixed"}:
             logging.info(
                 "[run_mix] source->policy (no expert override detected). last_reason=%s",
                 "no_channel_override_signal",
@@ -599,12 +653,37 @@ def run_mix_record_loop(
             pass
 
         _clip_gripper_channels(exec_action)
+        expert_action = _complete_action_dict(expert_action, action_names, fallback_action=exec_action)
         last_action_source = action_source
 
+        reset_requested = bool(teleop_raw_action.get("reset_requested", False))
+        waiting_only = bool(override_reasons) and all("waiting" in reason for reason in override_reasons)
+        if is_expert and not waiting_only:
+            if not intervention_active:
+                intervention_segment_id += 1
+                intervention_count += 1
+                frame_role = "takeover_start"
+            else:
+                frame_role = "recovery"
+            if reset_requested:
+                frame_role = "reset"
+            frame_segment_id = intervention_segment_id
+            intervention_active = True
+        elif waiting_only:
+            frame_role = "ignore"
+            frame_segment_id = -1
+            intervention_active = False
+        else:
+            frame_role = "policy"
+            frame_segment_id = -1
+            intervention_active = False
+
         logging.debug(
-            "[run_mix] action_source=%s reason=%s"
+            "[run_mix] action_source=%s frame_role=%s segment=%s reason=%s"
             " left_grip=%s right_grip=%s reset=%s",
             action_source,
+            frame_role,
+            frame_segment_id,
             ",".join(override_reasons) if override_reasons else "no_channel_override_signal",
             teleop_raw_action.get("left_grip_pressed", False),
             teleop_raw_action.get("right_grip_pressed", False),
@@ -615,29 +694,48 @@ def run_mix_record_loop(
 
         # (4) Execute action.
         robot_action_to_send = robot_action_processor((exec_action, raw_obs))
-        _ = robot.send_action(robot_action_to_send)
-        last_exec_action = dict(exec_action)
+        sent_action = _complete_action_dict(dict(robot_action_to_send), action_names, fallback_action=exec_action)
+        _ = robot.send_action(sent_action)
+        last_exec_action = dict(sent_action)
 
-        if action_source == "expert":
+        if action_source in {"expert", "mixed"}:
             expert_exec_steps += 1
         else:
             policy_exec_steps += 1
 
-        # Record rule: only expert-labeled steps are saved.
-        if dataset is not None and is_expert:
-            action_frame = build_dataset_frame(dataset.features, exec_action, prefix=ACTION)
+        # Raw run_mix logs intentionally keep the full timeline. `action` remains
+        # the actual mixed command sent to the robot; export later rewrites
+        # `action = expert_action` on continuous intervention segments for ACT.
+        if dataset is not None:
+            action_frame = build_dataset_frame(dataset.features, sent_action, prefix=ACTION)
+            policy_action_frame = build_dataset_frame(
+                dataset.features,
+                policy_action_processed,
+                prefix="policy_action",
+            )
+            expert_action_frame = build_dataset_frame(
+                dataset.features,
+                expert_action,
+                prefix="expert_action",
+            )
+            sent_action_frame = build_dataset_frame(dataset.features, sent_action, prefix="sent_action")
             frame = {
                 **observation_frame,
                 **action_frame,
+                **policy_action_frame,
+                **expert_action_frame,
+                **sent_action_frame,
                 "action_source": action_source,
-                "is_expert": np.array([True], dtype=np.bool_),
+                "is_expert": np.array([is_expert], dtype=np.bool_),
+                "intervention_segment_id": np.array([frame_segment_id], dtype=np.int64),
+                "frame_role": frame_role,
                 "task": single_task,
             }
             dataset.add_frame(frame)
-            saved_expert_steps += 1
+            saved_steps += 1
 
         if display_data:
-            log_rerun_data(observation=obs_processed, action=exec_action)
+            log_rerun_data(observation=obs_processed, action=sent_action)
 
         dt_s = time.perf_counter() - loop_start_t
         busy_wait(1 / fps - dt_s)
@@ -646,7 +744,9 @@ def run_mix_record_loop(
     return {
         "expert_exec_steps": expert_exec_steps,
         "policy_exec_steps": policy_exec_steps,
-        "saved_expert_steps": saved_expert_steps,
+        "saved_steps": saved_steps,
+        "expert_frame_ratio": expert_exec_steps / max(1, expert_exec_steps + policy_exec_steps),
+        "intervention_count": intervention_count,
     }
 
 def run_record(record_cfg: RecordConfig):
@@ -654,8 +754,16 @@ def run_record(record_cfg: RecordConfig):
     dataset_name = None
     dataset_root = None
     try:
-        dataset_name, data_version = generate_dataset_name(record_cfg)
-        dataset_root = _resolve_record_dataset_root(dataset_name, record_cfg.run_mode)
+        if record_cfg.dataset_name is not None:
+            dataset_name = record_cfg.dataset_name
+            data_version = "manual"
+        else:
+            dataset_name, data_version = generate_dataset_name(record_cfg)
+        dataset_root = _resolve_record_dataset_root(
+            dataset_name,
+            record_cfg.run_mode,
+            dataset_root=record_cfg.dataset_root,
+        )
 
         # Check joint offsets
         # if not record_cfg.debug:
@@ -724,8 +832,18 @@ def run_record(record_cfg: RecordConfig):
         dataset_features = {**action_features, **obs_features}
         if record_cfg.run_mode == "run_mix":
             # Extend dataset schema for DAgger mixed collection metadata.
+            action_feature = dataset_features[ACTION]
+            dataset_features["policy_action"] = _clone_action_feature(action_feature)
+            dataset_features["expert_action"] = _clone_action_feature(action_feature)
+            dataset_features["sent_action"] = _clone_action_feature(action_feature)
             dataset_features["action_source"] = {"dtype": "string", "shape": (1,), "names": None}
             dataset_features["is_expert"] = {"dtype": "bool", "shape": (1,), "names": None}
+            dataset_features["intervention_segment_id"] = {
+                "dtype": "int64",
+                "shape": (1,),
+                "names": None,
+            }
+            dataset_features["frame_role"] = {"dtype": "string", "shape": (1,), "names": None}
 
         if record_cfg.run_mode == "run_mix":
             logging.info("====== [RUN_MIX] Mix mode config ======")
@@ -832,6 +950,7 @@ def run_record(record_cfg: RecordConfig):
             teleop.connect()
 
         episode_idx = 0
+        run_mix_episode_stats: list[dict[str, Any]] = []
 
         while episode_idx < record_cfg.num_episodes and not events["stop_recording"]:
             logging.info(f"====== [RECORD] Recording episode {episode_idx + 1} of {record_cfg.num_episodes} ======")
@@ -852,11 +971,16 @@ def run_record(record_cfg: RecordConfig):
                     single_task=record_cfg.task_description,
                     display_data=record_cfg.display,
                 )
+                mix_stats["episode_index"] = episode_idx
+                run_mix_episode_stats.append(mix_stats)
                 logging.info(
-                    "[run_mix] policy_exec_steps=%d expert_exec_steps=%d saved_expert_steps=%d",
+                    "[run_mix] policy_exec_steps=%d expert_exec_steps=%d saved_steps=%d "
+                    "expert_frame_ratio=%.4f interventions=%d",
                     mix_stats["policy_exec_steps"],
                     mix_stats["expert_exec_steps"],
-                    mix_stats["saved_expert_steps"],
+                    mix_stats["saved_steps"],
+                    mix_stats["expert_frame_ratio"],
+                    mix_stats["intervention_count"],
                 )
             else:
                 record_loop(
@@ -885,14 +1009,14 @@ def run_record(record_cfg: RecordConfig):
                 if dataset.episode_buffer is not None:
                     dataset.clear_episode_buffer()
             elif record_cfg.run_mode == "run_mix":
-                has_expert_frames = (
+                has_recorded_frames = (
                     dataset.episode_buffer is not None and dataset.episode_buffer.get("size", 0) > 0
                 )
-                if has_expert_frames:
+                if has_recorded_frames:
                     dataset.save_episode()
                 else:
                     logging.warning(
-                        "[run_mix] episode %d has no expert override frames; skip saving this episode.",
+                        "[run_mix] episode %d has no recorded frames; skip saving this episode.",
                         episode_idx + 1,
                     )
             else:
@@ -950,6 +1074,25 @@ def run_record(record_cfg: RecordConfig):
         update_dataset_info(record_cfg, dataset_name, data_version)
         if record_cfg.push_to_hub:
             dataset.push_to_hub()
+
+        result = {
+            "dataset_name": dataset_name,
+            "dataset_root": str(dataset_root),
+            "data_version": data_version,
+        }
+        if record_cfg.run_mode == "run_mix":
+            total_expert = sum(s["expert_exec_steps"] for s in run_mix_episode_stats)
+            total_policy = sum(s["policy_exec_steps"] for s in run_mix_episode_stats)
+            result["run_mix_stats"] = {
+                "episodes": run_mix_episode_stats,
+                "expert_frame_ratio": total_expert / max(1, total_expert + total_policy),
+                "expert_episode_count": sum(
+                    1 for s in run_mix_episode_stats if s["intervention_count"] > 0
+                ),
+                "intervention_count": sum(s["intervention_count"] for s in run_mix_episode_stats),
+                "saved_steps": sum(s["saved_steps"] for s in run_mix_episode_stats),
+            }
+        return result
 
     except Exception as e:
         logging.info(f"====== [ERROR] {e} ======")
