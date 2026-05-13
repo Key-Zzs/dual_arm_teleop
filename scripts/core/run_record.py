@@ -352,6 +352,7 @@ def _reset_gripper_soft_takeover(state: dict[str, dict[str, Any]]) -> None:
         arm_state["hold"] = None
         arm_state["manual"] = False
         arm_state["ignore_until_released"] = False
+        arm_state["released_to_policy"] = False
         arm_state["waiting_logged"] = False
 
 
@@ -383,12 +384,14 @@ def _gripper_request_reason(
         should_log_release = (
             arm_state["active"]
             or arm_state["manual"]
+            or not arm_state.get("released_to_policy", False)
             or not arm_state.get("ignore_until_released", False)
         )
         arm_state["active"] = False
         arm_state["hold"] = None
         arm_state["manual"] = False
         arm_state["ignore_until_released"] = True
+        arm_state["released_to_policy"] = True
         arm_state["waiting_logged"] = False
         if should_log_release:
             logging.info(
@@ -401,6 +404,7 @@ def _gripper_request_reason(
         if bool(teleop_raw_action.get(f"{arm}_trigger_pressed", False)):
             return None
         arm_state["ignore_until_released"] = False
+        return None
 
     if bool(teleop_raw_action.get(f"{arm}_trigger_pressed", False)):
         return f"{arm}_trigger_pressed"
@@ -463,8 +467,18 @@ def _apply_gripper_channel_control(
     arm_state = state[arm]
     if gripper_request_reason is not None:
         arm_state["manual"] = True
+        arm_state["released_to_policy"] = False
 
     if not arm_state["manual"]:
+        if arm_state.get("released_to_policy", False):
+            # The user explicitly handed this gripper back to the policy (B for
+            # right, Y for left). Do not let the arm-override hold logic below
+            # freeze the gripper while the human keeps moving the arm.
+            arm_state["hold"] = None
+            arm_state["active"] = False
+            arm_state["waiting_logged"] = False
+            return False, None
+
         if hold_without_manual:
             hold = _current_gripper_cmd(arm, raw_obs, last_exec_action, fallback_action)
             if hold is not None:
@@ -565,6 +579,7 @@ def run_mix_record_loop(
             "hold": None,
             "manual": False,
             "ignore_until_released": False,
+            "released_to_policy": False,
             "waiting_logged": False,
         },
         "right": {
@@ -572,6 +587,7 @@ def run_mix_record_loop(
             "hold": None,
             "manual": False,
             "ignore_until_released": False,
+            "released_to_policy": False,
             "waiting_logged": False,
         },
     }
@@ -678,6 +694,16 @@ def run_mix_record_loop(
         # Keep the expert label independent from policy/sent action. Missing
         # dimensions are zero-filled only so the raw LeRobot schema can be
         # written; export drops these rows via expert_label_complete=False.
+        released_to_policy_action_names = [
+            name
+            for arm in ("left", "right")
+            if gripper_soft_takeover[arm].get("released_to_policy", False)
+            for name in action_names
+            if name.startswith(f"{arm}_gripper_cmd")
+        ]
+        expert_action_missing_names = sorted(
+            set(expert_action_missing_names) | set(released_to_policy_action_names)
+        )
         expert_action = _complete_action_dict(expert_action_raw, action_names, fallback_action={})
         last_action_source = action_source
 

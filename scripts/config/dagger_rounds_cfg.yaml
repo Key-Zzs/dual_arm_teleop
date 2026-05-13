@@ -2,7 +2,7 @@ dagger_rounds:
   # Seed demo dataset used for round-0 training and schema reference.
   # Provide either seed_dataset_path or seed_repo_id/seed_root.
   seed_repo_id: "nero_task3_step1/8mL_empty_left_merged_20260508_E125"
-  seed_dataset_path: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_merged_20260508_E125"
+  seed_dataset_path: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_merged_20260508_E125"
 
   # If set, round 0 reuses this ACT checkpoint. If empty/null, the controller
   # trains an initial ACT from the seed dataset before collecting round 1.
@@ -18,7 +18,7 @@ dagger_rounds:
   record_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/record_cfg.yaml"
   train_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/train_cfg.yaml"
 
-  overwrite: false
+  overwrite: true
   train_round0_if_missing: true
   export_min_segment_frames: 1
   # Defaults to train.policy.chunk_size when null, so exported episodes are long

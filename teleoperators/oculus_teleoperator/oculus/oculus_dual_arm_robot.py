@@ -182,7 +182,7 @@ class OculusDualArmRobot(Robot):
         a_pressed = buttons.get('A', False)
         self._left_grip_pressed = bool(lg_pressed)
         self._right_grip_pressed = bool(rg_pressed)
-        self._left_gripper_release_requested = bool(buttons.get('X', False))
+        self._left_gripper_release_requested = bool(buttons.get('Y', False))
         self._right_gripper_release_requested = bool(buttons.get('B', False))
         
         self._reset_requested = bool(a_pressed)
