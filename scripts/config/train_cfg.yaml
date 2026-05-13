@@ -1,28 +1,28 @@
 train:
   dataset:
-    repo_id: "nero_task3_step1/2mL_empty_dagger_merged_20260425" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
+    repo_id: "nero_task3_step1/8mL_empty_left_merged_20260508_E125" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
   # 指向包含数据集 repo 的本地目录（要包含 repo_id 子目录），
   # 例如本地缓存路径下的 physbrain3/pick_and_place_merged
-    root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_dagger_merged_20260425"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_merged_20260508_E125"
 
   env:
 
   policy:
     # 纯BC: "act"
     # DAgger: "act_dagger"（会走 core/run_train.py 中的 DAgger 分支）
-    type: "act_dagger"
+    type: "act"
     device: "cuda"
     repo_id: "shenzhaolong/act_policy"
     push_to_hub: false  # 禁用模型推送
     # temporal_ensemble_coeff: null # 关闭时序加权，减少动作启动迟滞
     chunk_size: 30
     n_action_steps: 5
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
-                      /task3_step1/2mL_empty/[worked]act_20260424_E75/checkpoints/010000/pretrained_model"  # 从ACT模型开始DAgger训练
+    # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
+    #                   /task3_step1/8mL_empty_left/[worked]act_20260508_E125/checkpoints/010000/pretrained_model"  # 从ACT模型开始DAgger训练
 
-  output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
-              /task3_step1/2mL_empty/act_dagger_20260425_E75_merged_V02" # 模型和日志的输出目录
-  job_name: "2mL_empty_act_dagger_20260425_E75_merged_V02"
+  output_dir: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
+              /task3_step1/8mL_empty_left/act_20260513_E125_test" # 模型和日志的输出目录
+  job_name: "8mL_empty_left_act_20260513_E125_test"
 
   resume: false
   seed: 1000
@@ -42,7 +42,7 @@ train:
     batch_size: 8
 
   wandb: 
-    enable: True
+    enable: False
     project: "lerobot_nero"
     # entity: "your-wandb-username"  # 改为您的 WandB 用户名，或注释掉使用默认
     # notes: "训练备注"

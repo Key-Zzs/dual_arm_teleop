@@ -9,8 +9,8 @@ dagger_rounds:
   initial_pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
                             /task3_step1/8mL_empty_left/act_20260509_E125_SW_V01/checkpoints/last/pretrained_model"
 
-  num_rounds: 3
-  episodes_per_round: 5
+  num_rounds: 2
+  episodes_per_round: 2
   # TODO: output_id
   output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds\
                 /task3_step1/8mL_empty_left"

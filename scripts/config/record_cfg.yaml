@@ -21,7 +21,7 @@ record:
   fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
   use_gripper: &use_gripper true  # whether to use gripper
-  run_mode: "run_mix" # "run_record" or "run_policy" or "run_mix"
+  run_mode: "run_record" # "run_record" or "run_policy" or "run_mix"
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka
   robot_type: &robot_type "nero_dual_arm"
@@ -30,7 +30,7 @@ record:
     control_mode: *control_mode
     dual_arm: true  # dual-arm mode
     oculus_config:
-      ip: "192.168.110.62"  # Oculus Quest IP address
+      ip: "192.168.110.43"  # Oculus Quest IP address
       use_gripper: *use_gripper
       left_pose_scaler: [1.2, 1.2]   # left arm scaler
       left_channel_signs: [-1, -1, 1, 1, 1, 1]  # left arm signs
