@@ -93,8 +93,10 @@ def _to_str(value: Any) -> str:
 
 def _coerce_numpy_feature(value: Any, feature: dict[str, Any]) -> Any:
     dtype = feature["dtype"]
-    if dtype in {"image", "video", "string"}:
+    if dtype == "string":
         return value
+    if dtype in {"image", "video"}:
+        return _coerce_image_or_video_feature(value, feature)
 
     if isinstance(value, torch.Tensor):
         value = value.detach().cpu().numpy()
@@ -102,6 +104,31 @@ def _coerce_numpy_feature(value: Any, feature: dict[str, Any]) -> Any:
     expected_shape = tuple(feature["shape"])
     if array.shape == ():
         array = array.reshape(expected_shape)
+    return array
+
+
+def _coerce_image_or_video_feature(value: Any, feature: dict[str, Any]) -> Any:
+    """Match decoded camera tensors to the seed dataset image layout.
+
+    LeRobot video decoding may return channel-first arrays/tensors (C, H, W),
+    while the seed feature schema in this project stores camera frames as
+    channel-last (H, W, C). The exported DAgger dataset must follow the seed
+    schema exactly so it can be aggregated before ACT training.
+    """
+
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().numpy()
+
+    array = np.asarray(value)
+    expected_shape = tuple(feature.get("shape", ()))
+    if array.shape == expected_shape:
+        return array
+
+    if array.ndim == 3 and len(expected_shape) == 3:
+        expected_h, expected_w, expected_c = expected_shape
+        if expected_c in (1, 3, 4) and array.shape == (expected_c, expected_h, expected_w):
+            return np.transpose(array, (1, 2, 0))
+
     return array
 
 

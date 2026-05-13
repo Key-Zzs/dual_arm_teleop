@@ -1,19 +1,22 @@
 dagger_rounds:
   # Seed demo dataset used for round-0 training and schema reference.
   # Provide either seed_dataset_path or seed_repo_id/seed_root.
-  seed_repo_id: "nero_task3_step1/2mL_empty_merged_20260424_E75"
-  seed_dataset_path: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_20260424_E75"
+  seed_repo_id: "nero_task3_step1/8mL_empty_left_merged_20260508_E125"
+  seed_dataset_path: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_merged_20260508_E125"
 
   # If set, round 0 reuses this ACT checkpoint. If empty/null, the controller
   # trains an initial ACT from the seed dataset before collecting round 1.
-  initial_pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty/[worked]act_20260424_E75/checkpoints/010000/pretrained_model"
+  initial_pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
+                            /task3_step1/8mL_empty_left/act_20260509_E125_SW_V01/checkpoints/last/pretrained_model"
 
   num_rounds: 3
   episodes_per_round: 5
-  output_root: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds/task3_step1_2mL_empty"
+  # TODO: output_id
+  output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds\
+                /task3_step1/8mL_empty_left"
 
-  record_cfg_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/record_cfg.yaml"
-  train_cfg_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/train_cfg.yaml"
+  record_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/record_cfg.yaml"
+  train_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/train_cfg.yaml"
 
   overwrite: false
   train_round0_if_missing: true
@@ -25,17 +28,20 @@ dagger_rounds:
   require_complete_expert_action: true
 
 dagger_export:
-  raw_repo_id:
-  raw_root:
-  output_repo_id:
-  output_root:
-  seed_repo_id: "nero_task3_step1/2mL_empty_merged_20260424_E75"
-  seed_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_20260424_E75"
+  raw_repo_id: "nero_task3_step1/8mL_empty_left_dagger_raw_20260513_v01"
+  raw_root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_dagger_raw_20260513_v01"
+
+  output_repo_id: "8mL_empty_left/dagger_export_test"
+  output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_export\
+                /task3_step1/8mL_empty_left/dagger_export_test"
+                
+  seed_repo_id: "nero_task3_step1/8mL_empty_left_merged_20260508_E125"
+  seed_root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_merged_20260508_E125"
   keep_frame_roles: ["takeover_start", "recovery"]
   min_segment_frames: 1
   min_episode_len_for_act: 30
   pre_takeover_context: 0
   require_complete_expert_action: true
-  overwrite: false
+  overwrite: true
   image_writer_processes: 0
   image_writer_threads: 4
