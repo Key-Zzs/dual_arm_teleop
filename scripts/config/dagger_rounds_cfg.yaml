@@ -16,7 +16,7 @@ dagger_rounds:
     max_rounds: 3
 
     early_stop:
-      enabled: false
+      enabled: true
       patience: 2
 
       min_exported_frames: 30
@@ -28,12 +28,12 @@ dagger_rounds:
       stop_if_export_too_small: true
 
     train_steps:
-      mode: fixed   # fixed | by_exported_frames | by_exported_episodes | hybrid
+      mode: hybrid   # fixed | by_exported_frames | by_exported_episodes | hybrid
       # null keeps the current train_cfg.yaml train.steps value.
       fixed_steps:
 
       min_steps: 500
-      max_steps: 3000
+      max_steps: 2000
 
       steps_per_exported_frame: 4
       steps_per_exported_episode: 300
@@ -42,13 +42,33 @@ dagger_rounds:
       decay_per_round: 1.0
 
       warm_start_from_previous: true
-  episodes_per_round: 20
+  episodes_per_round: 25
   # TODO: output_id
   output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds\
                 /task3_step1/8mL_empty_left_v01"
 
   record_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/record_cfg.yaml"
   train_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/train_cfg.yaml"
+
+  policy_backend:
+    type: act
+
+    runner:
+      type: act
+      # 每轮由 round controller 动态写入 checkpoint_in；这里不要固定 checkpoint。
+      checkpoint_path:
+      device: cuda
+
+    export:
+      profile: act_chunk
+      # 为空时默认使用 train_cfg.yaml 中的 train.policy.chunk_size。
+      min_episode_len:
+      pre_takeover_context: 0
+      require_complete_expert_action: true
+
+    trainer:
+      type: act
+      train_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/train_cfg.yaml"
 
   overwrite: true
   train_round0_if_missing: true

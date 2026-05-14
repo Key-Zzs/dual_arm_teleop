@@ -17,7 +17,7 @@ import yaml
 class DAggerRoundsConfig:
     output_root: str | Path
     record_cfg_path: str | Path
-    train_cfg_path: str | Path
+    train_cfg_path: str | Path | None = None
     num_rounds: int | None = None
     episodes_per_round: int = 1
     seed_repo_id: str | None = None
@@ -31,6 +31,7 @@ class DAggerRoundsConfig:
     pre_takeover_context: int = 0
     require_complete_expert_action: bool = True
     round_schedule: dict[str, Any] | None = None
+    policy_backend: dict[str, Any] | None = None
 
 
 def _load_yaml(path: str | Path) -> dict[str, Any]:
@@ -76,20 +77,6 @@ def _resolve_seed(cfg: DAggerRoundsConfig) -> tuple[str, Path]:
     return repo_id, root
 
 
-def _resolve_latest_pretrained(train_output_dir: Path) -> Path:
-    # Default checkpoint selection is intentionally conservative: use the
-    # training loop's `last` symlink. A future best-checkpoint hook can be added
-    # here once an evaluation/selection signal exists for real-robot ACT.
-    last = train_output_dir / "checkpoints" / "last" / "pretrained_model"
-    if last.is_dir():
-        return last
-
-    raise FileNotFoundError(
-        f"No selected training checkpoint found: {last}. "
-        "Expected train output to contain checkpoints/last/pretrained_model."
-    )
-
-
 def _require_checkpoint_exists(path: Path | None, label: str) -> Path:
     if path is None:
         raise ValueError(f"{label} checkpoint path is required.")
@@ -99,10 +86,6 @@ def _require_checkpoint_exists(path: Path | None, label: str) -> Path:
     if missing:
         raise FileNotFoundError(f"{label} checkpoint is missing required file(s) {missing}: {path}")
     return path
-
-
-def _policy_chunk_size(train_cfg: dict[str, Any]) -> int:
-    return int(train_cfg.get("policy", {}).get("chunk_size", 1))
 
 
 def _optional_int(value: Any) -> int | None:
@@ -335,6 +318,8 @@ def _make_record_section(
     checkpoint_path: Path,
     episodes_per_round: int,
     repo_prefix: str,
+    policy_runner,
+    round_cfg: dict[str, Any],
 ) -> dict[str, Any]:
     record_section = copy.deepcopy(base_record_cfg)
     raw_root = round_dir / "raw_run_mix"
@@ -350,70 +335,11 @@ def _make_record_section(
     record_section["task"]["resume"] = False
     record_section.setdefault("storage", {})
     record_section["storage"]["push_to_hub"] = False
-    record_section.setdefault("policy", {})
-    if record_section["policy"].get("type") == "act_dagger":
-        record_section["policy"]["type"] = "act"
-    if record_section["policy"].get("type") != "act":
-        raise ValueError("run_mix DAgger rounds require record.policy.type to be ACT-compatible.")
-    record_section["policy"]["pretrained_path"] = str(checkpoint_path)
-
-    return record_section
-
-
-def _make_train_section(
-    base_train_cfg: dict[str, Any],
-    round_idx: int,
-    train_output_dir: Path,
-    checkpoint_path: Path | None,
-    aggregated_repo_id: str,
-    aggregated_root: Path,
-    seed_repo_id: str,
-    seed_root: Path,
-    train_steps: int | None = None,
-) -> dict[str, Any]:
-    train_section = copy.deepcopy(base_train_cfg)
-    train_section["output_dir"] = str(train_output_dir)
-    train_section["job_name"] = f"act_dagger_round_{round_idx:03d}"
-    train_section["resume"] = False
-    if train_steps is not None:
-        train_section["steps"] = int(train_steps)
-    train_section.setdefault("dataset", {})
-    train_section["dataset"]["repo_id"] = aggregated_repo_id
-    train_section["dataset"]["root"] = str(aggregated_root)
-
-    train_section.setdefault("policy", {})
-    train_section["policy"]["type"] = "act_dagger"
-    if checkpoint_path is None:
-        train_section["policy"].pop("pretrained_path", None)
-    else:
-        train_section["policy"]["pretrained_path"] = str(checkpoint_path)
-
-    dagger_section = train_section.setdefault("dagger", {})
-    dagger_dataset = dagger_section.setdefault("dataset", {})
-    dagger_dataset.update(
-        {
-            "aggregated_repo_id": aggregated_repo_id,
-            "aggregated_root": str(aggregated_root),
-            "seed_repo_id": seed_repo_id,
-            "seed_root": str(seed_root),
-            "resume_aggregation": True,
-            "copy_seed_if_missing": False,
-        }
-    )
-
-    dagger_training = dagger_section.setdefault("training", {})
-    dagger_training["rounds"] = 1
-    dagger_training["steps_per_round"] = int(train_section.get("steps", 10_000))
-    dagger_training.setdefault("batch_size", train_section.get("batch_size", 8))
-    dagger_training.setdefault("num_workers", train_section.get("num_workers", 4))
-    dagger_training.setdefault("log_freq", train_section.get("log_freq", 100))
-    dagger_training["save_checkpoint"] = True
-    train_section["save_checkpoint"] = True
-
-    return train_section
+    return policy_runner.prepare_record_cfg(record_section, checkpoint_path, round_cfg)
 
 
 def _train_round(
+    trainer,
     base_train_cfg: dict[str, Any],
     round_idx: int,
     round_dir: Path,
@@ -424,19 +350,17 @@ def _train_round(
     seed_root: Path,
     train_steps: int | None = None,
 ) -> Path:
-    from scripts.core.run_train import run_act_dagger_from_train_cfg
-
     train_output_dir = round_dir / "train"
-    train_section = _make_train_section(
+    train_section = trainer.prepare_train_cfg(
         base_train_cfg=base_train_cfg,
-        round_idx=round_idx,
-        train_output_dir=train_output_dir,
-        checkpoint_path=checkpoint_path,
-        aggregated_repo_id=aggregated_repo_id,
-        aggregated_root=aggregated_root,
+        aggregated_dataset_path=aggregated_root,
+        repo_id=aggregated_repo_id,
+        checkpoint_in=checkpoint_path,
+        output_dir=train_output_dir,
+        round_id=round_idx,
+        resolved_steps=train_steps,
         seed_repo_id=seed_repo_id,
         seed_root=seed_root,
-        train_steps=train_steps,
     )
     logging.info(
         "[round %03d] train output: %s steps=%s",
@@ -444,16 +368,19 @@ def _train_round(
         train_output_dir,
         train_section.get("steps"),
     )
-    run_act_dagger_from_train_cfg(train_section)
-    return _resolve_latest_pretrained(train_output_dir)
+    return Path(trainer.train(train_section))
 
 
 def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, Any]:
+    from scripts.core.dagger_backends import make_policy_backend
     from scripts.core.run_dagger_export import assert_dataset_roots_schema_compatible, export_dagger_dataset
     from scripts.core.run_record import RecordConfig, run_record
 
     if isinstance(config, dict):
         config = DAggerRoundsConfig(**config)
+    round_cfg = copy.deepcopy(config.__dict__)
+    policy_backend = make_policy_backend(config.policy_backend)
+    policy_backend_info = policy_backend.metadata()
 
     output_root = Path(config.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
@@ -461,9 +388,10 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
     seed_repo_id, seed_root = _resolve_seed(config)
     repo_prefix = seed_repo_id.replace("/", "_")
     base_record_cfg = _load_yaml(config.record_cfg_path)["record"]
-    base_train_cfg = _load_yaml(config.train_cfg_path)["train"]
-    act_chunk_size = _policy_chunk_size(base_train_cfg)
-    effective_min_episode_len = int(config.min_episode_len_for_act or act_chunk_size)
+    train_cfg_path = config.train_cfg_path or policy_backend.trainer.train_cfg_path
+    if train_cfg_path is None:
+        raise ValueError("dagger_rounds.train_cfg_path or policy_backend.trainer.train_cfg_path is required.")
+    base_train_cfg = _load_yaml(train_cfg_path)["train"]
     round_schedule_cfg = _round_schedule_cfg(config)
     max_rounds = _resolve_max_rounds(config, round_schedule_cfg)
     base_train_steps = int(base_train_cfg.get("steps", 10_000))
@@ -487,8 +415,9 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
         round0_dir = output_root / "round_000"
         _clean_or_fail(round0_dir, config.overwrite)
         round0_dir.mkdir(parents=True, exist_ok=True)
-        logging.info("[round 000] training initial ACT from seed dataset: %s", seed_root)
+        logging.info("[round 000] training initial %s policy from seed dataset: %s", policy_backend.backend_type, seed_root)
         current_checkpoint = _train_round(
+            trainer=policy_backend.trainer,
             base_train_cfg=base_train_cfg,
             round_idx=0,
             round_dir=round0_dir,
@@ -510,6 +439,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             "train_output_dir": str(round0_dir / "train"),
             "checkpoint": str(current_checkpoint),
             "selected_checkpoint_path": str(current_checkpoint),
+            "policy_backend": policy_backend_info,
         }
         _write_json(round0_dir / "round_state.json", round0_state)
         rounds.append(round0_state)
@@ -548,6 +478,8 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             checkpoint_path=current_checkpoint,
             episodes_per_round=int(config.episodes_per_round),
             repo_prefix=repo_prefix,
+            policy_runner=policy_backend.runner,
+            round_cfg=round_cfg,
         )
         record_result = run_record(RecordConfig(record_section))
         raw_repo_id = record_result["dataset_name"]
@@ -556,18 +488,41 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
 
         exported_root = round_dir / "exported_dagger_dataset"
         exported_repo_id = _safe_repo_id(repo_prefix, round_idx, "dagger_export")
+        export_section = policy_backend.export_profile.prepare_export_cfg(
+            {
+                "raw_repo_id": raw_repo_id,
+                "raw_root": raw_root,
+                "output_repo_id": exported_repo_id,
+                "output_root": exported_root,
+                "seed_repo_id": seed_repo_id,
+                "seed_root": seed_root,
+                "min_segment_frames": int(config.export_min_segment_frames),
+                "overwrite": config.overwrite,
+            },
+            base_train_cfg,
+            round_cfg,
+        )
         export_summary = export_dagger_dataset(
-            raw_repo_id=raw_repo_id,
-            raw_root=raw_root,
-            output_repo_id=exported_repo_id,
-            output_root=exported_root,
-            seed_repo_id=seed_repo_id,
-            seed_root=seed_root,
-            min_segment_frames=int(config.export_min_segment_frames),
-            min_episode_len_for_act=effective_min_episode_len,
-            pre_takeover_context=int(config.pre_takeover_context),
-            require_complete_expert_action=bool(config.require_complete_expert_action),
-            overwrite=config.overwrite,
+            **{
+                key: export_section[key]
+                for key in (
+                    "raw_repo_id",
+                    "raw_root",
+                    "output_repo_id",
+                    "output_root",
+                    "seed_repo_id",
+                    "seed_root",
+                    "keep_frame_roles",
+                    "min_segment_frames",
+                    "min_episode_len_for_act",
+                    "pre_takeover_context",
+                    "require_complete_expert_action",
+                    "overwrite",
+                    "image_writer_processes",
+                    "image_writer_threads",
+                )
+                if key in export_section
+            }
         )
         logging.info("[round %03d] exported dagger dataset: %s", round_idx, exported_root)
 
@@ -661,6 +616,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             assert_dataset_roots_schema_compatible(seed_repo_id, seed_root, aggregated_repo_id, aggregated_root)
             train_checkpoint_in = current_checkpoint if warm_start_from_previous else None
             train_checkpoint = _train_round(
+                trainer=policy_backend.trainer,
                 base_train_cfg=base_train_cfg,
                 round_idx=round_idx,
                 round_dir=round_dir,
@@ -709,6 +665,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             },
             "train_output": str(round_dir / "train"),
             "checkpoint_out": str(train_checkpoint),
+            "policy_backend": policy_backend_info,
             "run_mix_stats": run_mix_stats,
             "schedule": {
                 "resolved_train_steps": resolved_train_steps,
@@ -748,6 +705,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
 
     final_state = {
         "output_root": str(output_root),
+        "policy_backend": policy_backend_info,
         "seed_dataset": {"repo_id": seed_repo_id, "root": str(seed_root)},
         "final_checkpoint": str(current_checkpoint),
         "final_aggregated_dataset": {
