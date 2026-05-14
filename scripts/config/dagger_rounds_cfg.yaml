@@ -13,7 +13,7 @@ dagger_rounds:
   episodes_per_round: 2
   # TODO: output_id
   output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds\
-                /task3_step1/8mL_empty_left"
+                /task3_step1/8mL_empty_left_v01"
 
   record_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/record_cfg.yaml"
   train_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/train_cfg.yaml"
@@ -33,8 +33,8 @@ dagger_export:
 
   output_repo_id: "8mL_empty_left/dagger_export_test"
   output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_export\
-                /task3_step1/8mL_empty_left/dagger_export_test"
-                
+                /task3_step1/8mL_empty_left_v01/dagger_export_test"
+
   seed_repo_id: "nero_task3_step1/8mL_empty_left_merged_20260508_E125"
   seed_root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_merged_20260508_E125"
   keep_frame_roles: ["takeover_start", "recovery"]

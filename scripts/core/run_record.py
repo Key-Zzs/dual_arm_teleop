@@ -175,8 +175,8 @@ class RecordConfig:
 
         policy_type = policy["type"]
         # NOTE:
-        # - "act" and "act_dagger" share the same ACT architecture at inference time.
-        # - DAgger only changes data collection/training loop, not policy forward/select_action API.
+        # - New round-Dagger configs should use "act" for deployment/collection.
+        # - "act_dagger" remains accepted only for older local configs; it maps to ACT here.
         if policy_type in {"act", "act_dagger"}:
             from lerobot.policies import ACTConfig
 

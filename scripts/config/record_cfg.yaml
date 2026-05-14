@@ -60,8 +60,8 @@ record:
     gripper_force: 2.0 # Robotiq 2F-85 max force in Newtons
 
   policy:
-    # 策略类型: act | act_dagger | diffusion
-    # act_dagger 在部署时按 ACT 推理加载（同一网络结构）
+    # 策略类型: act | diffusion
+    # 轮次式 DAgger 的 run_mix 采集使用 ACT checkpoint 推理。
     type: "act"
     device: "cuda"  # 运行设备 (cuda, cpu)
     push_to_hub: False  # 禁用模型推送
