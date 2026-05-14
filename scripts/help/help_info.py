@@ -10,6 +10,7 @@ Core Commands:
   robot-visualize        Visualize recorded dataset
   robot-reset            Reset the robot to initial state
   robot-train            Train a policy on the recorded dataset
+  robot-dagger           Run DAgger rounds for policy improvement
 
 Utility Commands:
   utils-joint-offsets    Compute joint offsets for teleoperation
