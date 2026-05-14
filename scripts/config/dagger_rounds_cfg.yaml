@@ -48,8 +48,11 @@ dagger_rounds:
                 /task3_step1/8mL_empty_left_v01"
 
   record_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/record_cfg.yaml"
+  # Legacy-compatible top-level path. If this is omitted, the controller falls
+  # back to policy_backend.trainer.train_cfg_path when provided.
   train_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/train_cfg.yaml"
 
+  # Policy-agnostic round skeleton; currently only the ACT backend is implemented.
   policy_backend:
     type: act
 
@@ -61,25 +64,31 @@ dagger_rounds:
 
     export:
       profile: act_chunk
-      # 为空时默认使用 train_cfg.yaml 中的 train.policy.chunk_size。
+      # Backend export settings are the active source for round export behavior.
+      # If min_episode_len is empty, ACTChunkExportProfile falls back to the
+      # legacy dagger_rounds.min_episode_len_for_act when present, then to
+      # train_cfg.yaml train.policy.chunk_size.
       min_episode_len:
       pre_takeover_context: 0
       require_complete_expert_action: true
 
     trainer:
       type: act
-      train_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/train_cfg.yaml"
+      # Optional fallback only; dagger_rounds.train_cfg_path above takes priority.
+      train_cfg_path:
 
   overwrite: true
   train_round0_if_missing: true
   export_min_segment_frames: 1
-  # Defaults to train.policy.chunk_size when null, so exported episodes are long
-  # enough for ACT action chunks without relying on heavy padding.
-  min_episode_len_for_act:
-  pre_takeover_context: 0
-  require_complete_expert_action: true
+  # Deprecated legacy round export fields are still accepted when the backend
+  # export block omits the same option:
+  #   min_episode_len_for_act
+  #   pre_takeover_context
+  #   require_complete_expert_action
 
 dagger_export:
+  # Standalone ACT chunk export config used by scripts.core.run_dagger_export.
+  # robot-dagger rounds get export settings from dagger_rounds.policy_backend.
   raw_repo_id: "nero_task3_step1/8mL_empty_left_dagger_raw_20260513_v01"
   raw_root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_dagger_raw_20260513_v01"
 

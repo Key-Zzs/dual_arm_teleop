@@ -9,6 +9,22 @@ from typing import Any
 
 
 ONLY_ACT_BACKEND_MESSAGE = "Only ACT backend is implemented currently."
+EXPORT_DAGGER_DATASET_KEYS = (
+    "raw_repo_id",
+    "raw_root",
+    "output_repo_id",
+    "output_root",
+    "seed_repo_id",
+    "seed_root",
+    "keep_frame_roles",
+    "min_segment_frames",
+    "min_episode_len_for_act",
+    "pre_takeover_context",
+    "require_complete_expert_action",
+    "overwrite",
+    "image_writer_processes",
+    "image_writer_threads",
+)
 
 
 class PolicyRunner:
@@ -38,6 +54,9 @@ class DAggerExportProfile:
         train_cfg: dict[str, Any],
         round_cfg: dict[str, Any],
     ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def export(self, export_cfg: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
 
@@ -106,11 +125,10 @@ class ACTChunkExportProfile(DAggerExportProfile):
     ) -> dict[str, Any]:
         export_section = copy.deepcopy(export_cfg)
 
-        min_episode_len = (
-            self.cfg["min_episode_len"]
-            if "min_episode_len" in self.cfg
-            else round_cfg.get("min_episode_len_for_act")
-        )
+        # Priority: backend config -> legacy round-level config -> ACT chunk size.
+        min_episode_len = self.cfg.get("min_episode_len")
+        if min_episode_len is None:
+            min_episode_len = round_cfg.get("min_episode_len_for_act")
         if min_episode_len is None:
             min_episode_len = int(train_cfg.get("policy", {}).get("chunk_size", 1))
 
@@ -134,6 +152,12 @@ class ACTChunkExportProfile(DAggerExportProfile):
         export_section["pre_takeover_context"] = int(pre_takeover_context or 0)
         export_section["require_complete_expert_action"] = bool(require_complete_expert_action)
         return export_section
+
+    def export(self, export_cfg: dict[str, Any]) -> dict[str, Any]:
+        from scripts.core.run_dagger_export import export_dagger_dataset
+
+        export_kwargs = {key: export_cfg[key] for key in EXPORT_DAGGER_DATASET_KEYS if key in export_cfg}
+        return export_dagger_dataset(**export_kwargs)
 
 
 class ACTTrainer(PolicyTrainer):

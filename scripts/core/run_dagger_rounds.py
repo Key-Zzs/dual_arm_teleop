@@ -168,7 +168,7 @@ def resolve_train_steps(
     base_train_steps: int,
     schedule_cfg: dict[str, Any] | None,
 ) -> int:
-    """Resolve per-round ACT train steps for the supported round DAgger controller.
+    """Resolve per-round train steps for the supported round DAgger controller.
 
     This helper only schedules the round-based `robot-dagger` path. It is not
     related to the removed offline DAgger trainer/pipeline.
@@ -373,7 +373,7 @@ def _train_round(
 
 def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, Any]:
     from scripts.core.dagger_backends import make_policy_backend
-    from scripts.core.run_dagger_export import assert_dataset_roots_schema_compatible, export_dagger_dataset
+    from scripts.core.run_dagger_export import assert_dataset_roots_schema_compatible
     from scripts.core.run_record import RecordConfig, run_record
 
     if isinstance(config, dict):
@@ -502,28 +502,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             base_train_cfg,
             round_cfg,
         )
-        export_summary = export_dagger_dataset(
-            **{
-                key: export_section[key]
-                for key in (
-                    "raw_repo_id",
-                    "raw_root",
-                    "output_repo_id",
-                    "output_root",
-                    "seed_repo_id",
-                    "seed_root",
-                    "keep_frame_roles",
-                    "min_segment_frames",
-                    "min_episode_len_for_act",
-                    "pre_takeover_context",
-                    "require_complete_expert_action",
-                    "overwrite",
-                    "image_writer_processes",
-                    "image_writer_threads",
-                )
-                if key in export_section
-            }
-        )
+        export_summary = policy_backend.export_profile.export(export_section)
         logging.info("[round %03d] exported dagger dataset: %s", round_idx, exported_root)
 
         run_mix_stats = record_result.get("run_mix_stats", {})
