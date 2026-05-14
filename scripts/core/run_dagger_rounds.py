@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import copy
 import json
 import logging
@@ -425,16 +424,10 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run round-based offline ACT DAgger.")
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=Path(__file__).resolve().parent.parent / "config" / "dagger_rounds_cfg.yaml",
-    )
-    args = parser.parse_args()
-
+    parent_path = Path(__file__).resolve().parent
+    cfg_path = parent_path.parent / "config" / "dagger_rounds_cfg.yaml"
     logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
-    cfg = _load_yaml(args.config)
+    cfg = _load_yaml(cfg_path)
     rounds_cfg = cfg.get("dagger_rounds", cfg)
     run_dagger_rounds(rounds_cfg)
 
