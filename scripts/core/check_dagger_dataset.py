@@ -525,7 +525,7 @@ def main() -> None:
         for risk in risks:
             print(f"  - {risk}")
     else:
-        print("可以进入 ACT + offline DAgger smoke test。")
+        print("可以进入 ACT + round DAgger smoke test。")
         print("No blocking risks found by this audit script.")
 
 

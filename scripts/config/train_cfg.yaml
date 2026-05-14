@@ -8,8 +8,7 @@ train:
   env:
 
   policy:
-    # 纯BC: "act"
-    # DAgger: "act_dagger"（会走 core/run_train.py 中的 DAgger 分支）
+    # 推荐保持为普通 ACT；轮次式 DAgger 会由 run_dagger_rounds.py 在内存中注入训练参数。
     type: "act"
     device: "cuda"
     repo_id: "shenzhaolong/act_policy"
@@ -18,7 +17,7 @@ train:
     chunk_size: 30
     n_action_steps: 5
     # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
-    #                   /task3_step1/8mL_empty_left/[worked]act_20260508_E125/checkpoints/010000/pretrained_model"  # 从ACT模型开始DAgger训练
+    #                   /task3_step1/8mL_empty_left/[worked]act_20260508_E125/checkpoints/010000/pretrained_model"  # 从 ACT checkpoint 继续训练
 
   output_dir: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
               /task3_step1/8mL_empty_left/act_20260513_E125_test" # 模型和日志的输出目录
@@ -48,28 +47,3 @@ train:
     # notes: "训练备注"
     # run_id: "自定义运行ID"
     mode: "online"  # Allowed values: 'online', 'offline' 'disabled'. Defaults to 'online"
-
-  # =========================
-  # 离线 DAgger 训练配置（仅当 policy.type=act_dagger 生效）
-  # 只需要:
-  # 1) dataset: 指向已采集好的数据（优先读取 <root>/dagger_data）
-  # 2) training: 每轮离线训练参数
-  # =========================
-  dagger:
-    dataset:
-      # 若 aggregated_root 下存在 dagger_data/，会优先从 dagger_data 读取
-      aggregated_repo_id: "nero_task3_step1/2mL_empty_dagger_merged_20260425"
-      aggregated_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_dagger_merged_20260425"
-      # 若 aggregated_root 不存在，回退到 seed 数据集
-      seed_repo_id: "nero_task3_step1/2mL_empty_merged_20260424_E75"
-      seed_root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_merged_20260424_E75"
-      resume_aggregation: true
-      copy_seed_if_missing: false
-
-    training:
-      rounds: 1
-      steps_per_round: 2000
-      batch_size: 32
-      num_workers: 4
-      log_freq: 100
-      save_checkpoint: true

@@ -89,9 +89,13 @@ def _validate_local_pretrained_path(pretrained_path: str | Path | None) -> None:
 
 def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
     """
-    Train ACT offline on an already aggregated DAgger dataset.
+    Internal ACT training helper for the round-based DAgger controller.
 
-    Expected extension in train_cfg.yaml:
+    The public DAgger flow is scripts.core.run_dagger_rounds. This helper
+    only adapts an already aggregated standard LeRobot dataset into the normal
+    ACT training path.
+
+    Expected in-memory extension:
     train:
       policy:
         type: act_dagger
@@ -103,15 +107,16 @@ def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
     dagger_section = train_cfg.get("dagger")
     if dagger_section is None:
         raise ValueError(
-            "When train.policy.type='act_dagger', a 'train.dagger' section is required in train_cfg.yaml."
+            "When train.policy.type='act_dagger', a 'train.dagger' section is required. "
+            "Use scripts.core.run_dagger_rounds for the supported DAgger flow."
         )
 
-    # Import DAgger dataset helpers lazily to avoid impacting BC-only startup.
+    # Import round-Dagger dataset helpers lazily to avoid impacting BC-only startup.
     from lerobot.policies.dagger.configuration_dagger import DAggerDatasetConfig
     from lerobot.policies.dagger.dataset import ensure_aggregated_dataset_ready
 
     policy_cfg = dict(train_cfg.get("policy", {}))
-    # Offline DAgger still trains the underlying ACT policy.
+    # Round DAgger still trains the underlying ACT policy.
     policy_cfg["type"] = "act"
     # Backward compatibility for users who may set `policy.path`.
     if "path" in policy_cfg and "pretrained_path" not in policy_cfg:
@@ -120,7 +125,7 @@ def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
 
     dagger_dataset_cfg = dagger_section.get("dataset")
     if dagger_dataset_cfg is None:
-        raise ValueError("train.dagger.dataset is required for act_dagger offline training.")
+        raise ValueError("train.dagger.dataset is required for the act_dagger round-training helper.")
 
     dagger_training_cfg = dict(dagger_section.get("training", {}))
     dagger_training_cfg.setdefault("rounds", 1)
@@ -134,21 +139,21 @@ def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
         DAggerDatasetConfig(**dagger_dataset_cfg)
     )
 
-    offline_train_cfg = dict(train_cfg)
-    offline_train_cfg["policy"] = policy_cfg
-    offline_train_cfg["dataset"] = {
+    act_train_cfg = dict(train_cfg)
+    act_train_cfg["policy"] = policy_cfg
+    act_train_cfg["dataset"] = {
         "repo_id": aggregated_repo_id,
         "root": str(aggregated_root),
     }
-    offline_train_cfg["steps"] = (
+    act_train_cfg["steps"] = (
         int(dagger_training_cfg["rounds"]) * int(dagger_training_cfg["steps_per_round"])
     )
-    offline_train_cfg["batch_size"] = dagger_training_cfg["batch_size"]
-    offline_train_cfg["num_workers"] = dagger_training_cfg["num_workers"]
-    offline_train_cfg["log_freq"] = dagger_training_cfg["log_freq"]
-    offline_train_cfg["save_checkpoint"] = dagger_training_cfg["save_checkpoint"]
+    act_train_cfg["batch_size"] = dagger_training_cfg["batch_size"]
+    act_train_cfg["num_workers"] = dagger_training_cfg["num_workers"]
+    act_train_cfg["log_freq"] = dagger_training_cfg["log_freq"]
+    act_train_cfg["save_checkpoint"] = dagger_training_cfg["save_checkpoint"]
 
-    train_cfg_obj = TrainPipelineConfig(offline_train_cfg)
+    train_cfg_obj = TrainPipelineConfig(act_train_cfg)
     run_train(train_cfg_obj)
 
 
@@ -213,8 +218,8 @@ class TrainPipelineConfig(HubMixin):
                 n_action_steps = policy.get("n_action_steps", 1),
             )
         elif policy_type == "act_dagger":
-            # NOTE: `act_dagger` is dispatched in main() to offline DAgger training.
-            # This branch keeps compatibility for places that still instantiate TrainPipelineConfig.
+            # NOTE: `act_dagger` is an internal round-Dagger training sentinel.
+            # This branch keeps compatibility for in-memory config construction.
             from lerobot.policies import ACTConfig
             temporal_ensemble_coeff = normalize_temporal_ensemble_coeff(
                 policy.get("temporal_ensemble_coeff")
@@ -855,9 +860,12 @@ def main():
     policy_type = train_section.get("policy", {}).get("type")
 
     if policy_type == "act_dagger":
-        # `act_dagger` runs offline-only training on collected DAgger data.
-        run_act_dagger_from_train_cfg(train_section)
-        return
+        raise ValueError(
+            "Direct robot-train with train.policy.type='act_dagger' is deprecated. "
+            "Use `robot-dagger` or `python -m scripts.core.run_dagger_rounds` for DAgger. "
+            "The round controller "
+            "will call the internal ACT training helper itself."
+        )
 
     train_cfg = TrainPipelineConfig(train_section)
     run_train(train_cfg)
