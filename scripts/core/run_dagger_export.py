@@ -6,7 +6,8 @@ import argparse
 import json
 import logging
 import shutil
-from dataclasses import dataclass
+from collections import Counter, defaultdict
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,37 @@ from lerobot.utils.constants import ACTION, HF_LEROBOT_HOME
 
 
 DEFAULT_KEEP_FRAME_ROLES = ("takeover_start", "recovery")
+EXPORT_MODE_INTERVENTION_SEGMENTS = "intervention_segments"
+EXPORT_MODE_FULL_SUCCESS_EPISODE = "full_success_episode"
+EXPORT_MODE_HYBRID = "hybrid"
+VALID_EXPORT_MODES = {
+    EXPORT_MODE_INTERVENTION_SEGMENTS,
+    EXPORT_MODE_FULL_SUCCESS_EPISODE,
+    EXPORT_MODE_HYBRID,
+}
+
+DEFAULT_FULL_EPISODE_CFG = {
+    "require_success": True,
+    "success_field": "success",
+    "fallback_success_from_episode_metadata": True,
+    "action_label_source": "sent_action",
+    "drop_reset_ignore_frames": True,
+    "require_no_reset": True,
+    "require_min_len": True,
+}
+DEFAULT_INTERVENTION_SEGMENTS_CFG = {
+    "keep_frame_roles": list(DEFAULT_KEEP_FRAME_ROLES),
+    "label_source": "expert_action",
+    "require_complete_expert_action": True,
+    "max_segments_per_episode": None,
+}
+DEFAULT_HYBRID_CFG = {
+    "include_full_success_episode": True,
+    "include_intervention_segments": True,
+    "max_recovery_segments_per_episode": 1,
+    "max_recovery_frames_ratio": 0.25,
+    "prefer_full_episode_when_duplicate": True,
+}
 
 
 @dataclass
@@ -33,8 +65,15 @@ class DAggerExportConfig:
     keep_frame_roles: tuple[str, ...] = DEFAULT_KEEP_FRAME_ROLES
     min_segment_frames: int = 1
     min_episode_len_for_act: int | None = None
+    export_mode: str = EXPORT_MODE_INTERVENTION_SEGMENTS
+    profile: str | None = None
     pre_takeover_context: int = 0
     require_complete_expert_action: bool = True
+    full_episode: dict[str, Any] | None = None
+    intervention_segments: dict[str, Any] | None = None
+    hybrid: dict[str, Any] | None = None
+    gripper_action_indices: list[int] | tuple[int, ...] | None = None
+    gripper_open_threshold: float = 0.5
     overwrite: bool = False
     image_writer_processes: int = 0
     image_writer_threads: int = 4
@@ -353,13 +392,74 @@ def _iter_export_segments(
     return segments
 
 
+def _merge_cfg(defaults: dict[str, Any], override: dict[str, Any] | None) -> dict[str, Any]:
+    cfg = dict(defaults)
+    if override:
+        cfg.update({key: value for key, value in override.items() if value is not None})
+    return cfg
+
+
+def _validate_export_mode(export_mode: str | None) -> str:
+    mode = str(export_mode or EXPORT_MODE_INTERVENTION_SEGMENTS).strip().lower()
+    if mode not in VALID_EXPORT_MODES:
+        raise ValueError(
+            f"Unknown DAgger export_mode `{export_mode}`. "
+            f"Expected one of: {sorted(VALID_EXPORT_MODES)}."
+        )
+    return mode
+
+
+def _normalize_optional_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"", "none", "null"}:
+        return None
+    return int(value)
+
+
+def _indices_are_contiguous(indices: list[int]) -> bool:
+    return all(next_idx == idx + 1 for idx, next_idx in zip(indices, indices[1:], strict=False))
+
+
+def _has_timestamp_continuity(raw_hf_dataset, indices: list[int], fps: int) -> bool:
+    if len(indices) < 2 or "timestamp" not in raw_hf_dataset.column_names:
+        return True
+
+    timestamps = [float(_to_scalar(raw_hf_dataset["timestamp"][idx])) for idx in indices]
+    expected_dt = 1.0 / max(1, fps)
+    tolerance = max(1e-4, expected_dt * 0.5)
+    for left, right in zip(timestamps, timestamps[1:], strict=False):
+        dt = right - left
+        if dt <= 0 or abs(dt - expected_dt) > tolerance:
+            return False
+    return True
+
+
+def _label_field_for_raw_item(raw_item: dict[str, Any], label_source: str) -> str:
+    label_source = str(label_source)
+    if label_source == "hybrid_by_frame_role":
+        role = _to_str(raw_item.get("frame_role", "policy"))
+        if role in DEFAULT_KEEP_FRAME_ROLES and _to_bool(raw_item.get("expert_label_complete", False)):
+            return "expert_action"
+        return "sent_action"
+    if label_source not in {"expert_action", "sent_action", "policy_action", ACTION}:
+        raise ValueError(
+            f"Unknown action label source `{label_source}`. "
+            "Expected one of: sent_action, expert_action, policy_action, action, hybrid_by_frame_role."
+        )
+    return label_source
+
+
 def _make_standard_frame(
     raw_item: dict[str, Any],
     output_features: dict[str, dict],
+    label_source: str = "expert_action",
 ) -> dict[str, Any]:
-    if "expert_action" not in raw_item:
+    action_field = _label_field_for_raw_item(raw_item, label_source)
+    if action_field not in raw_item:
         raise KeyError(
-            "Raw run_mix dataset is missing `expert_action`; cannot export DAgger labels safely."
+            f"Raw run_mix dataset is missing `{action_field}`; "
+            f"cannot export action labels from `{label_source}` safely."
         )
 
     frame: dict[str, Any] = {"task": raw_item["task"]}
@@ -367,14 +467,682 @@ def _make_standard_frame(
         if key in DEFAULT_FEATURES:
             continue
         if key == ACTION:
-            # DAgger supervision must use the expert label. The mixed/sent action
-            # is intentionally not used as the standard training target.
-            frame[key] = _coerce_numpy_feature(raw_item["expert_action"], feature)
+            frame[key] = _coerce_numpy_feature(raw_item[action_field], feature)
             continue
         if key not in raw_item:
             raise KeyError(f"Raw run_mix frame is missing required training feature `{key}`.")
         frame[key] = _coerce_numpy_feature(raw_item[key], feature)
     return frame
+
+
+def _flatten_feature_names(names: Any) -> list[str]:
+    if names is None:
+        return []
+    if isinstance(names, str):
+        return [names]
+    if isinstance(names, dict):
+        flattened: list[str] = []
+        for value in names.values():
+            flattened.extend(_flatten_feature_names(value))
+        return flattened
+    if isinstance(names, (list, tuple)):
+        flattened = []
+        for value in names:
+            flattened.extend(_flatten_feature_names(value))
+        return flattened
+    return [str(names)]
+
+
+def _action_dim(action_feature: dict[str, Any]) -> int:
+    shape = _feature_shape(action_feature)
+    if not shape:
+        return 1
+    dim = 1
+    for value in shape:
+        dim *= int(value)
+    return dim
+
+
+def _resolve_gripper_indices(
+    output_features: dict[str, dict],
+    gripper_action_indices: list[int] | tuple[int, ...] | None,
+) -> tuple[list[int], str]:
+    action_feature = output_features[ACTION]
+    action_dim = _action_dim(action_feature)
+    if gripper_action_indices is not None:
+        indices = [int(index) for index in gripper_action_indices]
+        if not indices:
+            return [], "disabled_by_empty_config"
+        invalid = [index for index in indices if index < 0 or index >= action_dim]
+        if invalid:
+            raise ValueError(
+                f"gripper_action_indices contains invalid indices {invalid}; action_dim={action_dim}."
+            )
+        return indices, "config"
+
+    action_names = _flatten_feature_names(action_feature.get("names"))
+    if len(action_names) != action_dim:
+        return [], "not_configured"
+    indices = [
+        index
+        for index, name in enumerate(action_names)
+        if "grip" in name.lower() or "gripper" in name.lower()
+    ]
+    return indices, "feature_names" if indices else "not_configured"
+
+
+class GripperDiagnostics:
+    def __init__(
+        self,
+        output_features: dict[str, dict],
+        gripper_action_indices: list[int] | tuple[int, ...] | None,
+        open_threshold: float,
+    ) -> None:
+        self.indices, self.source = _resolve_gripper_indices(output_features, gripper_action_indices)
+        self.open_threshold = float(open_threshold)
+        self.current_subtype: str | None = None
+        self.current_open_steps: list[bool] = []
+        self.by_subtype: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {
+                "frames": 0,
+                "open_frames": 0,
+                "close_frames": 0,
+                "episodes": 0,
+                "first_open_timesteps": [],
+                "early_open_episodes": 0,
+            }
+        )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.indices)
+
+    def start_episode(self, subtype: str) -> None:
+        self.current_subtype = subtype
+        self.current_open_steps = []
+
+    def observe_action(self, action: Any) -> None:
+        if not self.enabled or self.current_subtype is None:
+            return
+        action_array = np.asarray(action).reshape(-1)
+        is_open = bool(np.any(action_array[self.indices] > self.open_threshold))
+        self.current_open_steps.append(is_open)
+
+    def finish_episode(self) -> None:
+        if not self.enabled or self.current_subtype is None:
+            self.current_subtype = None
+            self.current_open_steps = []
+            return
+
+        subtype_stats = self.by_subtype[self.current_subtype]
+        episode_len = len(self.current_open_steps)
+        open_frames = sum(1 for is_open in self.current_open_steps if is_open)
+        first_open = next(
+            (idx for idx, is_open in enumerate(self.current_open_steps) if is_open),
+            None,
+        )
+        subtype_stats["frames"] += episode_len
+        subtype_stats["open_frames"] += open_frames
+        subtype_stats["close_frames"] += episode_len - open_frames
+        subtype_stats["episodes"] += 1
+        subtype_stats["first_open_timesteps"].append(first_open)
+        if first_open is not None and first_open < episode_len * 0.5:
+            subtype_stats["early_open_episodes"] += 1
+
+        self.current_subtype = None
+        self.current_open_steps = []
+
+    def summary(self) -> dict[str, Any]:
+        warnings: list[str] = []
+        if not self.enabled:
+            return {
+                "enabled": False,
+                "indices": [],
+                "index_source": self.source,
+                "open_threshold": self.open_threshold,
+                "by_subtype": {},
+                "warnings": warnings,
+            }
+
+        by_subtype: dict[str, dict[str, Any]] = {}
+        for subtype, stats in sorted(self.by_subtype.items()):
+            frames = int(stats["frames"])
+            episodes = int(stats["episodes"])
+            open_ratio = stats["open_frames"] / max(1, frames)
+            early_ratio = stats["early_open_episodes"] / max(1, episodes)
+            by_subtype[subtype] = {
+                "frames": frames,
+                "episodes": episodes,
+                "open_ratio": open_ratio,
+                "close_ratio": stats["close_frames"] / max(1, frames),
+                "first_open_timesteps": stats["first_open_timesteps"],
+                "early_open_episode_ratio": early_ratio,
+            }
+
+            if subtype == "intervention_segment":
+                if open_ratio > 0.6:
+                    warnings.append(
+                        "Recovery/intervention segments have high gripper-open ratio; "
+                        "check whether release labels dominate recovery data."
+                    )
+                if early_ratio > 0.5:
+                    warnings.append(
+                        "Many recovery/intervention segments open the gripper in the first half."
+                    )
+            elif subtype == "full_success_episode" and early_ratio > 0.5:
+                warnings.append(
+                    "Many full successful episodes open the gripper in the first half; "
+                    "verify that success annotations include the full insert/release timing."
+                )
+
+        return {
+            "enabled": True,
+            "indices": self.indices,
+            "index_source": self.source,
+            "open_threshold": self.open_threshold,
+            "by_subtype": by_subtype,
+            "warnings": warnings,
+        }
+
+
+SUCCESS_TRUE_STRINGS = {"1", "true", "yes", "y", "success", "succeeded", "complete", "completed", "done"}
+SUCCESS_FALSE_STRINGS = {"0", "false", "no", "n", "fail", "failed", "failure", "incomplete", "aborted"}
+
+
+def _success_value_to_bool(value: Any) -> bool | None:
+    value = _to_scalar(value)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        if np.isnan(float(value)):
+            return None
+        return float(value) > 0.5
+    value_str = str(value).strip().lower()
+    if value_str in SUCCESS_TRUE_STRINGS:
+        return True
+    if value_str in SUCCESS_FALSE_STRINGS:
+        return False
+    return None
+
+
+def _ordered_unique(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _episode_success_from_metadata(
+    episode: dict[str, Any],
+    success_field: str,
+    fallback_aliases: bool,
+) -> tuple[bool | None, str | None]:
+    candidates = [success_field]
+    if fallback_aliases:
+        candidates.extend(
+            [
+                "success",
+                "is_success",
+                "episode_success",
+                "task_success",
+                "task_status",
+                "status",
+                "done",
+                "completed",
+                f"info/{success_field}",
+                f"stats/{success_field}/max",
+                f"stats/{success_field}/mean",
+            ]
+        )
+    for key in _ordered_unique(candidates):
+        if key not in episode:
+            continue
+        success = _success_value_to_bool(episode[key])
+        if success is not None:
+            return success, f"episode_metadata:{key}"
+    return None, None
+
+
+def _episode_success_from_frames(
+    raw_hf_dataset,
+    start: int,
+    end: int,
+    success_field: str,
+    fallback_aliases: bool,
+) -> tuple[bool | None, str | None]:
+    candidates = [success_field]
+    if fallback_aliases:
+        candidates.extend(
+            [
+                "success",
+                "is_success",
+                "episode_success",
+                "task_success",
+                "task_status",
+                "status",
+                "done",
+                "next.success",
+            ]
+        )
+
+    columns = set(raw_hf_dataset.column_names)
+    for key in _ordered_unique(candidates):
+        if key not in columns:
+            continue
+        values = [_success_value_to_bool(raw_hf_dataset[key][idx]) for idx in range(start, end)]
+        values = [value for value in values if value is not None]
+        if not values:
+            continue
+        if key in {"done", "status", "task_status"}:
+            return values[-1], f"frame_field:{key}"
+        return any(values), f"frame_field:{key}"
+    return None, None
+
+
+def _episode_success(
+    raw_hf_dataset,
+    episode: dict[str, Any],
+    start: int,
+    end: int,
+    full_episode_cfg: dict[str, Any],
+) -> tuple[bool | None, str | None]:
+    success_field = str(full_episode_cfg.get("success_field") or "success")
+    fallback_aliases = bool(full_episode_cfg.get("fallback_success_from_episode_metadata", True))
+    success, source = _episode_success_from_metadata(episode, success_field, fallback_aliases)
+    if success is not None:
+        return success, source
+    return _episode_success_from_frames(raw_hf_dataset, start, end, success_field, fallback_aliases)
+
+
+def _raw_required_columns(
+    output_features: dict[str, dict],
+    label_source: str,
+) -> set[str]:
+    columns = {key for key in output_features if key not in DEFAULT_FEATURES and key != ACTION}
+    if label_source == "hybrid_by_frame_role":
+        columns.update({"sent_action", "expert_action", "frame_role", "expert_label_complete"})
+    else:
+        columns.add(label_source)
+    return columns
+
+
+def _raw_extra_features(raw_dataset: LeRobotDataset, output_features: dict[str, dict]) -> list[str]:
+    return sorted(set(raw_dataset.features) - set(output_features))
+
+
+def _init_export_state() -> dict[str, Any]:
+    return {
+        "exported_frames": 0,
+        "exported_episodes": 0,
+        "exported_raw_episode_indices": set(),
+        "exported_intervention_ids": set(),
+        "episode_metadata": [],
+        "subtype_frames": Counter(),
+        "subtype_episodes": Counter(),
+    }
+
+
+def _save_exported_episode(
+    *,
+    raw_dataset: LeRobotDataset,
+    output_dataset: LeRobotDataset,
+    output_features: dict[str, dict],
+    indices: list[int],
+    label_source: str,
+    export_mode: str,
+    export_subtype: str,
+    source_raw_episode_index: int,
+    source_intervention_segment_id: int | None,
+    state: dict[str, Any],
+    gripper_diagnostics: GripperDiagnostics,
+    extra_metadata: dict[str, Any] | None = None,
+) -> None:
+    gripper_diagnostics.start_episode(export_subtype)
+    for raw_idx in indices:
+        raw_item = raw_dataset[raw_idx]
+        frame = _make_standard_frame(raw_item, output_features, label_source=label_source)
+        gripper_diagnostics.observe_action(frame[ACTION])
+        output_dataset.add_frame(frame)
+
+    exported_episode_index = int(state["exported_episodes"])
+    output_dataset.save_episode()
+    gripper_diagnostics.finish_episode()
+
+    state["exported_episodes"] += 1
+    state["exported_frames"] += len(indices)
+    state["exported_raw_episode_indices"].add(int(source_raw_episode_index))
+    state["subtype_frames"][export_subtype] += len(indices)
+    state["subtype_episodes"][export_subtype] += 1
+    if source_intervention_segment_id is not None:
+        state["exported_intervention_ids"].add(
+            (int(source_raw_episode_index), int(source_intervention_segment_id))
+        )
+    record = {
+        "exported_episode_index": exported_episode_index,
+        "export_mode": export_mode,
+        "export_subtype": export_subtype,
+        "source_raw_episode_index": int(source_raw_episode_index),
+        "source_intervention_segment_id": source_intervention_segment_id,
+        "source_raw_start_index": int(indices[0]),
+        "source_raw_end_index_inclusive": int(indices[-1]),
+        "length": len(indices),
+        "action_label_source": label_source,
+    }
+    if extra_metadata:
+        record.update(extra_metadata)
+    state["episode_metadata"].append(record)
+
+
+def _filter_segments_by_episode_limit(
+    segments: list[dict[str, Any]],
+    max_segments_per_episode: int | None,
+) -> list[dict[str, Any]]:
+    if max_segments_per_episode is None:
+        return segments
+
+    counts: Counter[int] = Counter()
+    kept: list[dict[str, Any]] = []
+    for segment in segments:
+        raw_episode_index = int(segment["raw_episode_index"])
+        if counts[raw_episode_index] >= max_segments_per_episode:
+            continue
+        counts[raw_episode_index] += 1
+        kept.append(segment)
+    return kept
+
+
+def _export_intervention_segments(
+    *,
+    raw_dataset: LeRobotDataset,
+    output_dataset: LeRobotDataset,
+    output_features: dict[str, dict],
+    export_mode: str,
+    intervention_cfg: dict[str, Any],
+    effective_min_episode_len: int,
+    pre_takeover_context: int,
+    state: dict[str, Any],
+    gripper_diagnostics: GripperDiagnostics,
+    skip_raw_episode_indices: set[int] | None = None,
+    max_total_frames: int | None = None,
+) -> dict[str, Any]:
+    raw_dataset._ensure_hf_dataset_loaded()
+    raw_hf_dataset = raw_dataset.hf_dataset
+    label_source = str(intervention_cfg.get("label_source") or "expert_action")
+    keep_frame_roles = tuple(intervention_cfg.get("keep_frame_roles") or DEFAULT_KEEP_FRAME_ROLES)
+    require_complete = bool(intervention_cfg.get("require_complete_expert_action", True))
+    max_segments_per_episode = _normalize_optional_int(intervention_cfg.get("max_segments_per_episode"))
+    missing_columns = sorted(_raw_required_columns(output_features, label_source) - set(raw_hf_dataset.column_names))
+    if missing_columns:
+        raise KeyError(
+            "Raw run_mix dataset is missing required intervention export columns: "
+            f"{missing_columns}."
+        )
+
+    segments = _iter_export_segments(
+        raw_dataset,
+        set(keep_frame_roles),
+        pre_takeover_context=pre_takeover_context,
+        require_complete_expert_action=require_complete,
+    )
+    segments = _filter_segments_by_episode_limit(segments, max_segments_per_episode)
+
+    stats = {
+        "intervention_segment_candidates": len(segments),
+        "intervention_segments_exported": 0,
+        "intervention_segment_frames_exported": 0,
+        "skipped_short_segments": 0,
+        "intervention_segments_skipped_duplicate_full_episode": 0,
+        "intervention_segments_skipped_ratio_cap": 0,
+    }
+    skip_raw_episode_indices = skip_raw_episode_indices or set()
+    remaining_frames = max_total_frames
+
+    for segment in segments:
+        raw_episode_index = int(segment["raw_episode_index"])
+        if raw_episode_index in skip_raw_episode_indices:
+            stats["intervention_segments_skipped_duplicate_full_episode"] += 1
+            continue
+
+        indices = list(segment["indices"])
+        if len(indices) < effective_min_episode_len:
+            stats["skipped_short_segments"] += 1
+            continue
+        if remaining_frames is not None and len(indices) > remaining_frames:
+            stats["intervention_segments_skipped_ratio_cap"] += 1
+            continue
+
+        _save_exported_episode(
+            raw_dataset=raw_dataset,
+            output_dataset=output_dataset,
+            output_features=output_features,
+            indices=indices,
+            label_source=label_source,
+            export_mode=export_mode,
+            export_subtype="intervention_segment",
+            source_raw_episode_index=raw_episode_index,
+            source_intervention_segment_id=segment["intervention_segment_id"],
+            state=state,
+            gripper_diagnostics=gripper_diagnostics,
+        )
+        stats["intervention_segments_exported"] += 1
+        stats["intervention_segment_frames_exported"] += len(indices)
+        if remaining_frames is not None:
+            remaining_frames -= len(indices)
+
+    return stats
+
+
+def _select_full_success_episodes(
+    *,
+    raw_dataset: LeRobotDataset,
+    output_features: dict[str, dict],
+    full_episode_cfg: dict[str, Any],
+    effective_min_episode_len: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    raw_dataset._ensure_hf_dataset_loaded()
+    raw_hf_dataset = raw_dataset.hf_dataset
+    raw_columns = set(raw_hf_dataset.column_names)
+    label_source = str(full_episode_cfg.get("action_label_source") or "sent_action")
+    missing_columns = sorted(_raw_required_columns(output_features, label_source) - raw_columns)
+
+    stats = {
+        "full_episode_candidates": raw_dataset.num_episodes,
+        "full_episode_exported": 0,
+        "full_episode_skipped_no_success": 0,
+        "full_episode_skipped_reset": 0,
+        "full_episode_skipped_too_short": 0,
+        "full_episode_frames_exported": 0,
+        "full_episode_skipped_missing_success_info": 0,
+        "full_episode_skipped_missing_label_source": 0,
+        "full_episode_skipped_discontinuous": 0,
+        "full_episode_success_sources": Counter(),
+        "full_episode_success_required": bool(full_episode_cfg.get("require_success", True)),
+        "full_episode_missing_required_columns": missing_columns,
+    }
+    selected: list[dict[str, Any]] = []
+    if missing_columns:
+        stats["full_episode_skipped_missing_label_source"] = raw_dataset.num_episodes
+        return selected, stats
+
+    require_success = bool(full_episode_cfg.get("require_success", True))
+    require_no_reset = bool(full_episode_cfg.get("require_no_reset", True))
+    require_min_len = bool(full_episode_cfg.get("require_min_len", True))
+    drop_reset_ignore_frames = bool(full_episode_cfg.get("drop_reset_ignore_frames", True))
+
+    for raw_episode_index in range(raw_dataset.num_episodes):
+        episode = raw_dataset.meta.episodes[raw_episode_index]
+        start = int(episode["dataset_from_index"])
+        end = int(episode["dataset_to_index"])
+
+        success, success_source = _episode_success(raw_hf_dataset, episode, start, end, full_episode_cfg)
+        if require_success and success is None:
+            stats["full_episode_skipped_missing_success_info"] += 1
+            stats["full_episode_skipped_no_success"] += 1
+            continue
+        if require_success and not success:
+            stats["full_episode_skipped_no_success"] += 1
+            continue
+
+        indices = list(range(start, end))
+        roles = [_frame_role_at(raw_hf_dataset, idx) for idx in indices]
+        if require_no_reset and any(role == "reset" for role in roles):
+            stats["full_episode_skipped_reset"] += 1
+            continue
+
+        if drop_reset_ignore_frames:
+            indices = [
+                idx
+                for idx, role in zip(indices, roles, strict=False)
+                if role not in {"reset", "ignore"}
+            ]
+
+        if require_min_len and len(indices) < effective_min_episode_len:
+            stats["full_episode_skipped_too_short"] += 1
+            continue
+
+        if not _indices_are_contiguous(indices) or not _has_timestamp_continuity(
+            raw_hf_dataset, indices, raw_dataset.fps
+        ):
+            stats["full_episode_skipped_discontinuous"] += 1
+            continue
+
+        if success_source is not None:
+            stats["full_episode_success_sources"][success_source] += 1
+        selected.append(
+            {
+                "raw_episode_index": raw_episode_index,
+                "indices": indices,
+                "success": success,
+                "success_source": success_source,
+                "action_label_source": label_source,
+            }
+        )
+
+    return selected, stats
+
+
+def _export_full_success_episodes(
+    *,
+    raw_dataset: LeRobotDataset,
+    output_dataset: LeRobotDataset,
+    output_features: dict[str, dict],
+    export_mode: str,
+    full_episode_cfg: dict[str, Any],
+    effective_min_episode_len: int,
+    state: dict[str, Any],
+    gripper_diagnostics: GripperDiagnostics,
+) -> dict[str, Any]:
+    selected, stats = _select_full_success_episodes(
+        raw_dataset=raw_dataset,
+        output_features=output_features,
+        full_episode_cfg=full_episode_cfg,
+        effective_min_episode_len=effective_min_episode_len,
+    )
+
+    for episode in selected:
+        indices = episode["indices"]
+        _save_exported_episode(
+            raw_dataset=raw_dataset,
+            output_dataset=output_dataset,
+            output_features=output_features,
+            indices=indices,
+            label_source=episode["action_label_source"],
+            export_mode=export_mode,
+            export_subtype="full_success_episode",
+            source_raw_episode_index=episode["raw_episode_index"],
+            source_intervention_segment_id=None,
+            state=state,
+            gripper_diagnostics=gripper_diagnostics,
+            extra_metadata={
+                "success": episode["success"],
+                "success_source": episode["success_source"],
+            },
+        )
+        stats["full_episode_exported"] += 1
+        stats["full_episode_frames_exported"] += len(indices)
+
+    stats["full_episode_success_sources"] = dict(stats["full_episode_success_sources"])
+    return stats
+
+
+def _export_hybrid(
+    *,
+    raw_dataset: LeRobotDataset,
+    output_dataset: LeRobotDataset,
+    output_features: dict[str, dict],
+    full_episode_cfg: dict[str, Any],
+    intervention_cfg: dict[str, Any],
+    hybrid_cfg: dict[str, Any],
+    effective_min_episode_len: int,
+    pre_takeover_context: int,
+    state: dict[str, Any],
+    gripper_diagnostics: GripperDiagnostics,
+) -> dict[str, Any]:
+    stats: dict[str, Any] = {}
+    full_episode_stats: dict[str, Any] = {}
+    intervention_stats: dict[str, Any] = {}
+
+    if bool(hybrid_cfg.get("include_full_success_episode", True)):
+        full_episode_stats = _export_full_success_episodes(
+            raw_dataset=raw_dataset,
+            output_dataset=output_dataset,
+            output_features=output_features,
+            export_mode=EXPORT_MODE_HYBRID,
+            full_episode_cfg=full_episode_cfg,
+            effective_min_episode_len=effective_min_episode_len,
+            state=state,
+            gripper_diagnostics=gripper_diagnostics,
+        )
+        stats.update(full_episode_stats)
+
+    max_recovery_segments_per_episode = hybrid_cfg.get("max_recovery_segments_per_episode")
+    hybrid_intervention_cfg = dict(intervention_cfg)
+    if max_recovery_segments_per_episode is not None:
+        hybrid_intervention_cfg["max_segments_per_episode"] = int(max_recovery_segments_per_episode)
+
+    full_frames = int(state["subtype_frames"].get("full_success_episode", 0))
+    recovery_frame_cap: int | None = None
+    max_ratio = hybrid_cfg.get("max_recovery_frames_ratio")
+    if max_ratio is not None and full_frames > 0:
+        recovery_frame_cap = max(0, int(full_frames * float(max_ratio)))
+
+    duplicate_skip = set()
+    if bool(hybrid_cfg.get("prefer_full_episode_when_duplicate", True)):
+        duplicate_skip = set(state["exported_raw_episode_indices"])
+
+    if bool(hybrid_cfg.get("include_intervention_segments", True)):
+        intervention_stats = _export_intervention_segments(
+            raw_dataset=raw_dataset,
+            output_dataset=output_dataset,
+            output_features=output_features,
+            export_mode=EXPORT_MODE_HYBRID,
+            intervention_cfg=hybrid_intervention_cfg,
+            effective_min_episode_len=effective_min_episode_len,
+            pre_takeover_context=pre_takeover_context,
+            state=state,
+            gripper_diagnostics=gripper_diagnostics,
+            skip_raw_episode_indices=duplicate_skip,
+            max_total_frames=recovery_frame_cap,
+        )
+        stats.update(intervention_stats)
+
+    hybrid_full_frames = int(state["subtype_frames"].get("full_success_episode", 0))
+    hybrid_recovery_frames = int(state["subtype_frames"].get("intervention_segment", 0))
+    stats.update(
+        {
+            "hybrid_full_frames": hybrid_full_frames,
+            "hybrid_recovery_frames": hybrid_recovery_frames,
+            "hybrid_full_episodes": int(state["subtype_episodes"].get("full_success_episode", 0)),
+            "hybrid_recovery_segments": int(state["subtype_episodes"].get("intervention_segment", 0)),
+            "hybrid_recovery_ratio": hybrid_recovery_frames / max(1, hybrid_full_frames),
+        }
+    )
+    return stats
 
 
 def export_dagger_dataset(
@@ -387,8 +1155,14 @@ def export_dagger_dataset(
     keep_frame_roles: tuple[str, ...] = DEFAULT_KEEP_FRAME_ROLES,
     min_segment_frames: int = 1,
     min_episode_len_for_act: int | None = None,
+    export_mode: str = EXPORT_MODE_INTERVENTION_SEGMENTS,
     pre_takeover_context: int = 0,
     require_complete_expert_action: bool = True,
+    full_episode: dict[str, Any] | None = None,
+    intervention_segments: dict[str, Any] | None = None,
+    hybrid: dict[str, Any] | None = None,
+    gripper_action_indices: list[int] | tuple[int, ...] | None = None,
+    gripper_open_threshold: float = 0.5,
     overwrite: bool = False,
     image_writer_processes: int = 0,
     image_writer_threads: int = 4,
@@ -398,6 +1172,16 @@ def export_dagger_dataset(
     Round controllers should let the selected backend/export profile prepare
     these arguments instead of hard-coding policy-specific export rules.
     """
+
+    export_mode = _validate_export_mode(export_mode)
+    full_episode_cfg = _merge_cfg(DEFAULT_FULL_EPISODE_CFG, full_episode)
+    intervention_cfg = _merge_cfg(DEFAULT_INTERVENTION_SEGMENTS_CFG, intervention_segments)
+    hybrid_cfg = _merge_cfg(DEFAULT_HYBRID_CFG, hybrid)
+
+    if intervention_segments is None or "keep_frame_roles" not in intervention_segments:
+        intervention_cfg["keep_frame_roles"] = list(keep_frame_roles)
+    if intervention_segments is None or "require_complete_expert_action" not in intervention_segments:
+        intervention_cfg["require_complete_expert_action"] = bool(require_complete_expert_action)
 
     raw_root = Path(raw_root)
     output_root = Path(output_root)
@@ -416,6 +1200,11 @@ def export_dagger_dataset(
     output_features = seed_meta.features
     use_videos = any(feature["dtype"] == "video" for feature in output_features.values())
     effective_min_episode_len = max(min_segment_frames, min_episode_len_for_act or 1)
+    gripper_diagnostics = GripperDiagnostics(
+        output_features=output_features,
+        gripper_action_indices=gripper_action_indices,
+        open_threshold=gripper_open_threshold,
+    )
 
     output_dataset = LeRobotDataset.create(
         repo_id=output_repo_id,
@@ -429,36 +1218,47 @@ def export_dagger_dataset(
     )
     output_dataset.meta.metadata_buffer_size = 1
 
-    segments = _iter_export_segments(
-        raw_dataset,
-        set(keep_frame_roles),
-        pre_takeover_context=pre_takeover_context,
-        require_complete_expert_action=require_complete_expert_action,
-    )
-    exported_segments = 0
-    exported_frames = 0
-    skipped_short_segments = 0
-    exported_raw_episode_indices: set[int] = set()
-    exported_intervention_ids: set[tuple[int, int | None]] = set()
-
-    for segment in segments:
-        indices = segment["indices"]
-        if len(indices) < effective_min_episode_len:
-            skipped_short_segments += 1
-            continue
-
-        for raw_idx in indices:
-            raw_item = raw_dataset[raw_idx]
-            output_dataset.add_frame(_make_standard_frame(raw_item, output_features))
-
-        output_dataset.save_episode()
-        exported_segments += 1
-        exported_frames += len(indices)
-        exported_raw_episode_indices.add(int(segment["raw_episode_index"]))
-        exported_intervention_ids.add(
-            (int(segment["raw_episode_index"]), segment["intervention_segment_id"])
+    state = _init_export_state()
+    mode_stats: dict[str, Any]
+    if export_mode == EXPORT_MODE_INTERVENTION_SEGMENTS:
+        mode_stats = _export_intervention_segments(
+            raw_dataset=raw_dataset,
+            output_dataset=output_dataset,
+            output_features=output_features,
+            export_mode=export_mode,
+            intervention_cfg=intervention_cfg,
+            effective_min_episode_len=effective_min_episode_len,
+            pre_takeover_context=pre_takeover_context,
+            state=state,
+            gripper_diagnostics=gripper_diagnostics,
+        )
+    elif export_mode == EXPORT_MODE_FULL_SUCCESS_EPISODE:
+        mode_stats = _export_full_success_episodes(
+            raw_dataset=raw_dataset,
+            output_dataset=output_dataset,
+            output_features=output_features,
+            export_mode=export_mode,
+            full_episode_cfg=full_episode_cfg,
+            effective_min_episode_len=effective_min_episode_len,
+            state=state,
+            gripper_diagnostics=gripper_diagnostics,
+        )
+    else:
+        mode_stats = _export_hybrid(
+            raw_dataset=raw_dataset,
+            output_dataset=output_dataset,
+            output_features=output_features,
+            full_episode_cfg=full_episode_cfg,
+            intervention_cfg=intervention_cfg,
+            hybrid_cfg=hybrid_cfg,
+            effective_min_episode_len=effective_min_episode_len,
+            pre_takeover_context=pre_takeover_context,
+            state=state,
+            gripper_diagnostics=gripper_diagnostics,
         )
 
+    exported_frames = int(state["exported_frames"])
+    exported_episodes = int(state["exported_episodes"])
     output_dataset.finalize()
     if exported_frames > 0:
         exported_meta = LeRobotDatasetMetadata(output_repo_id, root=output_root)
@@ -494,7 +1294,35 @@ def export_dagger_dataset(
             )
             if _to_bool(is_expert) and not _to_bool(is_complete)
         )
-    raw_extra_features = sorted(set(raw_dataset.features) - set(output_features))
+    raw_extra_features = _raw_extra_features(raw_dataset, output_features)
+    gripper_summary = gripper_diagnostics.summary()
+    if mode_stats.get("full_episode_skipped_missing_success_info"):
+        logging.warning(
+            "[dagger_export] skipped %d full episode candidate(s) because no success indicator was found; "
+            "set full_episode.require_success=false only for smoke tests.",
+            mode_stats["full_episode_skipped_missing_success_info"],
+        )
+    for warning in gripper_summary.get("warnings", []):
+        logging.warning("[dagger_export] %s", warning)
+
+    exported_intervention_ids = state["exported_intervention_ids"]
+    exported_raw_episode_indices = state["exported_raw_episode_indices"]
+    label_source = (
+        intervention_cfg.get("label_source")
+        if export_mode == EXPORT_MODE_INTERVENTION_SEGMENTS
+        else full_episode_cfg.get("action_label_source")
+        if export_mode == EXPORT_MODE_FULL_SUCCESS_EPISODE
+        else "by_export_subtype"
+    )
+    dropped_frame_roles = (
+        ["policy", "reset", "ignore"]
+        if export_mode == EXPORT_MODE_INTERVENTION_SEGMENTS
+        else ["reset", "ignore"]
+        if export_mode == EXPORT_MODE_FULL_SUCCESS_EPISODE and full_episode_cfg.get("drop_reset_ignore_frames", True)
+        else "by_export_subtype"
+        if export_mode == EXPORT_MODE_HYBRID
+        else []
+    )
 
     summary = {
         "raw_dataset": {
@@ -511,18 +1339,24 @@ def export_dagger_dataset(
             "repo_id": output_repo_id,
             "root": str(output_root),
             "total_frames": exported_frames,
-            "total_episodes": exported_segments,
+            "total_episodes": exported_episodes,
         },
         "rules": {
-            "label_source": "expert_action",
+            "export_mode": export_mode,
+            "label_source": label_source,
             "standard_action_field": ACTION,
-            "keep_frame_roles": list(keep_frame_roles),
-            "dropped_frame_roles": ["policy", "reset", "ignore"],
+            "keep_frame_roles": list(intervention_cfg.get("keep_frame_roles") or DEFAULT_KEEP_FRAME_ROLES),
+            "dropped_frame_roles": dropped_frame_roles,
             "min_segment_frames": min_segment_frames,
             "min_episode_len_for_act": min_episode_len_for_act,
             "effective_min_episode_len": effective_min_episode_len,
             "pre_takeover_context": pre_takeover_context,
-            "require_complete_expert_action": require_complete_expert_action,
+            "require_complete_expert_action": bool(
+                intervention_cfg.get("require_complete_expert_action", require_complete_expert_action)
+            ),
+            "full_episode": full_episode_cfg,
+            "intervention_segments": intervention_cfg,
+            "hybrid": hybrid_cfg,
             "raw_extra_features_dropped": raw_extra_features,
         },
         "stats": {
@@ -530,30 +1364,47 @@ def export_dagger_dataset(
             "expert_episode_count": len(exported_raw_episode_indices),
             "intervention_count": len(exported_intervention_ids)
             if exported_intervention_ids
-            else (len(intervention_ids) if intervention_ids else len(segments)),
-            "skipped_short_segments": skipped_short_segments,
+            else (len(intervention_ids) if intervention_ids else mode_stats.get("intervention_segment_candidates", 0)),
+            "skipped_short_segments": mode_stats.get("skipped_short_segments", 0),
             "incomplete_expert_label_frames": incomplete_expert_label_frames,
+            "subtype_frames": dict(state["subtype_frames"]),
+            "subtype_episodes": dict(state["subtype_episodes"]),
+            **mode_stats,
         },
+        "gripper_diagnostics": gripper_summary,
     }
+
+    episode_metadata_path = output_root / "dagger_export_episode_metadata.json"
+    with open(episode_metadata_path, "w") as f:
+        json.dump(state["episode_metadata"], f, indent=2)
 
     summary_path = output_root / "dagger_export_summary.json"
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
 
     logging.info(
-        "[dagger_export] raw=%s exported=%s frames=%d episodes=%d",
+        "[dagger_export] mode=%s raw=%s exported=%s frames=%d episodes=%d",
+        export_mode,
         raw_root,
         output_root,
         exported_frames,
-        exported_segments,
+        exported_episodes,
     )
     return summary
 
 
 def export_from_config(config: DAggerExportConfig | dict[str, Any]) -> dict[str, Any]:
     if isinstance(config, dict):
+        config = dict(config)
+        if config.get("min_episode_len") is not None and config.get("min_episode_len_for_act") is None:
+            config["min_episode_len_for_act"] = config["min_episode_len"]
+        config.pop("min_episode_len", None)
+        allowed = {field.name for field in fields(DAggerExportConfig)}
+        config = {key: value for key, value in config.items() if key in allowed}
         config = DAggerExportConfig(**config)
-    return export_dagger_dataset(**config.__dict__)
+    kwargs = config.__dict__.copy()
+    kwargs.pop("profile", None)
+    return export_dagger_dataset(**kwargs)
 
 
 def main() -> None:

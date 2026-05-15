@@ -64,6 +64,9 @@ dagger_rounds:
 
     export:
       profile: act_chunk
+      # intervention_segments | full_success_episode | hybrid.
+      # Default remains intervention_segments for backward compatibility.
+      export_mode: intervention_segments
       # Backend export settings are the active source for round export behavior.
       # If min_episode_len is empty, ACTChunkExportProfile falls back to the
       # legacy dagger_rounds.min_episode_len_for_act when present, then to
@@ -71,6 +74,34 @@ dagger_rounds:
       min_episode_len:
       pre_takeover_context: 0
       require_complete_expert_action: true
+      # Optional gripper/release timing diagnostics. Leave empty/null to
+      # auto-detect by action names, set [] to skip, or provide indices like [6, 13].
+      gripper_action_indices:
+
+      # Full successful mixed episodes are corrected demonstrations:
+      # action is the command actually sent to the robot, not necessarily the
+      # expert oracle label on every frame.
+      full_episode:
+        require_success: true
+        success_field: success
+        fallback_success_from_episode_metadata: true
+        action_label_source: sent_action
+        drop_reset_ignore_frames: true
+        require_no_reset: true
+        require_min_len: true
+
+      intervention_segments:
+        keep_frame_roles: [takeover_start, recovery]
+        label_source: expert_action
+        require_complete_expert_action: true
+        max_segments_per_episode:
+
+      hybrid:
+        include_full_success_episode: true
+        include_intervention_segments: true
+        max_recovery_segments_per_episode: 1
+        max_recovery_frames_ratio: 0.25
+        prefer_full_episode_when_duplicate: true
 
     trainer:
       type: act
@@ -98,11 +129,32 @@ dagger_export:
 
   seed_repo_id: "nero_task3_step1/8mL_empty_left_merged_20260508_E125"
   seed_root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_merged_20260508_E125"
+  export_mode: intervention_segments
   keep_frame_roles: ["takeover_start", "recovery"]
   min_segment_frames: 1
   min_episode_len_for_act: 30
   pre_takeover_context: 0
   require_complete_expert_action: true
+  gripper_action_indices:
+  full_episode:
+    require_success: true
+    success_field: success
+    fallback_success_from_episode_metadata: true
+    action_label_source: sent_action
+    drop_reset_ignore_frames: true
+    require_no_reset: true
+    require_min_len: true
+  intervention_segments:
+    keep_frame_roles: [takeover_start, recovery]
+    label_source: expert_action
+    require_complete_expert_action: true
+    max_segments_per_episode:
+  hybrid:
+    include_full_success_episode: true
+    include_intervention_segments: true
+    max_recovery_segments_per_episode: 1
+    max_recovery_frames_ratio: 0.25
+    prefer_full_episode_when_duplicate: true
   overwrite: true
   image_writer_processes: 0
   image_writer_threads: 4
