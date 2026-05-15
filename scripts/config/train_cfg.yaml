@@ -13,9 +13,9 @@ train:
     device: "cuda"
     repo_id: "shenzhaolong/act_policy"
     push_to_hub: false  # 禁用模型推送
-    # temporal_ensemble_coeff: null # 关闭时序加权，减少动作启动迟滞
+    temporal_ensemble_coeff: 0.05 # 关闭时序加权，减少动作启动迟滞
     chunk_size: 30
-    n_action_steps: 5
+    n_action_steps: 1
     # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
     #                   /task3_step1/8mL_empty_left/[worked]act_20260508_E125/checkpoints/010000/pretrained_model"  # 从 ACT checkpoint 继续训练
 

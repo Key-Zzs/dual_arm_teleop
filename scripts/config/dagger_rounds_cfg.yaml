@@ -42,7 +42,7 @@ dagger_rounds:
       decay_per_round: 1.0
 
       warm_start_from_previous: true
-  episodes_per_round: 25
+  episodes_per_round: 10
   # TODO: output_id
   output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds\
                 /task3_step1/8mL_empty_left_v01"

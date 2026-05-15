@@ -30,7 +30,8 @@ record:
     control_mode: *control_mode
     dual_arm: true  # dual-arm mode
     oculus_config:
-      ip: "192.168.110.43"  # Oculus Quest IP address
+      # ip: "192.168.110.43"  # Oculus Quest IP address
+      ip: "192.168.110.16"  # Oculus Quest IP address
       use_gripper: *use_gripper
       left_pose_scaler: [1.2, 1.2]   # left arm scaler
       left_channel_signs: [-1, -1, 1, 1, 1, 1]  # left arm signs
@@ -41,8 +42,9 @@ record:
       visualize_placo: false  # whether to visualize robot using placo
       
   robot:
-    robot_ip: &ip "192.168.110.203" # dobot server ip
+    # robot_ip: &ip "192.168.110.203" # dobot server ip
     # robot_ip: &ip "localhost" # nero server ip
+    robot_ip: &ip "10.10.10.1" # dobot server ip
     robot_port: 4242  # dual-arm zerorpc port (single port for both arms)
     use_gripper: *use_gripper
     # gripper_ip: "192.168.110.15" # gripper zerorpc ip, if different from robot_ip, set to robot_ip
