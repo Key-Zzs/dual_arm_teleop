@@ -12,12 +12,12 @@ from typing import Dict, Any, Type
 # Import robot configurations
 from .franka.config_franka import FrankaConfig
 from .dual_dobot.config_dobot import DobotDualArmConfig
-from .dual_agilx_nero.config_nero import NeroDualArmConfig
+from .dual_agilex_nero.config_nero import NeroDualArmConfig
 
 # Import robot classes
 from .franka.franka import Franka
 from .dual_dobot.dobot_dual_arm import DobotDualArm
-from .dual_agilx_nero.nero_dual_arm import NeroDualArm
+from .dual_agilex_nero.nero_dual_arm import NeroDualArm
 
 
 # Robot type registry: {robot_type: (ConfigClass, RobotClass)}
