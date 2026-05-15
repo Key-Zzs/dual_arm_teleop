@@ -239,6 +239,11 @@ class TrainPipelineConfig(HubMixin):
                 device = policy["device"],
                 repo_id = policy["repo_id"],
                 push_to_hub = policy["push_to_hub"],
+                horizon = policy.get("horizon", 16),
+                n_obs_steps = policy.get("n_obs_steps", 2),
+                n_action_steps = policy.get("n_action_steps", 8),
+                num_inference_steps = policy.get("num_inference_steps", None),
+                optimizer_lr = policy.get("optimizer_lr", 1e-4),
             )
         else:
             raise ValueError(f"no config for policy type: {policy_type}")

@@ -16,6 +16,13 @@ train:
     # temporal_ensemble_coeff: null # 关闭时序加权，减少动作启动迟滞
     chunk_size: 30
     n_action_steps: 5
+    
+    # === 可暴露/调整的超参数配置 (针对 Diffusion 策略可覆盖) ===
+    # horizon: 16                # [Diffusion] 扩散模型的预测窗口长度 (即 Chunk size)
+    # n_obs_steps: 2             # [Diffusion] 观察步数记录历史
+    # num_inference_steps: 100   # [Diffusion] 实际预测推理的降噪步数 (变小降低延迟如 10)
+    # optimizer_lr: 0.0001       # 学习率 (不提供则按库的默认值: Diffusion: 1e-4, ACT: 1e-5)
+
     # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
     #                   /task3_step1/8mL_empty_left/[worked]act_20260508_E125/checkpoints/010000/pretrained_model"  # 从 ACT checkpoint 继续训练
 
