@@ -16,7 +16,7 @@ dagger_rounds:
     max_rounds: 3
 
     early_stop:
-      enabled: false
+      enabled: true
       patience: 2
 
       min_exported_frames: 30
@@ -28,12 +28,12 @@ dagger_rounds:
       stop_if_export_too_small: true
 
     train_steps:
-      mode: fixed   # fixed | by_exported_frames | by_exported_episodes | hybrid
+      mode: hybrid   # fixed | by_exported_frames | by_exported_episodes | hybrid
       # null keeps the current train_cfg.yaml train.steps value.
       fixed_steps:
 
       min_steps: 500
-      max_steps: 3000
+      max_steps: 2000
 
       steps_per_exported_frame: 4
       steps_per_exported_episode: 300
@@ -42,24 +42,53 @@ dagger_rounds:
       decay_per_round: 1.0
 
       warm_start_from_previous: true
-  episodes_per_round: 20
+  episodes_per_round: 25
   # TODO: output_id
   output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds\
                 /task3_step1/8mL_empty_left_v01"
 
   record_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/record_cfg.yaml"
+  # Legacy-compatible top-level path. If this is omitted, the controller falls
+  # back to policy_backend.trainer.train_cfg_path when provided.
   train_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/train_cfg.yaml"
+
+  # Policy-agnostic round skeleton; currently only the ACT backend is implemented.
+  policy_backend:
+    type: act
+
+    runner:
+      type: act
+      # 每轮由 round controller 动态写入 checkpoint_in；这里不要固定 checkpoint。
+      checkpoint_path:
+      device: cuda
+
+    export:
+      profile: act_chunk
+      # Backend export settings are the active source for round export behavior.
+      # If min_episode_len is empty, ACTChunkExportProfile falls back to the
+      # legacy dagger_rounds.min_episode_len_for_act when present, then to
+      # train_cfg.yaml train.policy.chunk_size.
+      min_episode_len:
+      pre_takeover_context: 0
+      require_complete_expert_action: true
+
+    trainer:
+      type: act
+      # Optional fallback only; dagger_rounds.train_cfg_path above takes priority.
+      train_cfg_path:
 
   overwrite: true
   train_round0_if_missing: true
   export_min_segment_frames: 1
-  # Defaults to train.policy.chunk_size when null, so exported episodes are long
-  # enough for ACT action chunks without relying on heavy padding.
-  min_episode_len_for_act:
-  pre_takeover_context: 0
-  require_complete_expert_action: true
+  # Deprecated legacy round export fields are still accepted when the backend
+  # export block omits the same option:
+  #   min_episode_len_for_act
+  #   pre_takeover_context
+  #   require_complete_expert_action
 
 dagger_export:
+  # Standalone ACT chunk export config used by scripts.core.run_dagger_export.
+  # robot-dagger rounds get export settings from dagger_rounds.policy_backend.
   raw_repo_id: "nero_task3_step1/8mL_empty_left_dagger_raw_20260513_v01"
   raw_root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_dagger_raw_20260513_v01"
 

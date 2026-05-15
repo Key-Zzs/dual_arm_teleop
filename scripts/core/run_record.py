@@ -645,7 +645,7 @@ def run_mix_record_loop(
         if is_arm_override:
             overridden_action_names.update(_copy_arm_channels(exec_action, expert_action))
             override_reasons.append(arm_override_reason)
-            # Flush ACT chunk cache only for arm/body interventions. Gripper-only
+            # Flush policy temporal state only for arm/body interventions. Gripper-only
             # control should not disturb policy arm motion.
             policy.reset()
 

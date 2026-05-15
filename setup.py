@@ -1,8 +1,4 @@
 from setuptools import setup, find_packages
-from pathlib import Path
-
-# ====== Project root ======
-ROOT = Path(__file__).parent.resolve()
 
 setup(
     name="dual_arm_teleop",

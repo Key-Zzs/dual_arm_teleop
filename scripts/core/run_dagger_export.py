@@ -113,7 +113,7 @@ def _coerce_image_or_video_feature(value: Any, feature: dict[str, Any]) -> Any:
     LeRobot video decoding may return channel-first arrays/tensors (C, H, W),
     while the seed feature schema in this project stores camera frames as
     channel-last (H, W, C). The exported DAgger dataset must follow the seed
-    schema exactly so it can be aggregated before ACT training.
+    schema exactly so it can be aggregated before backend training.
     """
 
     if isinstance(value, torch.Tensor):
@@ -149,7 +149,7 @@ def assert_lerobot_schema_compatible(
     reference_name: str = "reference",
     candidate_name: str = "candidate",
 ) -> None:
-    """Fail loudly when two LeRobot datasets cannot be aggregated for ACT training."""
+    """Fail loudly when two LeRobot datasets cannot be aggregated for backend training."""
 
     errors: list[str] = []
     if reference_meta.fps != candidate_meta.fps:
@@ -200,7 +200,7 @@ def assert_lerobot_schema_compatible(
 
     if errors:
         raise ValueError(
-            "LeRobot dataset schema mismatch; cannot safely aggregate or train ACT:\n"
+            "LeRobot dataset schema mismatch; cannot safely aggregate or train the selected backend:\n"
             + "\n".join(f"- {error}" for error in errors)
         )
 
@@ -286,7 +286,7 @@ def _iter_export_segments(
     intervention_segment_id is no longer continuous. Optional pre-takeover
     context is included only when it is adjacent and has complete expert labels.
     This prevents sparse takeover frames from being interpreted as one continuous
-    ACT chunk.
+    action chunk.
     """
 
     raw_dataset._ensure_hf_dataset_loaded()
@@ -368,7 +368,7 @@ def _make_standard_frame(
             continue
         if key == ACTION:
             # DAgger supervision must use the expert label. The mixed/sent action
-            # is intentionally not used as ACT's standard training target.
+            # is intentionally not used as the standard training target.
             frame[key] = _coerce_numpy_feature(raw_item["expert_action"], feature)
             continue
         if key not in raw_item:
@@ -393,6 +393,12 @@ def export_dagger_dataset(
     image_writer_processes: int = 0,
     image_writer_threads: int = 4,
 ) -> dict[str, Any]:
+    """Export the current ACT chunk DAgger profile into a standard LeRobot dataset.
+
+    Round controllers should let the selected backend/export profile prepare
+    these arguments instead of hard-coding policy-specific export rules.
+    """
+
     raw_root = Path(raw_root)
     output_root = Path(output_root)
     seed_root = _resolve_root(seed_repo_id, seed_root)
