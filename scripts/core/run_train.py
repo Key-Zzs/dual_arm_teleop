@@ -216,6 +216,7 @@ class TrainPipelineConfig(HubMixin):
                 temporal_ensemble_coeff = temporal_ensemble_coeff,
                 chunk_size = policy.get("chunk_size", 100),
                 n_action_steps = policy.get("n_action_steps", 1),
+                optimizer_lr = policy.get("optimizer_lr", 1e-5),
             )
         elif policy_type == "act_dagger":
             # NOTE: `act_dagger` is an internal round-Dagger training sentinel.
@@ -232,6 +233,7 @@ class TrainPipelineConfig(HubMixin):
                 temporal_ensemble_coeff = temporal_ensemble_coeff,
                 chunk_size = policy.get("chunk_size", 100),
                 n_action_steps = policy.get("n_action_steps", 1),
+                optimizer_lr = policy.get("optimizer_lr", 1e-5),
             )
         elif policy_type == "diffusion":
             from lerobot.policies import DiffusionConfig
