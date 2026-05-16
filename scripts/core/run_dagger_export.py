@@ -1497,8 +1497,62 @@ def export_dagger_dataset(
         if export_mode == EXPORT_MODE_HYBRID
         else []
     )
+    full_episode_frames = int(
+        state["subtype_frames"].get(
+            "full_success_episode",
+            mode_stats.get("full_episode_frames_exported", 0),
+        )
+        or 0
+    )
+    full_episode_count = int(
+        state["subtype_episodes"].get(
+            "full_success_episode",
+            mode_stats.get("full_episode_exported", 0),
+        )
+        or 0
+    )
+    recovery_frames = int(
+        state["subtype_frames"].get(
+            "intervention_segment",
+            mode_stats.get("intervention_segment_frames_exported", 0),
+        )
+        or 0
+    )
+    recovery_segment_count = int(
+        state["subtype_episodes"].get(
+            "intervention_segment",
+            mode_stats.get("intervention_segments_exported", 0),
+        )
+        or 0
+    )
+    hybrid_full_frames = int(mode_stats.get("hybrid_full_frames", full_episode_frames if export_mode == EXPORT_MODE_HYBRID else 0) or 0)
+    hybrid_full_episodes = int(
+        mode_stats.get("hybrid_full_episodes", full_episode_count if export_mode == EXPORT_MODE_HYBRID else 0)
+        or 0
+    )
+    hybrid_recovery_frames = int(
+        mode_stats.get("hybrid_recovery_frames", recovery_frames if export_mode == EXPORT_MODE_HYBRID else 0)
+        or 0
+    )
+    hybrid_recovery_segments = int(
+        mode_stats.get("hybrid_recovery_segments", recovery_segment_count if export_mode == EXPORT_MODE_HYBRID else 0)
+        or 0
+    )
+    hybrid_recovery_ratio = float(mode_stats.get("hybrid_recovery_ratio", 0.0) or 0.0)
 
     summary = {
+        "export_mode": export_mode,
+        "exported_frames": exported_frames,
+        "exported_episodes": exported_episodes,
+        "full_episode_frames": full_episode_frames,
+        "full_episode_count": full_episode_count,
+        "recovery_frames": recovery_frames,
+        "recovery_segment_count": recovery_segment_count,
+        "hybrid_full_frames": hybrid_full_frames,
+        "hybrid_full_episodes": hybrid_full_episodes,
+        "hybrid_recovery_frames": hybrid_recovery_frames,
+        "hybrid_recovery_segments": hybrid_recovery_segments,
+        "hybrid_recovery_ratio": hybrid_recovery_ratio,
         "raw_dataset": {
             "repo_id": raw_repo_id,
             "root": str(raw_root),
@@ -1544,6 +1598,10 @@ def export_dagger_dataset(
             "subtype_frames": dict(state["subtype_frames"]),
             "subtype_episodes": dict(state["subtype_episodes"]),
             **mode_stats,
+            "full_episode_frames": full_episode_frames,
+            "full_episode_count": full_episode_count,
+            "recovery_frames": recovery_frames,
+            "recovery_segment_count": recovery_segment_count,
         },
         "gripper_diagnostics": gripper_summary,
         "warnings": export_warnings + list(gripper_summary.get("warnings", [])),

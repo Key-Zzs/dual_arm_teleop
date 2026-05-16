@@ -118,6 +118,91 @@ def _clamp_steps(steps: int, min_steps: int | None, max_steps: int | None) -> in
     return int(steps)
 
 
+def _summary_containers(exported_summary: dict[str, Any] | None) -> list[dict[str, Any]]:
+    summary = exported_summary or {}
+    containers: list[dict[str, Any]] = []
+    for value in (
+        summary,
+        summary.get("stats", {}),
+        summary.get("exported_dataset", {}),
+        summary.get("rules", {}),
+    ):
+        if isinstance(value, dict):
+            containers.append(value)
+    return containers
+
+
+def _first_available(
+    exported_summary: dict[str, Any] | None,
+    keys: tuple[str, ...],
+    default: Any = None,
+) -> Any:
+    for container in _summary_containers(exported_summary):
+        for key in keys:
+            if key in container and container[key] is not None:
+                return container[key]
+    return default
+
+
+def _first_available_int(
+    exported_summary: dict[str, Any] | None,
+    keys: tuple[str, ...],
+    default: int = 0,
+) -> int:
+    value = _first_available(exported_summary, keys)
+    if value is None or value == "":
+        return int(default)
+    return int(value)
+
+
+def _subtype_count(
+    exported_summary: dict[str, Any] | None,
+    table_name: str,
+    subtype: str,
+    default: int = 0,
+) -> int:
+    summary = exported_summary or {}
+    for container in (summary, summary.get("stats", {})):
+        if not isinstance(container, dict):
+            continue
+        subtype_table = container.get(table_name)
+        if isinstance(subtype_table, dict) and subtype_table.get(subtype) is not None:
+            return int(subtype_table[subtype])
+    return int(default)
+
+
+def _export_mode_from_summary(exported_summary: dict[str, Any] | None) -> str | None:
+    value = _first_available(exported_summary, ("export_mode",))
+    if value is None or value == "":
+        return None
+    return str(value).strip().lower()
+
+
+def _normalize_optional_export_mode(export_mode: str | None) -> str | None:
+    if export_mode is None:
+        return None
+    export_mode = str(export_mode).strip().lower()
+    return export_mode or None
+
+
+def _resolve_train_steps_export_mode(
+    exported_summary: dict[str, Any] | None,
+    configured_export_mode: str | None = None,
+    round_id: int | None = None,
+) -> str:
+    summary_mode = _export_mode_from_summary(exported_summary)
+    configured_mode = _normalize_optional_export_mode(configured_export_mode)
+    if summary_mode and configured_mode and summary_mode != configured_mode:
+        prefix = f"[round {round_id:03d}] " if round_id is not None else ""
+        logging.warning(
+            "%strain steps export_mode mismatch: summary=%s configured=%s; using summary.",
+            prefix,
+            summary_mode,
+            configured_mode,
+        )
+    return summary_mode or configured_mode or "intervention_segments"
+
+
 def _round_schedule_cfg(config: DAggerRoundsConfig) -> dict[str, Any]:
     return copy.deepcopy(config.round_schedule or {})
 
@@ -191,9 +276,12 @@ def _full_episode_success_policy(round_cfg: dict[str, Any]) -> str:
 
 
 def _exported_counts(exported_summary: dict[str, Any] | None) -> tuple[int, int]:
-    exported_dataset = (exported_summary or {}).get("exported_dataset", {})
-    exported_frames = int(exported_dataset.get("total_frames", 0) or 0)
-    exported_episodes = int(exported_dataset.get("total_episodes", 0) or 0)
+    exported_frames = _first_available_int(exported_summary, ("exported_frames", "total_frames"), default=0)
+    exported_episodes = _first_available_int(
+        exported_summary,
+        ("exported_episodes", "total_episodes"),
+        default=0,
+    )
     return exported_frames, exported_episodes
 
 
@@ -206,6 +294,27 @@ def _export_metrics(export_summary: dict[str, Any], run_mix_stats: dict[str, Any
     return {
         "exported_frames": int(exported_frames),
         "exported_episodes": int(exported_episodes),
+        "export_mode": _resolve_train_steps_export_mode(export_summary),
+        "full_episode_count": _first_available_int(
+            export_summary,
+            ("full_episode_count", "full_episode_exported", "hybrid_full_episodes"),
+            default=_subtype_count(export_summary, "subtype_episodes", "full_success_episode", 0),
+        ),
+        "full_episode_frames": _first_available_int(
+            export_summary,
+            ("full_episode_frames", "full_episode_frames_exported", "hybrid_full_frames"),
+            default=_subtype_count(export_summary, "subtype_frames", "full_success_episode", 0),
+        ),
+        "recovery_frames": _first_available_int(
+            export_summary,
+            ("recovery_frames", "hybrid_recovery_frames", "intervention_frames", "intervention_segment_frames_exported"),
+            default=_subtype_count(export_summary, "subtype_frames", "intervention_segment", 0),
+        ),
+        "recovery_segment_count": _first_available_int(
+            export_summary,
+            ("recovery_segment_count", "hybrid_recovery_segments", "intervention_segments_exported"),
+            default=_subtype_count(export_summary, "subtype_episodes", "intervention_segment", 0),
+        ),
         "expert_frame_ratio": float(expert_frame_ratio or 0.0),
         "intervention_count": int(intervention_count or 0),
         "skipped_short_segments": int(stats.get("skipped_short_segments", 0) or 0),
@@ -218,23 +327,70 @@ def _export_metrics(export_summary: dict[str, Any], run_mix_stats: dict[str, Any
     }
 
 
-def resolve_train_steps(
-    round_id: int,
+def resolve_effective_train_step_mode(export_mode: str, train_steps_cfg: dict[str, Any]) -> str:
+    configured_mode = str(train_steps_cfg.get("mode", "fixed")).strip().lower()
+    if configured_mode != "auto_by_export_mode":
+        return configured_mode
+
+    export_mode = str(export_mode or "").strip().lower()
+    if export_mode == "intervention_segments":
+        return str(train_steps_cfg.get("intervention_segments_mode") or "hybrid").strip().lower()
+    if export_mode == "full_success_episode":
+        return str(train_steps_cfg.get("full_success_episode_mode") or "by_exported_episodes").strip().lower()
+    if export_mode == "hybrid":
+        return str(train_steps_cfg.get("hybrid_mode") or "by_export_subtype").strip().lower()
+    raise ValueError(
+        "round_schedule.train_steps.mode=auto_by_export_mode requires export_mode "
+        "to be one of: intervention_segments, full_success_episode, hybrid. "
+        f"Got: {export_mode!r}."
+    )
+
+
+def _subtype_train_step_counts(exported_summary: dict[str, Any]) -> dict[str, int]:
+    full_episode_count = _first_available_int(
+        exported_summary,
+        ("full_episode_count", "full_episode_exported", "hybrid_full_episodes"),
+        default=_subtype_count(exported_summary, "subtype_episodes", "full_success_episode", 0),
+    )
+    recovery_segment_count = _first_available_int(
+        exported_summary,
+        ("recovery_segment_count", "hybrid_recovery_segments", "intervention_segments_exported"),
+        default=_subtype_count(exported_summary, "subtype_episodes", "intervention_segment", 0),
+    )
+    recovery_frames = _first_available_int(
+        exported_summary,
+        ("recovery_frames", "hybrid_recovery_frames", "intervention_frames", "intervention_segment_frames_exported"),
+        default=_subtype_count(exported_summary, "subtype_frames", "intervention_segment", 0),
+    )
+    return {
+        "full_episode_count": full_episode_count,
+        "recovery_segment_count": recovery_segment_count,
+        "recovery_frames": recovery_frames,
+    }
+
+
+def resolve_train_steps_by_mode(
+    effective_mode: str,
     exported_summary: dict[str, Any],
-    base_train_steps: int,
-    schedule_cfg: dict[str, Any] | None,
-) -> int:
-    """Resolve per-round train steps for the supported round DAgger controller.
-
-    This helper only schedules the round-based `robot-dagger` path. It is not
-    related to the removed offline DAgger trainer/pipeline.
-    """
-
-    train_steps_cfg = _train_steps_cfg(schedule_cfg)
-    mode = str(train_steps_cfg.get("mode", "fixed"))
+    train_steps_cfg: dict[str, Any],
+    base_steps: int,
+    round_id: int,
+) -> tuple[int, dict[str, Any]]:
+    effective_mode = str(effective_mode).strip().lower()
     exported_frames, exported_episodes = _exported_counts(exported_summary)
+    components: dict[str, Any] = {
+        "exported_frames": int(exported_frames),
+        "exported_episodes": int(exported_episodes),
+    }
     if exported_frames <= 0 or exported_episodes <= 0:
-        return 0
+        components.update(
+            {
+                "skipped_empty_export": True,
+                "raw_steps": 0,
+                "clamped_steps": 0,
+            }
+        )
+        return 0, components
 
     fixed_steps = _optional_int(train_steps_cfg.get("fixed_steps"))
     min_steps = _optional_int(train_steps_cfg.get("min_steps"))
@@ -246,41 +402,191 @@ def resolve_train_steps(
     if decay_per_round <= 0:
         raise ValueError("round_schedule.train_steps.decay_per_round must be > 0.")
 
+    clamp_result = False
     if round_id == 1 and round1_steps is not None:
-        resolved = round1_steps
+        resolved = int(round1_steps)
         clamp_result = True
-    elif mode == "fixed":
-        resolved = fixed_steps if fixed_steps is not None else int(base_train_steps)
+        components.update({"override": "round1_steps", "round1_steps": int(round1_steps)})
+    elif effective_mode == "fixed":
+        resolved = fixed_steps if fixed_steps is not None else int(base_steps)
         clamp_result = decay_per_round != 1.0
-    elif mode == "by_exported_frames":
+        components.update({"fixed_steps": resolved})
+    elif effective_mode == "by_exported_frames":
         steps_per_frame = int(train_steps_cfg.get("steps_per_exported_frame", 1))
         resolved = exported_frames * steps_per_frame
         clamp_result = True
-    elif mode == "by_exported_episodes":
-        steps_per_episode = int(train_steps_cfg.get("steps_per_exported_episode", int(base_train_steps)))
+        components.update(
+            {
+                "steps_per_exported_frame": steps_per_frame,
+                "frame_steps": int(resolved),
+            }
+        )
+    elif effective_mode == "by_exported_episodes":
+        steps_per_episode = int(train_steps_cfg.get("steps_per_exported_episode", int(base_steps)))
         resolved = exported_episodes * steps_per_episode
         clamp_result = True
-    elif mode == "hybrid":
+        components.update(
+            {
+                "steps_per_exported_episode": steps_per_episode,
+                "episode_steps": int(resolved),
+            }
+        )
+    elif effective_mode == "hybrid":
         steps_per_frame = int(train_steps_cfg.get("steps_per_exported_frame", 1))
-        steps_per_episode = int(train_steps_cfg.get("steps_per_exported_episode", int(base_train_steps)))
+        steps_per_episode = int(train_steps_cfg.get("steps_per_exported_episode", int(base_steps)))
         frame_steps = exported_frames * steps_per_frame
         episode_steps = exported_episodes * steps_per_episode
         resolved = max(frame_steps, episode_steps)
         clamp_result = True
+        components.update(
+            {
+                "steps_per_exported_frame": steps_per_frame,
+                "steps_per_exported_episode": steps_per_episode,
+                "frame_steps": int(frame_steps),
+                "episode_steps": int(episode_steps),
+            }
+        )
+    elif effective_mode == "by_export_subtype":
+        subtype_counts = _subtype_train_step_counts(exported_summary)
+        full_episode_count = subtype_counts["full_episode_count"]
+        recovery_segment_count = subtype_counts["recovery_segment_count"]
+        recovery_frames = subtype_counts["recovery_frames"]
+        if full_episode_count == 0 and recovery_segment_count == 0 and recovery_frames == 0:
+            logging.warning(
+                "by_export_subtype requested but subtype summary is missing; "
+                "fallback to by_exported_episodes"
+            )
+            steps_per_episode = int(train_steps_cfg.get("steps_per_exported_episode", int(base_steps)))
+            resolved = exported_episodes * steps_per_episode
+            components.update(
+                {
+                    "fallback_mode": "by_exported_episodes",
+                    "steps_per_exported_episode": steps_per_episode,
+                    "episode_steps": int(resolved),
+                }
+            )
+        else:
+            steps_per_full_episode = int(
+                train_steps_cfg.get(
+                    "steps_per_full_episode",
+                    train_steps_cfg.get("steps_per_exported_episode", int(base_steps)),
+                )
+            )
+            steps_per_recovery_segment = int(train_steps_cfg.get("steps_per_recovery_segment", 0))
+            steps_per_recovery_frame = int(
+                train_steps_cfg.get(
+                    "steps_per_recovery_frame",
+                    train_steps_cfg.get("steps_per_exported_frame", 1),
+                )
+            )
+            full_steps = full_episode_count * steps_per_full_episode
+            recovery_steps = (
+                recovery_segment_count * steps_per_recovery_segment
+                + recovery_frames * steps_per_recovery_frame
+            )
+            resolved = full_steps + recovery_steps
+            components.update(
+                {
+                    "full_episode_count": full_episode_count,
+                    "steps_per_full_episode": steps_per_full_episode,
+                    "full_steps": int(full_steps),
+                    "recovery_segment_count": recovery_segment_count,
+                    "steps_per_recovery_segment": steps_per_recovery_segment,
+                    "recovery_frames": recovery_frames,
+                    "steps_per_recovery_frame": steps_per_recovery_frame,
+                    "recovery_steps": int(recovery_steps),
+                }
+            )
+        clamp_result = True
     else:
         raise ValueError(
-            "round_schedule.train_steps.mode must be one of: "
-            "fixed, by_exported_frames, by_exported_episodes, hybrid."
+            "round_schedule.train_steps mode must be one of: fixed, by_exported_frames, "
+            "by_exported_episodes, hybrid, auto_by_export_mode, by_export_subtype."
         )
 
+    components["pre_decay_steps"] = int(resolved)
     if decay_per_round != 1.0:
         decay_factor = decay_per_round ** max(0, int(round_id) - 1)
         resolved = int(round(float(resolved) * decay_factor))
         clamp_result = True
+        components["decay_per_round"] = float(decay_per_round)
+        components["decay_factor"] = float(decay_factor)
 
+    components["raw_steps"] = int(resolved)
     if clamp_result:
         resolved = _clamp_steps(int(resolved), min_steps, max_steps)
-    return int(resolved)
+    components["clamped_steps"] = int(resolved)
+    return int(resolved), components
+
+
+def resolve_train_steps_schedule(
+    round_id: int,
+    exported_summary: dict[str, Any],
+    base_train_steps: int,
+    schedule_cfg: dict[str, Any] | None,
+    export_mode: str | None = None,
+) -> dict[str, Any]:
+    """Resolve per-round train steps plus metadata for state/logging."""
+
+    train_steps_cfg = _train_steps_cfg(schedule_cfg)
+    configured_mode = str(train_steps_cfg.get("mode", "fixed")).strip().lower()
+    resolved_export_mode = _resolve_train_steps_export_mode(exported_summary, export_mode, round_id)
+    effective_mode = resolve_effective_train_step_mode(resolved_export_mode, train_steps_cfg)
+    resolved_steps, components = resolve_train_steps_by_mode(
+        effective_mode=effective_mode,
+        exported_summary=exported_summary,
+        train_steps_cfg=train_steps_cfg,
+        base_steps=base_train_steps,
+        round_id=round_id,
+    )
+    return {
+        "train_steps_configured_mode": configured_mode,
+        "train_steps_effective_mode": effective_mode,
+        "export_mode": resolved_export_mode,
+        "base_train_steps": int(base_train_steps),
+        "resolved_train_steps": int(resolved_steps),
+        "train_steps_components": components,
+    }
+
+
+def resolve_train_steps(
+    round_id: int,
+    exported_summary: dict[str, Any],
+    base_train_steps: int,
+    schedule_cfg: dict[str, Any] | None,
+    export_mode: str | None = None,
+) -> int:
+    """Resolve per-round train steps for the supported round DAgger controller.
+
+    This helper only schedules the round-based `robot-dagger` path. It is not
+    related to the removed offline DAgger trainer/pipeline.
+    """
+
+    schedule = resolve_train_steps_schedule(
+        round_id=round_id,
+        exported_summary=exported_summary,
+        base_train_steps=base_train_steps,
+        schedule_cfg=schedule_cfg,
+        export_mode=export_mode,
+    )
+    return int(schedule["resolved_train_steps"])
+
+
+def _format_train_steps_components(components: dict[str, Any]) -> str:
+    preferred_keys = (
+        "full_episode_count",
+        "full_steps",
+        "recovery_segment_count",
+        "recovery_frames",
+        "recovery_steps",
+        "frame_steps",
+        "episode_steps",
+        "fallback_mode",
+        "raw_steps",
+        "clamped_steps",
+    )
+    parts = [f"{key}={components[key]}" for key in preferred_keys if key in components]
+    return ", ".join(parts) if parts else str(components)
 
 
 def _dagger_rounds_with_current(
@@ -569,6 +875,11 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
         )
         export_summary = policy_backend.export_profile.export(export_section)
         logging.info("[round %03d] exported dagger dataset: %s", round_idx, exported_root)
+        configured_export_mode = (
+            export_section.get("export_mode")
+            if isinstance(export_section, dict)
+            else None
+        ) or _policy_backend_export_cfg(round_cfg).get("export_mode")
 
         run_mix_stats = record_result.get("run_mix_stats", {})
         export_metrics = _export_metrics(export_summary, run_mix_stats)
@@ -585,21 +896,37 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             intervention_count,
         )
 
-        resolved_train_steps = resolve_train_steps(
+        train_steps_schedule = resolve_train_steps_schedule(
             round_id=round_idx,
             exported_summary=export_summary,
             base_train_steps=base_train_steps,
             schedule_cfg=round_schedule_cfg,
+            export_mode=configured_export_mode,
+        )
+        resolved_train_steps = int(train_steps_schedule["resolved_train_steps"])
+        train_steps_effective_mode = str(train_steps_schedule["train_steps_effective_mode"])
+        train_steps_export_mode = str(train_steps_schedule["export_mode"])
+        train_steps_components = train_steps_schedule["train_steps_components"]
+        logging.info(
+            "[round %03d] train steps mode: configured=%s effective=%s export_mode=%s",
+            round_idx,
+            train_steps_mode,
+            train_steps_effective_mode,
+            train_steps_export_mode,
         )
         logging.info(
             "[round %03d] train steps resolved: base=%d, exported_frames=%d, "
-            "exported_episodes=%d, mode=%s, resolved=%d",
+            "exported_episodes=%d, resolved=%d",
             round_idx,
             base_train_steps,
             exported_frames,
             exported_episodes,
-            train_steps_mode,
             resolved_train_steps,
+        )
+        logging.info(
+            "[round %03d] train steps components: %s",
+            round_idx,
+            _format_train_steps_components(train_steps_components),
         )
         logging.info("[round %03d] resolved train steps=%d", round_idx, resolved_train_steps)
 
@@ -686,6 +1013,11 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             "selected_checkpoint_path": str(train_checkpoint),
             "exported_frames": exported_frames,
             "exported_episodes": exported_episodes,
+            "export_mode": train_steps_export_mode,
+            "full_episode_count": export_metrics["full_episode_count"],
+            "full_episode_frames": export_metrics["full_episode_frames"],
+            "recovery_segment_count": export_metrics["recovery_segment_count"],
+            "recovery_frames": export_metrics["recovery_frames"],
             "expert_frame_ratio": expert_frame_ratio,
             "intervention_count": intervention_count,
             "skipped_short_segments": export_metrics["skipped_short_segments"],
@@ -698,6 +1030,8 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             "base_train_steps": base_train_steps,
             "resolved_train_steps": resolved_train_steps,
             "train_steps_mode": train_steps_mode,
+            "train_steps_effective_mode": train_steps_effective_mode,
+            "train_steps_components": train_steps_components,
             "skipped_train": skipped_train,
             "skipped_train_reason": skipped_train_reason,
             "early_stop_triggered": False,
@@ -717,9 +1051,14 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             "policy_backend": policy_backend_info,
             "run_mix_stats": run_mix_stats,
             "schedule": {
+                **train_steps_schedule,
                 "resolved_train_steps": resolved_train_steps,
                 "base_train_steps": base_train_steps,
                 "train_steps_mode": train_steps_mode,
+                "train_steps_configured_mode": train_steps_mode,
+                "train_steps_effective_mode": train_steps_effective_mode,
+                "export_mode": train_steps_export_mode,
+                "train_steps_components": train_steps_components,
                 "warm_start_from_previous": warm_start_from_previous,
                 "early_stop_checked": True,
                 "early_stop_triggered": False,
@@ -774,6 +1113,9 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
                 "resolved_train_steps": state.get("resolved_train_steps"),
                 "base_train_steps": state.get("base_train_steps"),
                 "train_steps_mode": state.get("train_steps_mode"),
+                "train_steps_effective_mode": state.get("train_steps_effective_mode"),
+                "export_mode": state.get("export_mode"),
+                "train_steps_components": state.get("train_steps_components"),
                 "skipped_train": state.get("skipped_train"),
                 "early_stop_triggered": state.get("early_stop_triggered"),
                 "early_stop_reason": state.get("early_stop_reason"),
