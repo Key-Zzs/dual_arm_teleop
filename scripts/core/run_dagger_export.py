@@ -771,6 +771,12 @@ def _raw_required_columns(
     return columns
 
 
+def _raw_available_keys(raw_dataset: LeRobotDataset, raw_hf_dataset) -> set[str]:
+    # Video/image features may be decoded by LeRobotDataset.__getitem__ from
+    # dataset metadata rather than appearing directly in hf_dataset.column_names.
+    return set(raw_dataset.features) | set(raw_hf_dataset.column_names)
+
+
 def _raw_extra_features(raw_dataset: LeRobotDataset, output_features: dict[str, dict]) -> list[str]:
     return sorted(set(raw_dataset.features) - set(output_features))
 
@@ -876,7 +882,7 @@ def _export_intervention_segments(
     keep_frame_roles = tuple(intervention_cfg.get("keep_frame_roles") or DEFAULT_KEEP_FRAME_ROLES)
     require_complete = bool(intervention_cfg.get("require_complete_expert_action", True))
     max_segments_per_episode = _normalize_optional_int(intervention_cfg.get("max_segments_per_episode"))
-    missing_columns = sorted(_raw_required_columns(output_features, label_source) - set(raw_hf_dataset.column_names))
+    missing_columns = sorted(_raw_required_columns(output_features, label_source) - _raw_available_keys(raw_dataset, raw_hf_dataset))
     if missing_columns:
         raise KeyError(
             "Raw run_mix dataset is missing required intervention export columns: "
@@ -946,7 +952,7 @@ def _select_full_success_episodes(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     raw_dataset._ensure_hf_dataset_loaded()
     raw_hf_dataset = raw_dataset.hf_dataset
-    raw_columns = set(raw_hf_dataset.column_names)
+    raw_columns = _raw_available_keys(raw_dataset, raw_hf_dataset)
     label_source = str(full_episode_cfg.get("action_label_source") or "sent_action")
     missing_columns = sorted(_raw_required_columns(output_features, label_source) - raw_columns)
 
