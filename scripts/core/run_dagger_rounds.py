@@ -13,6 +13,16 @@ from typing import Any
 import yaml
 
 
+SUCCESS_POLICY_EXPLICIT = "explicit"
+SUCCESS_POLICY_RECORDED_IS_SUCCESS = "recorded_is_success"
+SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE = "allow_missing_for_smoke"
+VALID_SUCCESS_POLICIES = {
+    SUCCESS_POLICY_EXPLICIT,
+    SUCCESS_POLICY_RECORDED_IS_SUCCESS,
+    SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE,
+}
+
+
 @dataclass
 class DAggerRoundsConfig:
     output_root: str | Path
@@ -139,6 +149,47 @@ def _early_stop_cfg(schedule_cfg: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
+def _policy_backend_export_cfg(round_cfg: dict[str, Any]) -> dict[str, Any]:
+    export_cfg = (round_cfg.get("policy_backend") or {}).get("export", {})
+    if not isinstance(export_cfg, dict):
+        return {}
+    return export_cfg
+
+
+def _full_episode_export_enabled(round_cfg: dict[str, Any]) -> bool:
+    export_cfg = _policy_backend_export_cfg(round_cfg)
+    if not export_cfg:
+        return False
+
+    export_mode = str(export_cfg.get("export_mode", "intervention_segments")).lower()
+    hybrid_cfg = export_cfg.get("hybrid") or {}
+    if export_mode == "full_success_episode":
+        return True
+    return export_mode == "hybrid" and bool(
+        hybrid_cfg.get("include_full_success_episode", True)
+    )
+
+
+def _full_episode_success_policy(round_cfg: dict[str, Any]) -> str:
+    export_cfg = _policy_backend_export_cfg(round_cfg)
+    full_episode_cfg = export_cfg.get("full_episode") or {}
+    success_policy = full_episode_cfg.get("success_policy")
+    if success_policy is None:
+        return (
+            SUCCESS_POLICY_EXPLICIT
+            if bool(full_episode_cfg.get("require_success", True))
+            else SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE
+        )
+
+    success_policy = str(success_policy).strip().lower()
+    if success_policy not in VALID_SUCCESS_POLICIES:
+        raise ValueError(
+            "`full_episode.success_policy` must be one of "
+            f"{sorted(VALID_SUCCESS_POLICIES)}. Got: {success_policy!r}"
+        )
+    return success_policy
+
+
 def _exported_counts(exported_summary: dict[str, Any] | None) -> tuple[int, int]:
     exported_dataset = (exported_summary or {}).get("exported_dataset", {})
     exported_frames = int(exported_dataset.get("total_frames", 0) or 0)
@@ -159,6 +210,11 @@ def _export_metrics(export_summary: dict[str, Any], run_mix_stats: dict[str, Any
         "intervention_count": int(intervention_count or 0),
         "skipped_short_segments": int(stats.get("skipped_short_segments", 0) or 0),
         "incomplete_expert_label_frames": stats.get("incomplete_expert_label_frames"),
+        "success_policy": stats.get("success_policy"),
+        "success_inferred_episodes": int(stats.get("success_inferred_episodes", 0) or 0),
+        "success_explicit_true_episodes": int(stats.get("success_explicit_true_episodes", 0) or 0),
+        "success_explicit_false_episodes": int(stats.get("success_explicit_false_episodes", 0) or 0),
+        "skipped_explicit_failure": int(stats.get("skipped_explicit_failure", 0) or 0),
     }
 
 
@@ -261,23 +317,28 @@ def should_stop_dagger(
     exported_episodes = int(current_round_state.get("exported_episodes", 0) or 0)
     intervention_count = int(current_round_state.get("intervention_count", 0) or 0)
 
-    if bool(early_stop_cfg.get("stop_if_no_new_data", True)) and (
-        exported_frames <= 0 or exported_episodes <= 0
-    ):
-        if intervention_count == 0 and exported_frames <= 0:
-            return (
-                True,
-                "no exported DAgger data: intervention_count=0 and exported_frames=0 "
-                "(policy may already be good, or this round had no effective takeover)",
-            )
-        return (
-            True,
-            f"no exported DAgger data: exported_frames={exported_frames}, "
-            f"exported_episodes={exported_episodes}",
-        )
-
     patience = max(1, int(early_stop_cfg.get("patience", 1) or 1))
     rounds = _dagger_rounds_with_current(round_history, current_round_state)
+
+    if bool(early_stop_cfg.get("stop_if_no_new_data", True)):
+        no_data_count = _tail_count(
+            rounds,
+            lambda state: int(state.get("exported_frames", 0) or 0) <= 0
+            or int(state.get("exported_episodes", 0) or 0) <= 0,
+        )
+        if no_data_count >= patience:
+            if intervention_count == 0 and exported_frames <= 0:
+                return (
+                    True,
+                    f"no exported DAgger data for {no_data_count} consecutive round(s): "
+                    "intervention_count=0 and exported_frames=0 "
+                    "(policy may already be good, or this round had no effective takeover)",
+                )
+            return (
+                True,
+                f"no exported DAgger data for {no_data_count} consecutive round(s): "
+                f"exported_frames={exported_frames}, exported_episodes={exported_episodes}",
+            )
 
     if bool(early_stop_cfg.get("stop_if_export_too_small", True)):
         min_exported_frames = int(early_stop_cfg.get("min_exported_frames", 1) or 0)
@@ -333,6 +394,10 @@ def _make_record_section(
     record_section.setdefault("task", {})
     record_section["task"]["num_episodes"] = episodes_per_round
     record_section["task"]["resume"] = False
+    if _full_episode_export_enabled(round_cfg):
+        success_policy = _full_episode_success_policy(round_cfg)
+        record_section["task"]["success_policy"] = success_policy
+        record_section["task"]["annotate_success"] = success_policy == SUCCESS_POLICY_EXPLICIT
     record_section.setdefault("storage", {})
     record_section["storage"]["push_to_hub"] = False
     return policy_runner.prepare_record_cfg(record_section, checkpoint_path, round_cfg)
@@ -625,6 +690,11 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             "intervention_count": intervention_count,
             "skipped_short_segments": export_metrics["skipped_short_segments"],
             "incomplete_expert_label_frames": export_metrics["incomplete_expert_label_frames"],
+            "success_policy": export_metrics["success_policy"],
+            "success_inferred_episodes": export_metrics["success_inferred_episodes"],
+            "success_explicit_true_episodes": export_metrics["success_explicit_true_episodes"],
+            "success_explicit_false_episodes": export_metrics["success_explicit_false_episodes"],
+            "skipped_explicit_failure": export_metrics["skipped_explicit_failure"],
             "base_train_steps": base_train_steps,
             "resolved_train_steps": resolved_train_steps,
             "train_steps_mode": train_steps_mode,

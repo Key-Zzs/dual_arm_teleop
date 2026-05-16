@@ -42,10 +42,10 @@ dagger_rounds:
       decay_per_round: 1.0
 
       warm_start_from_previous: true
-  episodes_per_round: 10
+  episodes_per_round: 5
   # TODO: output_id
   output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds\
-                /task3_step1/8mL_empty_left_v01"
+                /task3_step1/8mL_empty_left_v02"
 
   record_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/record_cfg.yaml"
   # Legacy-compatible top-level path. If this is omitted, the controller falls
@@ -64,9 +64,8 @@ dagger_rounds:
 
     export:
       profile: act_chunk
-      # intervention_segments | full_success_episode | hybrid.
       # Default remains intervention_segments for backward compatibility.
-      export_mode: intervention_segments
+      export_mode: full_success_episode # intervention_segments | full_success_episode | hybrid.
       # Backend export settings are the active source for round export behavior.
       # If min_episode_len is empty, ACTChunkExportProfile falls back to the
       # legacy dagger_rounds.min_episode_len_for_act when present, then to
@@ -78,10 +77,22 @@ dagger_rounds:
       # auto-detect by action names, set [] to skip, or provide indices like [6, 13].
       gripper_action_indices:
 
-      # Full successful mixed episodes are corrected demonstrations:
-      # action is the command actually sent to the robot, not necessarily the
-      # expert oracle label on every frame.
+      intervention_segments:
+        keep_frame_roles: [takeover_start, recovery]
+        label_source: expert_action
+        require_complete_expert_action: true
+        max_segments_per_episode:
+
+      # Full successful mixed episodes are corrected demonstrations: action is
+      # the command actually sent to the robot, not necessarily the expert
+      # oracle label on every frame.
       full_episode:
+        # success_policy takes priority over legacy require_success:
+        #   explicit: require an explicit success label; robot-dagger prompts y/n.
+        #   recorded_is_success: saved run_mix episodes are success=true; use
+        #     left arrow to discard failures/incomplete/low-quality episodes.
+        #   allow_missing_for_smoke: debug only; export without validation.
+        success_policy: recorded_is_success # explicit | recorded_is_success | allow_missing_for_smoke
         require_success: true
         success_field: success
         fallback_success_from_episode_metadata: true
@@ -89,12 +100,6 @@ dagger_rounds:
         drop_reset_ignore_frames: true
         require_no_reset: true
         require_min_len: true
-
-      intervention_segments:
-        keep_frame_roles: [takeover_start, recovery]
-        label_source: expert_action
-        require_complete_expert_action: true
-        max_segments_per_episode:
 
       hybrid:
         include_full_success_episode: true
@@ -137,6 +142,7 @@ dagger_export:
   require_complete_expert_action: true
   gripper_action_indices:
   full_episode:
+    success_policy: recorded_is_success
     require_success: true
     success_field: success
     fallback_success_from_episode_metadata: true

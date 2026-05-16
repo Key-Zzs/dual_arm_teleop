@@ -29,6 +29,17 @@ VALID_EXPORT_MODES = {
     EXPORT_MODE_FULL_SUCCESS_EPISODE,
     EXPORT_MODE_HYBRID,
 }
+SUCCESS_POLICY_EXPLICIT = "explicit"
+SUCCESS_POLICY_RECORDED_IS_SUCCESS = "recorded_is_success"
+SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE = "allow_missing_for_smoke"
+VALID_SUCCESS_POLICIES = {
+    SUCCESS_POLICY_EXPLICIT,
+    SUCCESS_POLICY_RECORDED_IS_SUCCESS,
+    SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE,
+}
+SMOKE_MISSING_SUCCESS_WARNING = (
+    "WARNING: success field missing; exporting without success validation."
+)
 
 DEFAULT_FULL_EPISODE_CFG = {
     "require_success": True,
@@ -667,6 +678,24 @@ def _success_value_to_bool(value: Any) -> bool | None:
     return None
 
 
+def _resolve_success_policy(full_episode_cfg: dict[str, Any]) -> str:
+    success_policy = full_episode_cfg.get("success_policy")
+    if success_policy is None:
+        return (
+            SUCCESS_POLICY_EXPLICIT
+            if bool(full_episode_cfg.get("require_success", True))
+            else SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE
+        )
+
+    success_policy = str(success_policy).strip().lower()
+    if success_policy not in VALID_SUCCESS_POLICIES:
+        raise ValueError(
+            "`full_episode.success_policy` must be one of "
+            f"{sorted(VALID_SUCCESS_POLICIES)}. Got: {success_policy!r}"
+        )
+    return success_policy
+
+
 def _ordered_unique(values: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -757,6 +786,99 @@ def _episode_success(
     if success is not None:
         return success, source
     return _episode_success_from_frames(raw_hf_dataset, start, end, success_field, fallback_aliases)
+
+
+def _episode_has_recorded_success_inference(
+    raw_hf_dataset,
+    episode: dict[str, Any],
+    start: int,
+    end: int,
+) -> bool:
+    for key in (
+        "success_inferred_from_recorded_episode",
+        "info/success_inferred_from_recorded_episode",
+    ):
+        if key in episode:
+            inferred = _success_value_to_bool(episode[key])
+            if inferred is not None:
+                return inferred
+
+    columns = set(raw_hf_dataset.column_names)
+    if "success_inferred_from_recorded_episode" in columns:
+        values = [
+            _success_value_to_bool(raw_hf_dataset["success_inferred_from_recorded_episode"][idx])
+            for idx in range(start, end)
+        ]
+        if any(value is True for value in values):
+            return True
+
+    if "success_policy" in columns:
+        policies = {
+            str(_to_scalar(raw_hf_dataset["success_policy"][idx]) or "").strip().lower()
+            for idx in range(start, end)
+        }
+        return SUCCESS_POLICY_RECORDED_IS_SUCCESS in policies
+
+    return False
+
+
+def _episode_success_for_policy(
+    raw_hf_dataset,
+    episode: dict[str, Any],
+    start: int,
+    end: int,
+    full_episode_cfg: dict[str, Any],
+    success_policy: str,
+) -> dict[str, Any]:
+    success, success_source = _episode_success(raw_hf_dataset, episode, start, end, full_episode_cfg)
+
+    if success is False:
+        return {
+            "success": False,
+            "success_source": success_source,
+            "success_inferred_from_recorded_episode": False,
+            "success_validation_skipped": False,
+            "skip_reason": "explicit_failure",
+        }
+
+    if success is True:
+        inferred_from_recorded = (
+            success_policy == SUCCESS_POLICY_RECORDED_IS_SUCCESS
+            and _episode_has_recorded_success_inference(raw_hf_dataset, episode, start, end)
+        )
+        return {
+            "success": True,
+            "success_source": success_source,
+            "success_inferred_from_recorded_episode": inferred_from_recorded,
+            "success_validation_skipped": False,
+            "skip_reason": None,
+        }
+
+    if success_policy == SUCCESS_POLICY_RECORDED_IS_SUCCESS:
+        return {
+            "success": True,
+            "success_source": "recorded_episode",
+            "success_inferred_from_recorded_episode": True,
+            "success_validation_skipped": False,
+            "skip_reason": None,
+        }
+
+    if success_policy == SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE:
+        return {
+            "success": True,
+            "success_source": "missing_allowed_for_smoke",
+            "success_inferred_from_recorded_episode": False,
+            "success_validation_skipped": True,
+            "skip_reason": None,
+        }
+
+    return {
+        "success": None,
+        "success_source": None,
+        "success_inferred_from_recorded_episode": False,
+        "success_validation_skipped": False,
+        "skip_reason": "missing_success",
+    }
 
 
 def _raw_required_columns(
@@ -954,6 +1076,7 @@ def _select_full_success_episodes(
     raw_hf_dataset = raw_dataset.hf_dataset
     raw_columns = _raw_available_keys(raw_dataset, raw_hf_dataset)
     label_source = str(full_episode_cfg.get("action_label_source") or "sent_action")
+    success_policy = _resolve_success_policy(full_episode_cfg)
     missing_columns = sorted(_raw_required_columns(output_features, label_source) - raw_columns)
 
     stats = {
@@ -967,15 +1090,24 @@ def _select_full_success_episodes(
         "full_episode_skipped_missing_label_source": 0,
         "full_episode_skipped_discontinuous": 0,
         "full_episode_success_sources": Counter(),
-        "full_episode_success_required": bool(full_episode_cfg.get("require_success", True)),
+        "full_episode_success_policy": success_policy,
+        "full_episode_success_required": success_policy != SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE,
         "full_episode_missing_required_columns": missing_columns,
+        "success_policy": success_policy,
+        "success_inferred_episodes": 0,
+        "success_explicit_true_episodes": 0,
+        "success_explicit_false_episodes": 0,
+        "success_missing_allowed_episodes": 0,
+        "success_validation_skipped_episodes": 0,
+        "skipped_no_success": 0,
+        "skipped_explicit_failure": 0,
+        "warnings": [],
     }
     selected: list[dict[str, Any]] = []
     if missing_columns:
         stats["full_episode_skipped_missing_label_source"] = raw_dataset.num_episodes
         return selected, stats
 
-    require_success = bool(full_episode_cfg.get("require_success", True))
     require_no_reset = bool(full_episode_cfg.get("require_no_reset", True))
     require_min_len = bool(full_episode_cfg.get("require_min_len", True))
     drop_reset_ignore_frames = bool(full_episode_cfg.get("drop_reset_ignore_frames", True))
@@ -985,15 +1117,26 @@ def _select_full_success_episodes(
         start = int(episode["dataset_from_index"])
         end = int(episode["dataset_to_index"])
 
-        success, success_source = _episode_success(raw_hf_dataset, episode, start, end, full_episode_cfg)
-        if require_success and success is None:
+        success_info = _episode_success_for_policy(
+            raw_hf_dataset,
+            episode,
+            start,
+            end,
+            full_episode_cfg,
+            success_policy,
+        )
+        success = success_info["success"]
+        success_source = success_info["success_source"]
+        if success_info["skip_reason"] == "missing_success":
             stats["full_episode_skipped_missing_success_info"] += 1
             stats["full_episode_skipped_no_success"] += 1
+            stats["skipped_no_success"] += 1
             continue
-        if require_success and not success:
+        if success_info["skip_reason"] == "explicit_failure":
             stats["full_episode_skipped_no_success"] += 1
+            stats["success_explicit_false_episodes"] += 1
+            stats["skipped_explicit_failure"] += 1
             continue
-
         indices = list(range(start, end))
         roles = [_frame_role_at(raw_hf_dataset, idx) for idx in indices]
         if require_no_reset and any(role == "reset" for role in roles):
@@ -1017,6 +1160,14 @@ def _select_full_success_episodes(
             stats["full_episode_skipped_discontinuous"] += 1
             continue
 
+        if success_info["success_inferred_from_recorded_episode"]:
+            stats["success_inferred_episodes"] += 1
+        elif success_info["success_validation_skipped"]:
+            stats["success_missing_allowed_episodes"] += 1
+            stats["success_validation_skipped_episodes"] += 1
+        elif success is True:
+            stats["success_explicit_true_episodes"] += 1
+
         if success_source is not None:
             stats["full_episode_success_sources"][success_source] += 1
         selected.append(
@@ -1025,9 +1176,17 @@ def _select_full_success_episodes(
                 "indices": indices,
                 "success": success,
                 "success_source": success_source,
+                "success_policy": success_policy,
+                "success_inferred_from_recorded_episode": success_info[
+                    "success_inferred_from_recorded_episode"
+                ],
+                "success_validation_skipped": success_info["success_validation_skipped"],
                 "action_label_source": label_source,
             }
         )
+
+    if stats["success_validation_skipped_episodes"] > 0:
+        stats["warnings"].append(SMOKE_MISSING_SUCCESS_WARNING)
 
     return selected, stats
 
@@ -1067,6 +1226,11 @@ def _export_full_success_episodes(
             extra_metadata={
                 "success": episode["success"],
                 "success_source": episode["success_source"],
+                "success_policy": episode["success_policy"],
+                "success_inferred_from_recorded_episode": episode[
+                    "success_inferred_from_recorded_episode"
+                ],
+                "success_validation_skipped": episode["success_validation_skipped"],
             },
         )
         stats["full_episode_exported"] += 1
@@ -1181,6 +1345,7 @@ def export_dagger_dataset(
 
     export_mode = _validate_export_mode(export_mode)
     full_episode_cfg = _merge_cfg(DEFAULT_FULL_EPISODE_CFG, full_episode)
+    full_episode_cfg["success_policy"] = _resolve_success_policy(full_episode_cfg)
     intervention_cfg = _merge_cfg(DEFAULT_INTERVENTION_SEGMENTS_CFG, intervention_segments)
     hybrid_cfg = _merge_cfg(DEFAULT_HYBRID_CFG, hybrid)
 
@@ -1302,12 +1467,15 @@ def export_dagger_dataset(
         )
     raw_extra_features = _raw_extra_features(raw_dataset, output_features)
     gripper_summary = gripper_diagnostics.summary()
+    export_warnings = list(mode_stats.get("warnings", []))
     if mode_stats.get("full_episode_skipped_missing_success_info"):
         logging.warning(
             "[dagger_export] skipped %d full episode candidate(s) because no success indicator was found; "
             "set full_episode.require_success=false only for smoke tests.",
             mode_stats["full_episode_skipped_missing_success_info"],
         )
+    for warning in export_warnings:
+        logging.warning("[dagger_export] %s", warning)
     for warning in gripper_summary.get("warnings", []):
         logging.warning("[dagger_export] %s", warning)
 
@@ -1378,6 +1546,7 @@ def export_dagger_dataset(
             **mode_stats,
         },
         "gripper_diagnostics": gripper_summary,
+        "warnings": export_warnings + list(gripper_summary.get("warnings", [])),
     }
 
     episode_metadata_path = output_root / "dagger_export_episode_metadata.json"

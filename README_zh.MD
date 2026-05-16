@@ -254,6 +254,17 @@ lerobot-edit-dataset --repo_id <merged_repo_id> --operation.type merge --operati
 
 4. **Ctrl+c或抛出异常**
    - 按下或发生异常时：自动进入异常处理阶段，提示用户是否删除当前未完成的录制数据
+
+### 8.1 DAgger full-episode success 策略
+
+`full_success_episode` 和包含 full episode 的 `hybrid` 导出会使用
+`dagger_rounds_cfg.yaml` 中的 `full_episode.success_policy`：
+
+- `explicit`：最严格。每条保存的 run_mix episode 结束后人工确认 success，适合需要显式成功/失败标签的数据。
+- `recorded_is_success`：保存即成功。适合“失败、不完整、轨迹质量差的数据用左箭头删除”的当前工作流；保存下来的 episode 会写入 `success=true`，并标记为从已保存 episode 推断。
+- `allow_missing_for_smoke`：仅用于调试。缺少 success 字段也允许导出，但会输出 warning，不建议正式训练。
+
+使用 `recorded_is_success` 时，操作者必须严格删除失败、不完整、质量差或不适合作为完整示范的数据。保留下来的 success 标签后续可用于 VLA、DP、failure detector 的数据筛选与评估。
   
 ## 9. 数据集命名与记录详解
 ### 1. 数据集命名

@@ -31,7 +31,8 @@ record:
     dual_arm: true  # dual-arm mode
     oculus_config:
       # ip: "192.168.110.43"  # Oculus Quest IP address
-      ip: "192.168.110.16"  # Oculus Quest IP address
+      # ip: "192.168.110.16"  # Oculus Quest IP address
+      ip: null
       use_gripper: *use_gripper
       left_pose_scaler: [1.2, 1.2]   # left arm scaler
       left_channel_signs: [-1, -1, 1, 1, 1, 1]  # left arm signs
@@ -83,6 +84,10 @@ record:
     display: True # Whether to display the data during recording
     resume: false # whether to resume from an existing dataset
     resume_dataset: roboticiq/pick_all_yellow_cube_to_brown_basket_20260208_v01 # dataset to resume from if resume is True
+    # robot-dagger sets success_policy automatically for full_success_episode/hybrid.
+    # explicit prompts y/n; recorded_is_success saves every kept episode as success=true.
+    success_policy:
+    annotate_success: false # ask after each run_mix episode and write a per-frame success flag
   
   time:
     episode_time_sec: 6000 # max time per episode in seconds

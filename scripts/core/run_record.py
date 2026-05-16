@@ -44,6 +44,56 @@ logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 RUN_MIX_MOVEMENT_EPS = 1e-4
 RUN_MIX_CHANGE_EPS = 5e-3
 RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS = 0.1
+SUCCESS_ANNOTATION_TRUE = {
+    "y",
+    "yes",
+    "1",
+    "true",
+    "success",
+    "succeeded",
+    "done",
+    "complete",
+    "completed",
+}
+SUCCESS_ANNOTATION_FALSE = {
+    "n",
+    "no",
+    "0",
+    "false",
+    "fail",
+    "failed",
+    "failure",
+    "aborted",
+    "incomplete",
+}
+SUCCESS_POLICY_NONE = "none"
+SUCCESS_POLICY_EXPLICIT = "explicit"
+SUCCESS_POLICY_RECORDED_IS_SUCCESS = "recorded_is_success"
+SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE = "allow_missing_for_smoke"
+VALID_RECORD_SUCCESS_POLICIES = {
+    SUCCESS_POLICY_NONE,
+    SUCCESS_POLICY_EXPLICIT,
+    SUCCESS_POLICY_RECORDED_IS_SUCCESS,
+    SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE,
+}
+
+
+def _normalize_record_success_policy(task_cfg: Dict[str, Any]) -> str:
+    success_policy = task_cfg.get("success_policy")
+    if success_policy is None:
+        return (
+            SUCCESS_POLICY_EXPLICIT
+            if bool(task_cfg.get("annotate_success", False))
+            else SUCCESS_POLICY_NONE
+        )
+
+    success_policy = str(success_policy).strip().lower()
+    if success_policy not in VALID_RECORD_SUCCESS_POLICIES:
+        raise ValueError(
+            "`record.task.success_policy` must be one of "
+            f"{sorted(VALID_RECORD_SUCCESS_POLICIES)}. Got: {success_policy!r}"
+        )
+    return success_policy
 
 
 class RecordConfig:
@@ -109,6 +159,14 @@ class RecordConfig:
         self.task_description: str = task.get("description", "default task")
         self.resume: bool = task.get("resume", False)
         self.resume_dataset: str = task.get("resume_dataset", "")
+        self.success_policy: str = _normalize_record_success_policy(task)
+        self.annotate_success: bool = bool(task.get("annotate_success", False))
+        self.default_success: bool = bool(task.get("default_success", False))
+        self.success_prompt: str = task.get(
+            "success_prompt",
+            "====== [ANNOTATE] Was this episode successful and suitable "
+            "for full-episode training?",
+        )
         
         # Time config
         self.episode_time_sec: int = time.get("episode_time_sec", 60)
@@ -553,6 +611,7 @@ def run_mix_record_loop(
     control_time_s: int | float,
     single_task: str,
     display_data: bool,
+    success_policy: str = SUCCESS_POLICY_NONE,
 ) -> dict[str, Any]:
     policy.reset()
     preprocessor.reset()
@@ -792,6 +851,12 @@ def run_mix_record_loop(
                 "expert_action_missing": ",".join(expert_action_missing_names),
                 "task": single_task,
             }
+            if "success" in dataset.features:
+                frame["success"] = np.array([False], dtype=np.bool_)
+            if "success_policy" in dataset.features:
+                frame["success_policy"] = success_policy
+            if "success_inferred_from_recorded_episode" in dataset.features:
+                frame["success_inferred_from_recorded_episode"] = np.array([False], dtype=np.bool_)
             dataset.add_frame(frame)
             saved_steps += 1
 
@@ -810,6 +875,52 @@ def run_mix_record_loop(
         "intervention_count": intervention_count,
         "complete_expert_label_steps": complete_expert_label_steps,
     }
+
+
+def _prompt_episode_success(prompt: str, default: bool = False) -> bool:
+    suffix = "Y/n" if default else "y/N"
+    prompt_text = prompt if "[y/n]" in prompt.lower() else f"{prompt} [{suffix}]: "
+    while True:
+        try:
+            answer = input(prompt_text).strip().lower()
+        except EOFError:
+            logging.warning(
+                "[run_mix] no stdin available for success annotation; using default=%s",
+                default,
+            )
+            return bool(default)
+        if not answer:
+            return bool(default)
+        if answer in SUCCESS_ANNOTATION_TRUE:
+            return True
+        if answer in SUCCESS_ANNOTATION_FALSE:
+            return False
+        logging.info("====== [WARNING] Please answer y/yes or n/no. ======")
+
+
+def _set_episode_success_annotation(
+    dataset: LeRobotDataset,
+    *,
+    success: bool | None,
+    success_policy: str,
+    inferred_from_recorded_episode: bool,
+) -> None:
+    if dataset.episode_buffer is None:
+        return
+    size = int(dataset.episode_buffer.get("size", 0) or 0)
+    if "success" in dataset.episode_buffer and success is not None:
+        dataset.episode_buffer["success"] = [
+            np.array([success], dtype=np.bool_)
+            for _ in range(size)
+        ]
+    if "success_policy" in dataset.episode_buffer:
+        dataset.episode_buffer["success_policy"] = [success_policy for _ in range(size)]
+    if "success_inferred_from_recorded_episode" in dataset.episode_buffer:
+        dataset.episode_buffer["success_inferred_from_recorded_episode"] = [
+            np.array([inferred_from_recorded_episode], dtype=np.bool_)
+            for _ in range(size)
+        ]
+
 
 def run_record(record_cfg: RecordConfig):
     print("====== [START] Starting recording ======")
@@ -916,6 +1027,22 @@ def run_record(record_cfg: RecordConfig):
                 "shape": (1,),
                 "names": None,
             }
+            if (
+                record_cfg.annotate_success
+                or record_cfg.success_policy == SUCCESS_POLICY_RECORDED_IS_SUCCESS
+            ):
+                dataset_features["success"] = {
+                    "dtype": "bool",
+                    "shape": (1,),
+                    "names": None,
+                }
+            if record_cfg.success_policy != SUCCESS_POLICY_NONE:
+                dataset_features["success_policy"] = {"dtype": "string", "shape": (1,), "names": None}
+                dataset_features["success_inferred_from_recorded_episode"] = {
+                    "dtype": "bool",
+                    "shape": (1,),
+                    "names": None,
+                }
 
         if record_cfg.run_mode == "run_mix":
             logging.info("====== [RUN_MIX] Mix mode config ======")
@@ -947,6 +1074,11 @@ def run_record(record_cfg: RecordConfig):
                 RUN_MIX_MOVEMENT_EPS,
                 RUN_MIX_CHANGE_EPS,
                 RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS,
+            )
+            logging.info(
+                "[run_mix] success_policy=%s annotate_success=%s",
+                record_cfg.success_policy,
+                record_cfg.annotate_success,
             )
 
         if record_cfg.resume:
@@ -1042,6 +1174,7 @@ def run_record(record_cfg: RecordConfig):
                     control_time_s=record_cfg.episode_time_sec,
                     single_task=record_cfg.task_description,
                     display_data=record_cfg.display,
+                    success_policy=record_cfg.success_policy,
                 )
                 mix_stats["episode_index"] = episode_idx
                 run_mix_episode_stats.append(mix_stats)
@@ -1086,6 +1219,46 @@ def run_record(record_cfg: RecordConfig):
                     dataset.episode_buffer is not None and dataset.episode_buffer.get("size", 0) > 0
                 )
                 if has_recorded_frames:
+                    if (
+                        record_cfg.success_policy == SUCCESS_POLICY_EXPLICIT
+                        and record_cfg.annotate_success
+                    ):
+                        success = _prompt_episode_success(
+                            record_cfg.success_prompt,
+                            default=record_cfg.default_success,
+                        )
+                        _set_episode_success_annotation(
+                            dataset,
+                            success=success,
+                            success_policy=record_cfg.success_policy,
+                            inferred_from_recorded_episode=False,
+                        )
+                        mix_stats["success"] = success
+                        mix_stats["success_policy"] = record_cfg.success_policy
+                        mix_stats["success_inferred_from_recorded_episode"] = False
+                        logging.info("[run_mix] episode %d success=%s", episode_idx + 1, success)
+                    elif record_cfg.success_policy == SUCCESS_POLICY_RECORDED_IS_SUCCESS:
+                        _set_episode_success_annotation(
+                            dataset,
+                            success=True,
+                            success_policy=record_cfg.success_policy,
+                            inferred_from_recorded_episode=True,
+                        )
+                        mix_stats["success"] = True
+                        mix_stats["success_policy"] = record_cfg.success_policy
+                        mix_stats["success_inferred_from_recorded_episode"] = True
+                        logging.info(
+                            "[run_mix] episode %d success=True inferred from saved recorded episode",
+                            episode_idx + 1,
+                        )
+                    elif record_cfg.success_policy == SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE:
+                        _set_episode_success_annotation(
+                            dataset,
+                            success=None,
+                            success_policy=record_cfg.success_policy,
+                            inferred_from_recorded_episode=False,
+                        )
+                        mix_stats["success_policy"] = record_cfg.success_policy
                     dataset.save_episode()
                 else:
                     logging.warning(

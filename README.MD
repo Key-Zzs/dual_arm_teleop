@@ -278,6 +278,17 @@ lerobot-edit-dataset
 - **Ctrl+C or Exception**
    - Pressing or on exception: enters exception handling and asks whether to delete the incomplete dataset.
    - If you delete the dataset by accident, you can find it in the trash folder.
+
+### 8.1 DAgger Full-Episode Success Policy
+
+`full_success_episode` and `hybrid` exports with full episodes use
+`full_episode.success_policy` in `dagger_rounds_cfg.yaml`:
+
+- `explicit`: strict mode. Each saved run_mix episode asks for a manual success label.
+- `recorded_is_success`: saved means successful. This fits the workflow where failed, incomplete, low-quality, or not-trainable episodes are discarded with the left arrow before saving.
+- `allow_missing_for_smoke`: debugging only. Missing success labels are allowed with a warning and should not be used for real training.
+
+When using `recorded_is_success`, the operator must be strict about deleting any episode that should not become a full demonstration. The success labels can later support VLA/DP/failure-detector filtering and evaluation.
   
 ## 9. Dataset Naming and Recording Details
 ### 9.1 Dataset Naming
