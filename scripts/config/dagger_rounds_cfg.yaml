@@ -101,7 +101,7 @@ dagger_rounds:
         include_intervention_segments: true
         max_recovery_segments_per_episode: 1
         max_recovery_frames_ratio: 0.25
-        prefer_full_episode_when_duplicate: true
+        prefer_full_episode_when_duplicate: false # if true in ACT, same as full_success_episode
 
     trainer:
       type: act

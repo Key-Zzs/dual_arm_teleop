@@ -1,30 +1,83 @@
 #!/usr/bin/env python
 
+from __future__ import annotations
+
+import argparse
+import builtins
+import datetime as dt
 import json
 import logging
+import os
+import sys
 import time
 from contextlib import nullcontext
-from pprint import pformat
 from pathlib import Path
-from typing import Dict, Any
+from pprint import pformat
+from typing import Any, Dict
+
 import yaml
+
+try:
+    from scripts.core.training_device import (
+        TrainingDeviceConfig,
+        apply_cuda_visible_devices_from_config_path,
+        apply_cuda_visible_devices_from_train_cfg,
+        log_training_device_state,
+        resolve_policy_device_for_config,
+        setup_training_device,
+    )
+except ModuleNotFoundError:
+    from training_device import (
+        TrainingDeviceConfig,
+        apply_cuda_visible_devices_from_config_path,
+        apply_cuda_visible_devices_from_train_cfg,
+        log_training_device_state,
+        resolve_policy_device_for_config,
+        setup_training_device,
+    )
+
+
+def _default_train_cfg_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "config" / "train_cfg.yaml"
+
+
+def _extract_config_path_from_argv(argv: list[str] | None = None) -> Path:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    option_names = {"--config", "--config-path", "--train-cfg"}
+    for index, arg in enumerate(argv):
+        if arg in option_names and index + 1 < len(argv):
+            return Path(argv[index + 1])
+        for option_name in option_names:
+            prefix = f"{option_name}="
+            if arg.startswith(prefix):
+                return Path(arg[len(prefix) :])
+    return _default_train_cfg_path()
+
+
+_EARLY_CUDA_VISIBLE_DEVICES = apply_cuda_visible_devices_from_config_path(_extract_config_path_from_argv())
 
 import torch
 from accelerate import Accelerator
 from termcolor import colored
 from torch.optim import Optimizer
 
+from lerobot import envs
 from lerobot.configs import parser
+from lerobot.configs.default import DatasetConfig, EvalConfig, WandBConfig
+from lerobot.configs.policies import PreTrainedConfig
 from lerobot.datasets.factory import make_dataset
 from lerobot.datasets.sampler import EpisodeAwareSampler
 from lerobot.datasets.utils import cycle
 from lerobot.envs.factory import make_env
 from lerobot.envs.utils import close_envs
+from lerobot.optim import OptimizerConfig
 from lerobot.optim.factory import make_optimizer_and_scheduler
+from lerobot.optim.schedulers import LRSchedulerConfig
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.pretrained import PreTrainedPolicy
 from lerobot.rl.wandb_utils import WandBLogger
 from lerobot.scripts.lerobot_eval import eval_policy_all
+from lerobot.utils.hub import HubMixin
 from lerobot.utils.logging_utils import AverageMeter, MetricsTracker
 from lerobot.utils.random_utils import set_seed
 from lerobot.utils.train_utils import (
@@ -34,28 +87,11 @@ from lerobot.utils.train_utils import (
     save_checkpoint,
     update_last_checkpoint,
 )
-from lerobot.utils.utils import (
-    format_big_number,
-    has_method,
-    init_logging,
-)
-import builtins
-import os
+from lerobot.utils.utils import format_big_number, has_method, init_logging
 
-from pathlib import Path
-
-import datetime as dt
 import draccus
 from huggingface_hub import hf_hub_download
 from huggingface_hub.errors import HfHubHTTPError
-
-from lerobot import envs
-from lerobot.configs import parser
-from lerobot.configs.default import DatasetConfig, EvalConfig, WandBConfig
-from lerobot.configs.policies import PreTrainedConfig
-from lerobot.optim import OptimizerConfig
-from lerobot.optim.schedulers import LRSchedulerConfig
-from lerobot.utils.hub import HubMixin
 
 TRAIN_CONFIG_NAME = "train_config.json"
 
@@ -104,6 +140,8 @@ def run_act_dagger_from_train_cfg(train_cfg: Dict[str, Any]) -> None:
         dataset: {...}
         training: {...}    # optional
     """
+    apply_cuda_visible_devices_from_train_cfg(train_cfg)
+
     dagger_section = train_cfg.get("dagger")
     if dagger_section is None:
         raise ValueError(
@@ -164,6 +202,11 @@ class TrainPipelineConfig(HubMixin):
         policy = cfg["policy"]
         eval = cfg["eval"]
         wandb = cfg["wandb"]
+        self.training: TrainingDeviceConfig = TrainingDeviceConfig.from_mapping(cfg.get("training"))
+        self.requested_policy_device: str | None = (
+            str(policy["device"]) if policy.get("device") is not None else None
+        )
+        policy_device_for_config = resolve_policy_device_for_config(cfg, self.training)
     
         self.dataset: DatasetConfig = DatasetConfig(
             repo_id = dataset["repo_id"],
@@ -209,7 +252,8 @@ class TrainPipelineConfig(HubMixin):
                 policy.get("temporal_ensemble_coeff")
             )
             self.policy = ACTConfig(
-                device = policy["device"],
+                device = policy_device_for_config,
+                use_amp = policy.get("use_amp", False),
                 repo_id = policy["repo_id"],
                 push_to_hub = policy["push_to_hub"],
                 pretrained_path = policy.get("pretrained_path"),
@@ -225,7 +269,8 @@ class TrainPipelineConfig(HubMixin):
                 policy.get("temporal_ensemble_coeff")
             )
             self.policy = ACTConfig(
-                device = policy["device"],
+                device = policy_device_for_config,
+                use_amp = policy.get("use_amp", False),
                 repo_id = policy["repo_id"],
                 push_to_hub = policy["push_to_hub"],
                 pretrained_path = policy.get("pretrained_path"),
@@ -236,7 +281,8 @@ class TrainPipelineConfig(HubMixin):
         elif policy_type == "diffusion":
             from lerobot.policies import DiffusionConfig
             self.policy = DiffusionConfig(
-                device = policy["device"],
+                device = policy_device_for_config,
+                use_amp = policy.get("use_amp", False),
                 repo_id = policy["repo_id"],
                 push_to_hub = policy["push_to_hub"],
             )
@@ -554,6 +600,11 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         accelerator: Optional Accelerator instance. If None, one will be created automatically.
     """
     cfg.validate()
+    device_state = setup_training_device(
+        cfg.training,
+        policy_device=cfg.requested_policy_device or cfg.policy.device,
+    )
+    cfg.policy.device = device_state.final_device.type
 
     # Create Accelerator if not provided
     # It will automatically detect if running in distributed mode or single-process mode
@@ -563,7 +614,11 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         from accelerate.utils import DistributedDataParallelKwargs
 
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-        accelerator = Accelerator(step_scheduler_with_optimizer=False, kwargs_handlers=[ddp_kwargs])
+        accelerator = Accelerator(
+            cpu=device_state.final_device.type == "cpu",
+            step_scheduler_with_optimizer=False,
+            kwargs_handlers=[ddp_kwargs],
+        )
 
     init_logging(accelerator=accelerator)
 
@@ -573,6 +628,17 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
 
     # Only log on main process
     if is_main_process:
+        if _EARLY_CUDA_VISIBLE_DEVICES.warning:
+            logging.warning(_EARLY_CUDA_VISIBLE_DEVICES.warning)
+        if accelerator.device.type != device_state.final_device.type:
+            logging.warning(
+                "Accelerator selected device '%s' while resolved training device was '%s'. "
+                "Using accelerator device for model and batch placement.",
+                accelerator.device,
+                device_state.final_device,
+            )
+        cfg.policy.device = accelerator.device.type
+        log_training_device_state(device_state)
         logging.info(pformat(cfg.to_dict()))
 
     # Initialize wandb only on main process
@@ -586,10 +652,9 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if cfg.seed is not None:
         set_seed(cfg.seed, accelerator=accelerator)
 
-    # Use accelerator's device
+    # Use accelerator's device for the model and the preprocessor so policy and batch tensors agree.
     device = accelerator.device
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cuda.matmul.allow_tf32 = True
+    cfg.policy.device = device.type
 
     # Dataset loading synchronization: main process downloads first to avoid race conditions
     if is_main_process:
@@ -850,13 +915,27 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     accelerator.end_training()
 
 
+def _build_arg_parser() -> argparse.ArgumentParser:
+    arg_parser = argparse.ArgumentParser(description="Train a LeRobot policy with the custom dual-arm config.")
+    arg_parser.add_argument(
+        "--config",
+        "--config-path",
+        dest="config_path",
+        type=Path,
+        default=_default_train_cfg_path(),
+        help="Path to train_cfg.yaml.",
+    )
+    return arg_parser
+
+
 def main():
-    parent_path = Path(__file__).resolve().parent
-    cfg_path = parent_path.parent / "config" / "train_cfg.yaml"
+    args = _build_arg_parser().parse_args()
+    cfg_path = args.config_path
     with open(cfg_path, 'r') as f:
         cfg = yaml.safe_load(f)
 
     train_section = cfg["train"]
+    apply_cuda_visible_devices_from_train_cfg(train_section)
     policy_type = train_section.get("policy", {}).get("type")
 
     if policy_type == "act_dagger":
