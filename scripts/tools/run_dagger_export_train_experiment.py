@@ -82,8 +82,21 @@ def _to_jsonable(value: Any) -> Any:
     return value
 
 
-def _resolve_modes(mode: str) -> list[str]:
-    mode = mode.strip().lower()
+def _configured_export_mode(dagger_rounds_cfg: dict[str, Any]) -> str:
+    export_cfg = (dagger_rounds_cfg.get("policy_backend") or {}).get("export", {})
+    if not isinstance(export_cfg, dict):
+        export_cfg = {}
+    mode = str(export_cfg.get("export_mode") or "intervention_segments").strip().lower()
+    if mode not in EXPORT_MODES:
+        raise ValueError(
+            "dagger_rounds.policy_backend.export.export_mode must be one of: "
+            f"{', '.join(EXPORT_MODES)}. Got: {mode!r}."
+        )
+    return mode
+
+
+def _resolve_modes(mode: str | None, dagger_rounds_cfg: dict[str, Any]) -> list[str]:
+    mode = _configured_export_mode(dagger_rounds_cfg) if mode is None else mode.strip().lower()
     if mode == "all":
         return list(EXPORT_MODES)
     if mode not in EXPORT_MODES:
@@ -102,7 +115,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     default_dir = Path(__file__).resolve().parent.parent / "config"
     parser = argparse.ArgumentParser(
         description=(
-            "Run ACT DAgger export-mode experiments from an existing raw run_mix dataset: "
+            "Run ACT DAgger export+train experiments from an existing raw run_mix dataset: "
             "export -> aggregate -> train -> checkpoint."
         )
     )
@@ -122,8 +135,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--train-cfg", type=Path, default=default_dir / "train_cfg.yaml")
     parser.add_argument("--dagger-cfg", type=Path, default=default_dir / "dagger_rounds_cfg.yaml")
     parser.add_argument("--output-root", type=Path, required=True)
-    parser.add_argument("--mode", default="all", choices=("all", *EXPORT_MODES))
-    parser.add_argument("--steps", type=int, help="Override train.steps for every mode.")
+    parser.add_argument(
+        "--mode",
+        choices=("all", *EXPORT_MODES),
+        help=(
+            "Override dagger_rounds.policy_backend.export.export_mode. "
+            "If omitted, the experiment uses the export_mode from --dagger-cfg."
+        ),
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        help=(
+            "Override train.steps for every mode. If omitted, steps are resolved from "
+            "dagger_rounds.round_schedule.train_steps after export."
+        ),
+    )
     parser.add_argument("--batch-size", type=int, help="Override train.batch_size for every mode.")
     parser.add_argument("--min-episode-len", type=int, help="Override export min_episode_len_for_act.")
     parser.add_argument("--pre-takeover-context", type=int, help="Override export pre_takeover_context.")
@@ -159,6 +186,9 @@ def _experiment_config(args: argparse.Namespace, modes: list[str]) -> dict[str, 
         "dagger_cfg": str(args.dagger_cfg),
         "output_root": str(args.output_root),
         "modes": modes,
+        "mode_argument": args.mode,
+        "mode_source": getattr(args, "mode_source", None),
+        "configured_export_mode": getattr(args, "configured_export_mode", None),
         "steps": args.steps,
         "batch_size": args.batch_size,
         "min_episode_len": args.min_episode_len,
@@ -225,9 +255,9 @@ def _prepare_train_cfg(
     aggregated_repo_id: str,
     aggregated_root: Path,
     base_repo_id: str,
+    resolved_steps: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     train_overrides: dict[str, Any] = {}
-    resolved_steps = args.steps if args.steps is not None else int(base_train_cfg.get("steps", 10_000))
     if args.steps is not None:
         train_overrides["steps"] = int(args.steps)
     if args.batch_size is not None:
@@ -244,11 +274,49 @@ def _prepare_train_cfg(
         seed_repo_id=base_repo_id,
         seed_root=args.base_dataset,
     )
-    train_cfg["job_name"] = f"dagger_export_mode_{mode}"
+    train_cfg["job_name"] = f"dagger_export_train_{mode}"
     if args.batch_size is not None:
         train_cfg["batch_size"] = int(args.batch_size)
         train_cfg.setdefault("dagger", {}).setdefault("training", {})["batch_size"] = int(args.batch_size)
     return train_cfg, train_overrides
+
+
+def _resolve_experiment_train_steps(
+    *,
+    mode: str,
+    args: argparse.Namespace,
+    base_train_cfg: dict[str, Any],
+    dagger_rounds_cfg: dict[str, Any],
+    export_summary: dict[str, Any],
+) -> dict[str, Any]:
+    base_train_steps = int(base_train_cfg.get("steps", 10_000))
+    if args.steps is not None:
+        resolved_steps = int(args.steps)
+        return {
+            "train_steps_source": "cli_override",
+            "train_steps_configured_mode": "cli_override",
+            "train_steps_effective_mode": "fixed",
+            "export_mode": mode,
+            "base_train_steps": base_train_steps,
+            "resolved_train_steps": resolved_steps,
+            "train_steps_components": {
+                "cli_steps": resolved_steps,
+                "raw_steps": resolved_steps,
+                "clamped_steps": resolved_steps,
+            },
+        }
+
+    from scripts.core.run_dagger_rounds import resolve_train_steps_schedule
+
+    schedule = resolve_train_steps_schedule(
+        round_id=1,
+        exported_summary=export_summary,
+        base_train_steps=base_train_steps,
+        schedule_cfg=dagger_rounds_cfg.get("round_schedule", {}),
+        export_mode=mode,
+    )
+    schedule["train_steps_source"] = "dagger_rounds.round_schedule.train_steps"
+    return schedule
 
 
 def _aggregate_summary(aggregated_repo_id: str, aggregated_root: Path) -> dict[str, Any]:
@@ -268,13 +336,25 @@ def _mode_metrics(export_summary: dict[str, Any] | None) -> dict[str, Any]:
     exported_dataset = export_summary.get("exported_dataset", {})
     stats = export_summary.get("stats", {})
     return {
-        "exported_frames": int(exported_dataset.get("total_frames", 0) or 0),
-        "exported_episodes": int(exported_dataset.get("total_episodes", 0) or 0),
-        "full_episode_frames": int(stats.get("full_episode_frames_exported", stats.get("hybrid_full_frames", 0)) or 0),
-        "recovery_frames": int(
-            stats.get("intervention_segment_frames_exported", stats.get("hybrid_recovery_frames", 0)) or 0
+        "exported_frames": int(export_summary.get("exported_frames", exported_dataset.get("total_frames", 0)) or 0),
+        "exported_episodes": int(
+            export_summary.get("exported_episodes", exported_dataset.get("total_episodes", 0)) or 0
         ),
-        "recovery_ratio": float(stats.get("hybrid_recovery_ratio", 0.0) or 0.0),
+        "full_episode_frames": int(
+            export_summary.get(
+                "full_episode_frames",
+                stats.get("full_episode_frames_exported", stats.get("hybrid_full_frames", 0)),
+            )
+            or 0
+        ),
+        "recovery_frames": int(
+            export_summary.get(
+                "recovery_frames",
+                stats.get("intervention_segment_frames_exported", stats.get("hybrid_recovery_frames", 0)),
+            )
+            or 0
+        ),
+        "recovery_ratio": float(export_summary.get("hybrid_recovery_ratio", stats.get("hybrid_recovery_ratio", 0.0)) or 0.0),
         "skipped_short_segments": int(stats.get("skipped_short_segments", 0) or 0),
         "skipped_incomplete_expert_labels": stats.get("incomplete_expert_label_frames"),
         "skipped_no_success": int(stats.get("full_episode_skipped_no_success", 0) or 0),
@@ -339,6 +419,27 @@ def run_one_mode(
 
         metrics = _mode_metrics(export_summary)
         state.update(metrics)
+        train_steps_schedule = _resolve_experiment_train_steps(
+            mode=mode,
+            args=args,
+            base_train_cfg=base_train_cfg,
+            dagger_rounds_cfg=dagger_rounds_cfg,
+            export_summary=export_summary,
+        )
+        resolved_train_steps = int(train_steps_schedule["resolved_train_steps"])
+        state["train_steps_schedule"] = _to_jsonable(train_steps_schedule)
+        state["resolved_train_steps"] = resolved_train_steps
+        state["train_steps_source"] = train_steps_schedule.get("train_steps_source")
+        state["train_steps_effective_mode"] = train_steps_schedule.get("train_steps_effective_mode")
+        logging.info(
+            "[%s] train steps mode: source=%s configured=%s effective=%s export_mode=%s resolved=%d",
+            mode,
+            train_steps_schedule.get("train_steps_source"),
+            train_steps_schedule.get("train_steps_configured_mode"),
+            train_steps_schedule.get("train_steps_effective_mode"),
+            train_steps_schedule.get("export_mode"),
+            resolved_train_steps,
+        )
         if metrics["exported_frames"] <= 0 or metrics["exported_episodes"] <= 0:
             state["skipped_train"] = True
             state["skipped_train_reason"] = (
@@ -380,6 +481,7 @@ def run_one_mode(
             aggregated_repo_id=aggregated_repo_id,
             aggregated_root=aggregated_root,
             base_repo_id=base_repo_id,
+            resolved_steps=resolved_train_steps,
         )
         state["train_cfg_overrides"] = train_overrides
         _write_yaml(mode_dir / "train_cfg_resolved.yaml", _to_jsonable(train_cfg))
@@ -395,6 +497,7 @@ def run_one_mode(
             "steps": int(train_cfg.get("steps", 0) or 0),
             "batch_size": int(train_cfg.get("batch_size", 0) or 0),
             "warm_start_from_same_initial_checkpoint": True,
+            "train_steps_schedule": _to_jsonable(train_steps_schedule),
         }
         _write_json(mode_dir / "train_summary.json", _to_jsonable(state["train_summary"]))
         state["status"] = "completed"
@@ -478,7 +581,7 @@ def write_comparison_report(summary: dict[str, Any], output_path: Path) -> None:
     setup = summary["setup"]
     mode_states: dict[str, dict[str, Any]] = summary.get("mode_states", summary["modes"])
     lines: list[str] = [
-        "# DAgger Export Mode Experiment Report",
+        "# DAgger Export+Train Experiment Report",
         "",
         "## 1. Experiment Setup",
         "",
@@ -487,15 +590,17 @@ def write_comparison_report(summary: dict[str, Any], output_path: Path) -> None:
         f"- initial checkpoint: `{setup['initial_checkpoint']}`",
         f"- train cfg: `{setup['train_cfg']}`",
         f"- dagger cfg: `{setup['dagger_cfg']}`",
-        f"- train steps: `{setup.get('steps')}`",
+        f"- export mode source: `{setup.get('mode_source')}`",
+        f"- configured export mode: `{setup.get('configured_export_mode')}`",
+        f"- train steps: `{setup.get('train_steps_description')}`",
         f"- output root: `{setup['output_root']}`",
         f"- timestamp: `{setup['timestamp']}`",
         "- fairness: every mode uses the same base dataset, train config overrides, and initial checkpoint.",
         "",
         "## 2. Mode Summary Table",
         "",
-        "| mode | exported frames | exported episodes | full episode frames | recovery frames | recovery ratio | skipped short segments | skipped incomplete expert labels | skipped no success | skipped reset | aggregated dataset path | train output path | checkpoint path |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---|",
+        "| mode | exported frames | exported episodes | train steps | train steps mode | full episode frames | recovery frames | recovery ratio | skipped short segments | skipped incomplete expert labels | skipped no success | skipped reset | aggregated dataset path | train output path | checkpoint path |",
+        "|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|",
     ]
     for mode, state in mode_states.items():
         lines.append(
@@ -505,6 +610,8 @@ def write_comparison_report(summary: dict[str, Any], output_path: Path) -> None:
                     mode,
                     _format_int(state.get("exported_frames")),
                     _format_int(state.get("exported_episodes")),
+                    _format_int(state.get("resolved_train_steps")),
+                    str(state.get("train_steps_effective_mode") or ""),
                     _format_int(state.get("full_episode_frames")),
                     _format_int(state.get("recovery_frames")),
                     _format_float(state.get("recovery_ratio")),
@@ -566,7 +673,15 @@ def _comparison_summary(
         "train_cfg": str(args.train_cfg),
         "dagger_cfg": str(args.dagger_cfg),
         "output_root": str(args.output_root),
+        "mode_argument": args.mode,
+        "mode_source": getattr(args, "mode_source", None),
+        "configured_export_mode": getattr(args, "configured_export_mode", None),
         "steps": args.steps,
+        "train_steps_description": (
+            f"cli --steps={int(args.steps)}"
+            if args.steps is not None
+            else "dagger_rounds.round_schedule.train_steps"
+        ),
         "batch_size": args.batch_size,
         "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
         "modes_requested": modes,
@@ -582,6 +697,9 @@ def _comparison_summary(
             "skipped_train": bool(state.get("skipped_train", False)),
             "skipped_train_reason": state.get("skipped_train_reason"),
             "error": state.get("error"),
+            "resolved_train_steps": int(state.get("resolved_train_steps", 0) or 0),
+            "train_steps_source": state.get("train_steps_source"),
+            "train_steps_effective_mode": state.get("train_steps_effective_mode"),
             "full_episode_frames": int(state.get("full_episode_frames", 0) or 0),
             "recovery_frames": int(state.get("recovery_frames", 0) or 0),
             "recovery_ratio": float(state.get("recovery_ratio", 0.0) or 0.0),
@@ -609,6 +727,14 @@ def _print_dry_run(args: argparse.Namespace, modes: list[str], dagger_rounds_cfg
         for mode in modes
     }
     preview["policy_backend"] = dagger_rounds_cfg.get("policy_backend", {})
+    preview["round_schedule"] = dagger_rounds_cfg.get("round_schedule", {})
+    preview["configured_export_mode"] = getattr(args, "configured_export_mode", None)
+    preview["mode_source"] = getattr(args, "mode_source", None)
+    preview["train_steps_source"] = (
+        f"cli --steps={int(args.steps)}"
+        if args.steps is not None
+        else "dagger_rounds.round_schedule.train_steps after export"
+    )
     print(yaml.safe_dump(_to_jsonable(preview), sort_keys=False))
 
 
@@ -617,7 +743,6 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
 
-    modes = _resolve_modes(args.mode)
     args.raw_dataset = _require_dir(args.raw_dataset, "raw dataset")
     args.base_dataset = _require_dir(args.base_dataset, "base dataset")
     args.initial_checkpoint = _require_checkpoint(args.initial_checkpoint)
@@ -628,6 +753,19 @@ def main() -> None:
     train_cfg = _load_yaml(args.train_cfg)
     dagger_rounds_cfg = _extract_section(dagger_cfg, "dagger_rounds")
     base_train_cfg = _extract_section(train_cfg, "train")
+    args.configured_export_mode = _configured_export_mode(dagger_rounds_cfg)
+    args.mode_source = (
+        "cli --mode"
+        if args.mode is not None
+        else "dagger_rounds.policy_backend.export.export_mode"
+    )
+    modes = _resolve_modes(args.mode, dagger_rounds_cfg)
+    logging.info(
+        "[experiment] export modes=%s source=%s configured_export_mode=%s",
+        modes,
+        args.mode_source,
+        args.configured_export_mode,
+    )
 
     if args.dry_run:
         _print_dry_run(args, modes, dagger_rounds_cfg)
@@ -645,7 +783,7 @@ def main() -> None:
 
     mode_states: dict[str, dict[str, Any]] = {}
     for mode in modes:
-        logging.info("========== [export-mode experiment: %s] ==========", mode)
+        logging.info("========== [export+train experiment: %s] ==========", mode)
         mode_states[mode] = run_one_mode(
             mode=mode,
             args=args,
