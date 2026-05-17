@@ -11,12 +11,15 @@ Core Commands:
   robot-reset            Reset the robot to initial state
   robot-train            Train a policy on the recorded dataset
   robot-dagger           Run DAgger rounds for policy improvement
+  robot-dagger-export    Export DAgger data from raw run_mix logs
 
 Utility Commands:
   utils-joint-offsets    Compute joint offsets for teleoperation
 
 Tool Commands:
   tools-check-dataset    Check local dataset information
+  tools-check-dagger-dataset
+                         Audit an exported ACT DAgger dataset before training
   tools-check-rs         Retrieve connected RealSense camera serial numbers
   tools-check-robotiq    Check Robotiq gripper serial ports
 

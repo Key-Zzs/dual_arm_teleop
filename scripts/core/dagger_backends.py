@@ -245,10 +245,7 @@ class ACTTrainer(PolicyTrainer):
         return train_section
 
     def train(self, train_cfg: dict[str, Any]) -> str:
-        try:
-            from scripts.core.training_device import apply_cuda_visible_devices_from_train_cfg
-        except ModuleNotFoundError:
-            from training_device import apply_cuda_visible_devices_from_train_cfg
+        from scripts.utils.training_device import apply_cuda_visible_devices_from_train_cfg
 
         apply_cuda_visible_devices_from_train_cfg(train_cfg)
 

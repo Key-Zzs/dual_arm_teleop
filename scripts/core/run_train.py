@@ -18,7 +18,7 @@ from typing import Any, Dict
 import yaml
 
 try:
-    from scripts.core.training_device import (
+    from scripts.utils.training_device import (
         TrainingDeviceConfig,
         apply_cuda_visible_devices_from_config_path,
         apply_cuda_visible_devices_from_train_cfg,
@@ -27,7 +27,8 @@ try:
         setup_training_device,
     )
 except ModuleNotFoundError:
-    from training_device import (
+    sys.path.append(str(Path(__file__).resolve().parents[2]))
+    from scripts.utils.training_device import (
         TrainingDeviceConfig,
         apply_cuda_visible_devices_from_config_path,
         apply_cuda_visible_devices_from_train_cfg,
