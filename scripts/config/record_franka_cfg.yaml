@@ -1,11 +1,11 @@
 record:
   repo_id: &repo_id "franka_task3_step1/TODO_task_description"
-  debug: 1
+  debug: 0
   user_notes: "Franka template; replace TODO values before real collection."
   fps: 30
   control_mode: &control_mode "oculus"
   use_gripper: &use_gripper true
-  run_mode: "run_record"  # run_record | run_policy | run_mix
+  run_mode: "run_policy"  # run_record | run_policy | run_mix
 
   robot_type: &robot_type "franka_dual_arm"
 
@@ -15,21 +15,26 @@ record:
     oculus_config:
       ip:
       use_gripper: *use_gripper
-      # TODO(franka): verify these scalers/signs on the real Franka setup.
-      left_pose_scaler: [1.0, 1.0]
-      left_channel_signs: [-1, -1, 1, 1, 1, 1]
-      right_pose_scaler: [1.0, 1.0]
-      right_channel_signs: [-1, -1, 1, 1, 1, 1]
-      action_smoothing_alpha: 0.35
-      visualize_placo: false
+      left_pose_scaler: [0.8, 0.8]
+      left_channel_signs: [1, 1, 1, -1, -1, 1]
+      right_pose_scaler: [0.8, 0.8]
+      right_channel_signs: [1, 1, 1, -1, -1, 1]
+      # action_smoothing_method: "one_euro"  # one_euro, ema, or none
+      # action_smoothing_alpha: 0.7  # only used when action_smoothing_method: "ema"
+      # action_smoothing_freq: 30.0
+      # action_smoothing_min_cutoff: 2.0
+      # action_smoothing_beta: 1.0
+      # action_smoothing_d_cutoff: 1.0
+      mirror_teleop: true  # true: stand opposite the robot; swap left/right controllers and grippers
+      visualize_placo: false  # whether to visualize robot using placo
 
   robot:
-    robot_ip: &ip "127.0.0.1"
+    robot_ip: &ip "172.16.0.1"
     robot_port: 4242
     rpc_timeout_sec: 30.0
     schema_mode: "nero_compatible"
     use_gripper: *use_gripper
-    close_threshold: 0.5
+    close_threshold: 0.7
     gripper_reverse: false
     gripper_max_open: 0.085
     gripper_force: 10.0
@@ -39,9 +44,8 @@ record:
     reset_go_home: true
     go_home_duration_sec: 5.0
     go_home_rate_hz: 50.0
-    # TODO(franka): tune wrapper-side clipping only after validating server-side safety.
-    max_cartesian_delta:
-    max_rotation_delta:
+    max_cartesian_delta: 0.06 # null disables wrapper-side EE translation clipping
+    max_rotation_delta: 0.08   # null disables wrapper-side EE rotation clipping
 
   policy:
     type: "act"
@@ -50,38 +54,36 @@ record:
     temporal_ensemble_coeff: 0.03
     chunk_size: 30
     n_action_steps: 1
-    # TODO(franka): set to a Franka checkpoint. Do not point this at a Nero
-    # checkpoint unless schema compatibility and real action semantics are verified.
-    pretrained_path:
+    pretrained_path: "/home/deepcybo/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task1_step3/8mL_empty_left/act_20260509_E125_SW_V01/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
+
 
   task:
-    description: "TODO describe Franka task"
-    num_episodes: 1
-    display: true
-    resume: false
-    resume_dataset:
+    description: "Use left hand to pick up the object and place it to the basket"  # task description
+    num_episodes: 10 # number of episodes to record
+    display: True # Whether to display the data during recording
+    resume: false # whether to resume from an existing dataset
+    resume_dataset: roboticiq/pick_all_yellow_cube_to_brown_basket_20260208_v01 # dataset to resume from if resume is True
     success_policy:
     annotate_success: false
 
   time:
-    episode_time_sec: 600
-    reset_time_sec: 120
+    episode_time_sec: 6000
+    reset_time_sec: 6000
     save_meta_period: 1
 
   cameras:
-    # TODO(franka): replace with the real Franka rig RealSense serial numbers.
-    left_wrist_cam_serial: "TODO_LEFT_WRIST_SERIAL"
-    right_wrist_cam_serial: "TODO_RIGHT_WRIST_SERIAL"
-    head_cam_serial: "TODO_HEAD_SERIAL"
-    width: 424
-    height: 240
+    left_wrist_cam_serial: "347622074336"   # left wrist camera serial number
+    right_wrist_cam_serial: "337322072568"  # right wrist camera  serial number 
+    head_cam_serial: "348522072761"         # head (overhead) camera serial number
+    width: 424 # 640 424
+    height: 240 # 360 240
 
   storage:
     push_to_hub: false
 
 replay:
-  dataset_name: "franka_task3_step1/TODO_dataset"
-  episode_idx: 0
+  dataset_name: dual_franka_2/single_arm_pick_20260518_v08
+  episode_idx: 8 # episode index to replay
   reset_on_finish: true
   disconnect_on_finish: false
   robot_type: *robot_type
@@ -91,5 +93,5 @@ replay:
   control_mode: *control_mode
 
 visualize:
-  dataset_name: "franka_task3_step1/TODO_dataset"
-  episode_index: 0
+  dataset_name: dual_franka_2/single_arm_pick_20260518_v08
+  episode_index: 8 # episode index to visualize

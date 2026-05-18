@@ -215,6 +215,7 @@ class RecordConfig:
             self.channel_signs = oculus_cfg.get("channel_signs", [1, 1, 1, 1, 1, 1])
             self.visualize_placo = oculus_cfg.get("visualize_placo", False)
             self.action_smoothing_alpha = oculus_cfg.get("action_smoothing_alpha", 0.35)
+            self.mirror_teleop = oculus_cfg.get("mirror_teleop", False)
             if self.dual_arm:
                 self.left_pose_scaler = oculus_cfg.get("left_pose_scaler", self.pose_scaler)
                 self.right_pose_scaler = oculus_cfg.get("right_pose_scaler", self.pose_scaler)
@@ -292,6 +293,7 @@ class RecordConfig:
                     left_channel_signs=self.left_channel_signs,
                     right_channel_signs=self.right_channel_signs,
                     action_smoothing_alpha=self.action_smoothing_alpha,
+                    mirror_teleop=self.mirror_teleop,
                     visualize_placo=self.visualize_placo,
                 )
             return OculusTeleopConfig(
@@ -1524,7 +1526,7 @@ def run_record(record_cfg: RecordConfig):
 
 def main():
     parent_path = Path(__file__).resolve().parent
-    cfg_path = parent_path.parent / "config" / "record_cfg.yaml" # record_cfg.yaml | record_franka_cfg.yaml
+    cfg_path = parent_path.parent / "config" / "record_franka_cfg.yaml" # record_cfg.yaml | record_franka_cfg.yaml
     with open(cfg_path, 'r') as f:
         cfg = yaml.safe_load(f)
 
