@@ -136,7 +136,7 @@ def visualize_dataset(
 
 def main():
     parent_path = Path(__file__).resolve().parent
-    cfg_path = parent_path.parent / "config" / "record_cfg.yaml"
+    cfg_path = parent_path.parent / "config" / "record_cfg.yaml" # record_cfg.yaml | record_franka_cfg.yaml
     with open(cfg_path, 'r') as f:
         cfg = yaml.safe_load(f)
 

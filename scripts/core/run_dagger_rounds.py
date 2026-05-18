@@ -1131,7 +1131,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
 
 def main() -> None:
     parent_path = Path(__file__).resolve().parent
-    cfg_path = parent_path.parent / "config" / "dagger_rounds_cfg.yaml"
+    cfg_path = parent_path.parent / "config" / "dagger_rounds_cfg.yaml" # dagger_rounds_cfg.yaml | dagger_rounds_franka_cfg.yaml
     logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
     cfg = _load_yaml(cfg_path)
     rounds_cfg = cfg.get("dagger_rounds", cfg)

@@ -19,6 +19,18 @@ from .dual_franka_robotiq_rpc_client import FrankaDualArmClient
 
 logger = logging.getLogger(__name__)
 
+SCHEMA_MODE_NERO_COMPATIBLE = "nero_compatible"
+SCHEMA_MODE_FRANKA_NATIVE = "franka_native"
+VALID_SCHEMA_MODES = {SCHEMA_MODE_NERO_COMPATIBLE, SCHEMA_MODE_FRANKA_NATIVE}
+AXES = ("x", "y", "z", "rx", "ry", "rz")
+NERO_COMPAT_ACTION_KEYS = tuple(
+    [f"left_delta_ee_pose.{axis}" for axis in AXES]
+    + [f"right_delta_ee_pose.{axis}" for axis in AXES]
+    + ["left_gripper_cmd", "right_gripper_cmd"]
+)
+_FLAT_AXIS_ALIASES = {"x": "x", "y": "y", "z": "z", "rx": "roll", "ry": "pitch", "rz": "yaw"}
+_MISSING = object()
+
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, float(value)))
@@ -44,6 +56,20 @@ def _safe_float(value: Any, fallback: float) -> float:
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _ordered_float_features(keys: tuple[str, ...] | list[str]) -> dict[str, type]:
+    return {key: float for key in keys}
+
+
+def _unique(keys: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for key in keys:
+        if key not in seen:
+            seen.add(key)
+            result.append(key)
+    return result
 
 
 def _robot_state_from_side(side_state: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -107,6 +133,7 @@ class FrankaDualArm(Robot):
     def __init__(self, config: FrankaDualArmConfig):
         super().__init__(config)
         self.config = config
+        self._schema_mode = self._resolve_schema_mode(config.schema_mode)
         self.cameras = make_cameras_from_configs(config.cameras)
         self._is_connected = False
         self._robot: Optional[FrankaDualArmClient] = None
@@ -128,6 +155,20 @@ class FrankaDualArm(Robot):
         self._camera_threads: dict[str, threading.Thread] = {}
         self._frame_lock = threading.Lock()
         self._latest_frames: dict[str, Any] = {}
+
+    @staticmethod
+    def _resolve_schema_mode(schema_mode: str | None) -> str:
+        mode = str(schema_mode or SCHEMA_MODE_NERO_COMPATIBLE).strip().lower()
+        if mode not in VALID_SCHEMA_MODES:
+            raise ValueError(
+                f"FrankaDualArmConfig.schema_mode must be one of {sorted(VALID_SCHEMA_MODES)}; "
+                f"got {schema_mode!r}."
+            )
+        return mode
+
+    @property
+    def schema_mode(self) -> str:
+        return self._schema_mode
 
     # ==================== Connection ====================
 
@@ -234,7 +275,7 @@ class FrankaDualArm(Robot):
         server_action: dict[str, Any] = {}
         gripper_updates: list[tuple[str, float]] = []
 
-        has_cartesian_action = "left_delta_ee_pose.x" in action or "right_delta_ee_pose.x" in action
+        has_cartesian_action = self._has_cartesian_action(action)
         if not self.config.debug:
             if has_cartesian_action:
                 self._add_cartesian_step_action(server_action, sent_action, action)
@@ -245,20 +286,20 @@ class FrankaDualArm(Robot):
             self._update_sent_cartesian_action(sent_action, zero_delta, zero_delta, action)
 
         if self.config.use_gripper:
-            if "left_gripper_cmd_bin" in action:
-                sent_action["left_gripper_cmd_bin"] = self._add_gripper_step_action(
+            for side in ("left", "right"):
+                gripper_value, source_key = self._gripper_value_from_action(action, side)
+                if gripper_value is _MISSING:
+                    continue
+                public_key = self._public_gripper_action_key(side)
+                sent_value = self._add_gripper_step_action(
                     server_action,
-                    "left",
-                    float(action["left_gripper_cmd_bin"]),
+                    side,
+                    float(gripper_value),
                     gripper_updates,
                 )
-            if "right_gripper_cmd_bin" in action:
-                sent_action["right_gripper_cmd_bin"] = self._add_gripper_step_action(
-                    server_action,
-                    "right",
-                    float(action["right_gripper_cmd_bin"]),
-                    gripper_updates,
-                )
+                sent_action[public_key] = sent_value
+                if source_key is not None:
+                    sent_action[source_key] = sent_value
 
         if server_action:
             step_result = self._robot.step(server_action)
@@ -285,9 +326,9 @@ class FrankaDualArm(Robot):
         if self._action_debug_count > 5 and self._action_debug_count % self._action_debug_every_n != 0:
             return
 
-        axes = ["x", "y", "z", "rx", "ry", "rz"]
-        left_delta = np.array([action.get(f"left_delta_ee_pose.{axis}", 0.0) for axis in axes], dtype=float)
-        right_delta = np.array([action.get(f"right_delta_ee_pose.{axis}", 0.0) for axis in axes], dtype=float)
+        left_delta, right_delta = self._cartesian_deltas_from_action(action)
+        left_grip, _ = self._gripper_value_from_action(action, "left")
+        right_grip, _ = self._gripper_value_from_action(action, "right")
         logger.info(
             "[FRANKA ACTION] step=%d left_xyz=%.6f right_xyz=%.6f left_rot=%.6f right_rot=%.6f "
             "left_grip=%s right_grip=%s",
@@ -296,8 +337,8 @@ class FrankaDualArm(Robot):
             float(np.linalg.norm(right_delta[:3])),
             float(np.linalg.norm(left_delta[3:])),
             float(np.linalg.norm(right_delta[3:])),
-            action.get("left_gripper_cmd_bin"),
-            action.get("right_gripper_cmd_bin"),
+            None if left_grip is _MISSING else left_grip,
+            None if right_grip is _MISSING else right_grip,
         )
 
     def _add_cartesian_step_action(
@@ -320,9 +361,20 @@ class FrankaDualArm(Robot):
             }
 
     def _cartesian_deltas_from_action(self, action: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
-        axes = ["x", "y", "z", "rx", "ry", "rz"]
-        left_delta = np.array([action.get(f"left_delta_ee_pose.{axis}", 0.0) for axis in axes], dtype=float)
-        right_delta = np.array([action.get(f"right_delta_ee_pose.{axis}", 0.0) for axis in axes], dtype=float)
+        left_delta = np.array(
+            [
+                self._first_action_value(action, self._cartesian_action_keys("left", axis), 0.0)
+                for axis in AXES
+            ],
+            dtype=float,
+        )
+        right_delta = np.array(
+            [
+                self._first_action_value(action, self._cartesian_action_keys("right", axis), 0.0)
+                for axis in AXES
+            ],
+            dtype=float,
+        )
 
         if not np.all(np.isfinite(left_delta)) or not np.all(np.isfinite(right_delta)):
             self._nonfinite_action_warn_count += 1
@@ -366,22 +418,67 @@ class FrankaDualArm(Robot):
                 )
         return left_delta, right_delta
 
-    @staticmethod
     def _update_sent_cartesian_action(
+        self,
         sent_action: dict[str, Any],
         left_delta: np.ndarray,
         right_delta: np.ndarray,
         source_action: dict[str, Any],
     ) -> None:
-        axes = ["x", "y", "z", "rx", "ry", "rz"]
-        for index, axis in enumerate(axes):
-            left_key = f"left_delta_ee_pose.{axis}"
-            if left_key in source_action:
-                sent_action[left_key] = float(left_delta[index])
+        for index, axis in enumerate(AXES):
+            for left_key in self._cartesian_action_keys("left", axis):
+                if left_key in source_action:
+                    sent_action[left_key] = float(left_delta[index])
 
-            right_key = f"right_delta_ee_pose.{axis}"
-            if right_key in source_action:
-                sent_action[right_key] = float(right_delta[index])
+            for right_key in self._cartesian_action_keys("right", axis):
+                if right_key in source_action:
+                    sent_action[right_key] = float(right_delta[index])
+
+    def _has_cartesian_action(self, action: dict[str, Any]) -> bool:
+        for side in ("left", "right"):
+            for axis in AXES:
+                if any(key in action for key in self._cartesian_action_keys(side, axis)):
+                    return True
+        return False
+
+    @staticmethod
+    def _cartesian_action_keys(side: str, axis: str) -> list[str]:
+        # Dotted keys are the actual Nero schema in this repository. Flat
+        # left_delta_roll/pitch/yaw aliases are accepted only as input aliases so
+        # older notes/scripts can still drive the Franka adapter without changing
+        # the public dataset contract.
+        return _unique(
+            [
+                f"{side}_delta_ee_pose.{axis}",
+                f"{side}_delta_{_FLAT_AXIS_ALIASES[axis]}",
+            ]
+        )
+
+    @staticmethod
+    def _first_action_value(
+        action: dict[str, Any],
+        keys: list[str],
+        default: float,
+    ) -> float:
+        for key in keys:
+            if key in action:
+                return float(action[key])
+        return float(default)
+
+    def _public_gripper_action_key(self, side: str) -> str:
+        if self.schema_mode == SCHEMA_MODE_NERO_COMPATIBLE:
+            return f"{side}_gripper_cmd"
+        return f"{side}_gripper_cmd_bin"
+
+    def _gripper_action_keys(self, side: str) -> list[str]:
+        public_key = self._public_gripper_action_key(side)
+        return _unique([public_key, f"{side}_gripper_cmd", f"{side}_gripper_cmd_bin"])
+
+    def _gripper_value_from_action(self, action: dict[str, Any], side: str) -> tuple[Any, str | None]:
+        for key in self._gripper_action_keys(side):
+            if key in action:
+                return action[key], key
+        return _MISSING, None
 
     def _send_action_cartesian(self, action: dict[str, Any]) -> None:
         left_delta, right_delta = self._cartesian_deltas_from_action(action)
@@ -458,7 +555,6 @@ class FrankaDualArm(Robot):
                 return self._prev_observation
             raise
 
-        obs: dict[str, Any] = {}
         left_side = _as_mapping(state.get("left_arm", {}))
         right_side = _as_mapping(state.get("right_arm", {}))
         left_robot_state = _robot_state_from_side(left_side)
@@ -467,16 +563,11 @@ class FrankaDualArm(Robot):
         left_joints = _as_np(left_robot_state.get("joint_positions"), self._num_joints_per_arm)
         right_joints = _as_np(right_robot_state.get("joint_positions"), self._num_joints_per_arm)
 
-        for i in range(self._num_joints_per_arm):
-            obs[f"left_joint_{i + 1}.pos"] = float(left_joints[i])
-            obs[f"right_joint_{i + 1}.pos"] = float(right_joints[i])
-
         left_pose = _ee_pose_from_side(left_side)
         right_pose = _ee_pose_from_side(right_side)
-        for i, axis in enumerate(["x", "y", "z", "rx", "ry", "rz"]):
-            obs[f"left_ee_pose.{axis}"] = float(left_pose[i])
-            obs[f"right_ee_pose.{axis}"] = float(right_pose[i])
 
+        left_cmd = None
+        right_cmd = None
         if self.config.use_gripper:
             left_grip = _gripper_open_fraction_from_side(left_side, self._left_gripper_state)
             right_grip = _gripper_open_fraction_from_side(right_side, self._right_gripper_state)
@@ -485,18 +576,21 @@ class FrankaDualArm(Robot):
                 right_grip = 1.0 - right_grip
             self._left_gripper_state = _clamp(left_grip, 0.0, 1.0)
             self._right_gripper_state = _clamp(right_grip, 0.0, 1.0)
-            obs["left_gripper_state_norm"] = self._left_gripper_state
-            obs["right_gripper_state_norm"] = self._right_gripper_state
-            obs["left_gripper_cmd_bin"] = (
-                self._last_left_gripper_open
-                if self._last_left_gripper_open is not None
-                else self._left_gripper_state
-            )
-            obs["right_gripper_cmd_bin"] = (
+            left_cmd = self._last_left_gripper_open if self._last_left_gripper_open is not None else self._left_gripper_state
+            right_cmd = (
                 self._last_right_gripper_open
                 if self._last_right_gripper_open is not None
                 else self._right_gripper_state
             )
+
+        obs = self._format_observation(
+            left_joints=left_joints,
+            right_joints=right_joints,
+            left_pose=left_pose,
+            right_pose=right_pose,
+            left_gripper_cmd=left_cmd,
+            right_gripper_cmd=right_cmd,
+        )
 
         latest_frames = self._snapshot_latest_frames()
         for cam_name, cam in self.cameras.items():
@@ -508,6 +602,49 @@ class FrankaDualArm(Robot):
             obs[cam_name] = frame
 
         self._prev_observation = obs
+        return obs
+
+    def _format_observation(
+        self,
+        *,
+        left_joints: np.ndarray,
+        right_joints: np.ndarray,
+        left_pose: np.ndarray,
+        right_pose: np.ndarray,
+        left_gripper_cmd: float | None,
+        right_gripper_cmd: float | None,
+    ) -> dict[str, Any]:
+        obs: dict[str, Any] = {}
+        if self.schema_mode == SCHEMA_MODE_NERO_COMPATIBLE:
+            # Nero-compatible mode exposes only the fields used by existing
+            # Nero datasets/checkpoints. Franka's measured gripper state is
+            # represented through the Nero `*_gripper_cmd` contract using the
+            # latest commanded open fraction, falling back to measured open
+            # fraction before the first command.
+            for i in range(self._num_joints_per_arm):
+                obs[f"left_joint_{i + 1}.pos"] = float(left_joints[i])
+            for i in range(self._num_joints_per_arm):
+                obs[f"right_joint_{i + 1}.pos"] = float(right_joints[i])
+            for i, axis in enumerate(AXES):
+                obs[f"left_ee_pose.{axis}"] = float(left_pose[i])
+            for i, axis in enumerate(AXES):
+                obs[f"right_ee_pose.{axis}"] = float(right_pose[i])
+            if self.config.use_gripper:
+                obs["left_gripper_cmd"] = float(left_gripper_cmd)
+                obs["right_gripper_cmd"] = float(right_gripper_cmd)
+            return obs
+
+        for i in range(self._num_joints_per_arm):
+            obs[f"left_joint_{i + 1}.pos"] = float(left_joints[i])
+            obs[f"right_joint_{i + 1}.pos"] = float(right_joints[i])
+        for i, axis in enumerate(AXES):
+            obs[f"left_ee_pose.{axis}"] = float(left_pose[i])
+            obs[f"right_ee_pose.{axis}"] = float(right_pose[i])
+        if self.config.use_gripper:
+            obs["left_gripper_state_norm"] = self._left_gripper_state
+            obs["right_gripper_state_norm"] = self._right_gripper_state
+            obs["left_gripper_cmd_bin"] = float(left_gripper_cmd)
+            obs["right_gripper_cmd_bin"] = float(right_gripper_cmd)
         return obs
 
     def _update_cached_rpc_state_from_step(self, step_result: Any) -> None:
@@ -570,9 +707,15 @@ class FrankaDualArm(Robot):
 
     @property
     def action_features(self) -> dict[str, type]:
+        if self.schema_mode == SCHEMA_MODE_NERO_COMPATIBLE:
+            keys = list(NERO_COMPAT_ACTION_KEYS[:12])
+            if self.config.use_gripper:
+                keys.extend(NERO_COMPAT_ACTION_KEYS[12:])
+            return _ordered_float_features(keys)
+
         features: dict[str, type] = {}
         if self.config.control_mode in {"oculus", "spacemouse"}:
-            for axis in ["x", "y", "z", "rx", "ry", "rz"]:
+            for axis in AXES:
                 features[f"left_delta_ee_pose.{axis}"] = float
                 features[f"right_delta_ee_pose.{axis}"] = float
         else:
@@ -586,15 +729,36 @@ class FrankaDualArm(Robot):
 
     @property
     def observation_features(self) -> dict[str, Any]:
-        return {**self._motors_ft, **self._cameras_ft}
+        motor_features = (
+            self._nero_compatible_motors_ft
+            if self.schema_mode == SCHEMA_MODE_NERO_COMPATIBLE
+            else self._franka_native_motors_ft
+        )
+        return {**motor_features, **self._cameras_ft}
 
     @property
-    def _motors_ft(self) -> dict[str, type]:
+    def _nero_compatible_motors_ft(self) -> dict[str, type]:
+        features: dict[str, type] = {}
+        for i in range(self._num_joints_per_arm):
+            features[f"left_joint_{i + 1}.pos"] = float
+        for i in range(self._num_joints_per_arm):
+            features[f"right_joint_{i + 1}.pos"] = float
+        for axis in AXES:
+            features[f"left_ee_pose.{axis}"] = float
+        for axis in AXES:
+            features[f"right_ee_pose.{axis}"] = float
+        if self.config.use_gripper:
+            features["left_gripper_cmd"] = float
+            features["right_gripper_cmd"] = float
+        return features
+
+    @property
+    def _franka_native_motors_ft(self) -> dict[str, type]:
         features: dict[str, type] = {}
         for i in range(self._num_joints_per_arm):
             features[f"left_joint_{i + 1}.pos"] = float
             features[f"right_joint_{i + 1}.pos"] = float
-        for axis in ["x", "y", "z", "rx", "ry", "rz"]:
+        for axis in AXES:
             features[f"left_ee_pose.{axis}"] = float
             features[f"right_ee_pose.{axis}"] = float
         if self.config.use_gripper:

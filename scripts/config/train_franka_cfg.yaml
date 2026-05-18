@@ -1,0 +1,54 @@
+train:
+  training:
+    device: cuda
+    gpu:
+      enabled: true
+      visible_devices: "0"
+      max_num_gpus: 1
+      memory_fraction: 0.70
+      allow_tf32: true
+      cudnn_benchmark: false
+      empty_cache_on_start: true
+      log_gpu_info: true
+      fail_if_cuda_unavailable: false
+
+  dataset:
+    repo_id: "franka_task3_step1/TODO_seed_or_merged_dataset"
+    root: "./data/lerobot/franka_task3_step1/TODO_seed_or_merged_dataset"
+
+  env:
+
+  policy:
+    type: "act"  # act | diffusion
+    device: "cuda"
+    repo_id: "local/franka_act_policy"
+    push_to_hub: false
+    temporal_ensemble_coeff: 0.03
+    chunk_size: 30
+    n_action_steps: 1
+    # TODO(franka): only warm-start from Nero after schema compatibility and
+    # real robot action semantics have been verified.
+    pretrained_path:
+
+  output_dir: "./outputs/train/franka_task3_step1/TODO_run_name"
+  job_name: "franka_act_TODO_run_name"
+
+  resume: false
+  seed: 1000
+  num_workers: 4
+  batch_size: 32
+  steps: 10000
+  eval_freq: 2000
+  log_freq: 200
+  save_checkpoint: true
+  save_freq: 5000
+  use_policy_training_preset: true
+
+  eval:
+    n_episodes: 10
+    batch_size: 8
+
+  wandb:
+    enable: false
+    project: "lerobot_franka"
+    mode: "online"

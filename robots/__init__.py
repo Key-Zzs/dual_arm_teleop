@@ -4,7 +4,9 @@ Supports multiple robot types: Franka (single-arm), Dobot (dual-arm), etc.
 
 Action input format (from teleop):
 - Single-arm robot: uses right_delta_ee_pose.{axis}, right_gripper_cmd_bin
-- Dual-arm robot: uses left/right_delta_ee_pose.{axis}, left/right_gripper_cmd_bin
+- Dual-arm robot schemas are robot-specific. Nero-compatible contracts use
+  left/right_delta_ee_pose.{axis} and left/right_gripper_cmd; Franka-native
+  contracts keep the Franka-specific left/right_gripper_cmd_bin keys.
 """
 
 from typing import Dict, Any, Type
@@ -13,11 +15,13 @@ from typing import Dict, Any, Type
 from .franka.config_franka import FrankaConfig
 from .dual_dobot.config_dobot import DobotDualArmConfig
 from .dual_agilex_nero.config_nero import NeroDualArmConfig
+from .dual_franka.config_franka import FrankaDualArmConfig
 
 # Import robot classes
 from .franka.franka import Franka
 from .dual_dobot.dobot_dual_arm import DobotDualArm
 from .dual_agilex_nero.nero_dual_arm import NeroDualArm
+from .dual_franka.franka_dual_arm import FrankaDualArm
 
 
 # Robot type registry: {robot_type: (ConfigClass, RobotClass)}
@@ -26,7 +30,8 @@ ROBOT_CONFIG_REGISTRY: Dict[str, tuple] = {
     "franka": (FrankaConfig, Franka),
     # Dual-arm robots
     "dobot_dual_arm": (DobotDualArmConfig, DobotDualArm),
-    "nero_dual_arm": (NeroDualArmConfig, NeroDualArm)
+    "nero_dual_arm": (NeroDualArmConfig, NeroDualArm),
+    "franka_dual_arm": (FrankaDualArmConfig, FrankaDualArm),
 }
 
 # Supported robot types
@@ -69,9 +74,13 @@ __all__ = [
     # Configuration classes
     "FrankaConfig",
     "DobotDualArmConfig",
+    "NeroDualArmConfig",
+    "FrankaDualArmConfig",
     # Robot classes
     "Franka",
     "DobotDualArm",
+    "NeroDualArm",
+    "FrankaDualArm",
     # Registry and factory functions
     "ROBOT_CONFIG_REGISTRY",
     "SUPPORTED_ROBOTS",

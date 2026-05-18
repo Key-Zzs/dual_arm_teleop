@@ -39,7 +39,7 @@ except ModuleNotFoundError:
 
 
 def _default_train_cfg_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "config" / "train_cfg.yaml"
+    return Path(__file__).resolve().parent.parent / "config" / "train_cfg.yaml" # train_cfg.yaml | train_franka_cfg.yaml
 
 
 def _extract_config_path_from_argv(argv: list[str] | None = None) -> Path:

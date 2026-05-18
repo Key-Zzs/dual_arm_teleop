@@ -76,6 +76,21 @@ VALID_RECORD_SUCCESS_POLICIES = {
     SUCCESS_POLICY_RECORDED_IS_SUCCESS,
     SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE,
 }
+GRIPPER_COMMAND_KEY_CANDIDATES = {
+    "left": ("left_gripper_cmd", "left_gripper_cmd_bin"),
+    "right": ("right_gripper_cmd", "right_gripper_cmd_bin"),
+}
+FRANKA_EXTRA_ROBOT_CONFIG_KEYS = (
+    "schema_mode",
+    "rpc_timeout_sec",
+    "open_grippers_on_connect",
+    "reset_opens_grippers",
+    "reset_go_home",
+    "go_home_duration_sec",
+    "go_home_rate_hz",
+    "max_cartesian_delta",
+    "max_rotation_delta",
+)
 
 
 def _normalize_record_success_policy(task_cfg: Dict[str, Any]) -> str:
@@ -152,6 +167,11 @@ class RecordConfig:
         self.gripper_max_open: float = robot.get("gripper_max_open", 0.085)
         self.gripper_force: float = robot.get("gripper_force", 10.0)
         self.gripper_speed: float = robot.get("gripper_speed", 0.1)
+        self.robot_extra_config: dict[str, Any] = {
+            key: robot[key]
+            for key in FRANKA_EXTRA_ROBOT_CONFIG_KEYS
+            if key in robot and robot[key] is not None
+        }
         
         # Task config
         self.num_episodes: int = task.get("num_episodes", 1)
@@ -404,6 +424,109 @@ def _clip_gripper_cmd(value: float) -> float:
     return min(1.0, max(0.0, value))
 
 
+def _flatten_feature_names(names: Any) -> list[str]:
+    if names is None:
+        return []
+    if isinstance(names, str):
+        return [names]
+    if isinstance(names, dict):
+        flattened: list[str] = []
+        for value in names.values():
+            flattened.extend(_flatten_feature_names(value))
+        return flattened
+    if isinstance(names, (list, tuple)):
+        flattened = []
+        for value in names:
+            flattened.extend(_flatten_feature_names(value))
+        return flattened
+    return [str(names)]
+
+
+def _action_names_from_features_or_names(features_or_names: Any) -> list[str]:
+    if features_or_names is None:
+        return []
+    if isinstance(features_or_names, (list, tuple)):
+        return [str(name) for name in features_or_names]
+    if isinstance(features_or_names, dict):
+        action_feature = features_or_names.get(ACTION)
+        if isinstance(action_feature, dict):
+            return _flatten_feature_names(action_feature.get("names"))
+        if "names" in features_or_names:
+            return _flatten_feature_names(features_or_names.get("names"))
+        return [str(name) for name in features_or_names.keys()]
+    return []
+
+
+def resolve_gripper_command_keys(features_or_names: Any) -> dict[str, str]:
+    """Resolve public gripper command keys from a robot/dataset action schema."""
+
+    action_names = _action_names_from_features_or_names(features_or_names)
+    action_name_set = set(action_names)
+    resolved: dict[str, str] = {}
+    for arm, candidates in GRIPPER_COMMAND_KEY_CANDIDATES.items():
+        for key in candidates:
+            if key in action_name_set:
+                resolved[arm] = key
+                break
+    return resolved
+
+
+def get_gripper_action_keys(robot) -> dict[str, str]:
+    return resolve_gripper_command_keys(getattr(robot, "action_features", {}))
+
+
+def _candidate_gripper_keys(arm: str, gripper_keys: dict[str, str]) -> list[str]:
+    preferred = gripper_keys.get(arm)
+    keys = [preferred] if preferred else []
+    keys.extend(GRIPPER_COMMAND_KEY_CANDIDATES.get(arm, ()))
+    seen: set[str] = set()
+    result: list[str] = []
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(key)
+    return result
+
+
+def _gripper_command_value(
+    arm: str,
+    source: dict[str, Any] | None,
+    gripper_keys: dict[str, str],
+) -> float | None:
+    if source is None:
+        return None
+    for key in _candidate_gripper_keys(arm, gripper_keys):
+        if key not in source:
+            continue
+        value = _float_or_none(source.get(key))
+        if value is not None:
+            return _clip_gripper_cmd(value)
+    return None
+
+
+def normalize_gripper_command_keys(
+    action: dict[str, Any],
+    gripper_keys: dict[str, str],
+) -> dict[str, Any]:
+    """Copy known gripper aliases into the schema-selected action key.
+
+    Nero-compatible schemas use `*_gripper_cmd`; Franka-native schemas use
+    `*_gripper_cmd_bin`. Keeping this adapter local prevents robot-type branches
+    from leaking through DAgger collection.
+    """
+
+    normalized = dict(action)
+    for arm, expected_key in gripper_keys.items():
+        if expected_key in normalized:
+            continue
+        for candidate in _candidate_gripper_keys(arm, gripper_keys):
+            if candidate in normalized:
+                normalized[expected_key] = normalized[candidate]
+                break
+    return normalized
+
+
 def _reset_gripper_soft_takeover(state: dict[str, dict[str, Any]]) -> None:
     for arm_state in state.values():
         arm_state["active"] = False
@@ -419,14 +542,12 @@ def _current_gripper_cmd(
     raw_obs: dict[str, Any],
     last_exec_action: dict[str, Any] | None,
     fallback_action: dict[str, Any],
+    gripper_keys: dict[str, str],
 ) -> float | None:
-    key = f"{arm}_gripper_cmd"
     for source in (last_exec_action, raw_obs, fallback_action):
-        if source is None or key not in source:
-            continue
-        value = _float_or_none(source[key])
+        value = _gripper_command_value(arm, source, gripper_keys)
         if value is not None:
-            return _clip_gripper_cmd(value)
+            return value
     return None
 
 
@@ -435,6 +556,7 @@ def _gripper_request_reason(
     teleop_raw_action: dict[str, Any],
     last_teleop_raw_action: dict[str, Any] | None,
     state: dict[str, dict[str, Any]],
+    gripper_keys: dict[str, str],
     change_eps: float = RUN_MIX_CHANGE_EPS,
 ) -> str | None:
     arm_state = state[arm]
@@ -467,12 +589,11 @@ def _gripper_request_reason(
     if bool(teleop_raw_action.get(f"{arm}_trigger_pressed", False)):
         return f"{arm}_trigger_pressed"
 
-    key = f"{arm}_gripper_cmd"
-    if last_teleop_raw_action is None or key not in teleop_raw_action:
+    if last_teleop_raw_action is None:
         return None
 
-    current = _float_or_none(teleop_raw_action.get(key))
-    previous = _float_or_none(last_teleop_raw_action.get(key))
+    current = _gripper_command_value(arm, teleop_raw_action, gripper_keys)
+    previous = _gripper_command_value(arm, last_teleop_raw_action, gripper_keys)
     if current is None or previous is None:
         return None
 
@@ -497,9 +618,11 @@ def _copy_arm_channels(target_action: dict[str, Any], expert_action: dict[str, A
     return copied
 
 
-def _clip_gripper_channels(action: dict[str, Any]) -> None:
+def _clip_gripper_channels(action: dict[str, Any], gripper_keys: dict[str, str]) -> None:
     for arm in ("left", "right"):
-        key = f"{arm}_gripper_cmd"
+        key = gripper_keys.get(arm)
+        if key is None:
+            continue
         value = _float_or_none(action.get(key))
         if value is not None:
             action[key] = _clip_gripper_cmd(value)
@@ -516,9 +639,12 @@ def _apply_gripper_channel_control(
     state: dict[str, dict[str, Any]],
     gripper_request_reason: str | None,
     hold_without_manual: bool,
+    gripper_keys: dict[str, str],
 ) -> tuple[bool, str | None]:
     """Apply per-gripper teleop control without letting policy fight that gripper."""
-    key = f"{arm}_gripper_cmd"
+    key = gripper_keys.get(arm)
+    if key is None:
+        return False, None
     if key not in target_action or key not in expert_action:
         return False, None
 
@@ -538,7 +664,13 @@ def _apply_gripper_channel_control(
             return False, None
 
         if hold_without_manual:
-            hold = _current_gripper_cmd(arm, raw_obs, last_exec_action, fallback_action)
+            hold = _current_gripper_cmd(
+                arm,
+                raw_obs,
+                last_exec_action,
+                fallback_action,
+                gripper_keys,
+            )
             if hold is not None:
                 target_action[key] = hold
             return False, None
@@ -554,7 +686,13 @@ def _apply_gripper_channel_control(
     teleop_cmd = _clip_gripper_cmd(teleop_cmd)
 
     if arm_state["hold"] is None:
-        hold = _current_gripper_cmd(arm, raw_obs, last_exec_action, fallback_action)
+        hold = _current_gripper_cmd(
+            arm,
+            raw_obs,
+            last_exec_action,
+            fallback_action,
+            gripper_keys,
+        )
         arm_state["hold"] = teleop_cmd if hold is None else hold
 
     hold = arm_state["hold"]
@@ -630,6 +768,10 @@ def run_mix_record_loop(
     last_action_source = "policy"
     last_exec_action: dict[str, Any] | None = None
     action_names = _action_names_from_dataset(dataset)
+    gripper_action_keys = resolve_gripper_command_keys(action_names)
+    if gripper_action_keys:
+        logging.info("[run_mix] gripper action keys: %s", gripper_action_keys)
+    missing_gripper_warning_keys: set[str] = set()
     intervention_segment_id = -1
     intervention_active = False
     gripper_soft_takeover = {
@@ -674,6 +816,7 @@ def run_mix_record_loop(
         )
         policy_action_processed = make_robot_action(policy_action, dataset.features)
         policy_action_processed = _complete_action_dict(policy_action_processed, action_names)
+        policy_action_processed = normalize_gripper_command_keys(policy_action_processed, gripper_action_keys)
 
         # (2) Default execute policy action. Teleop may override selected channels below.
         exec_action = dict(policy_action_processed)
@@ -684,7 +827,21 @@ def run_mix_record_loop(
 
         # (3) Expert override is split by channel: arm/body and grippers are independent.
         teleop_raw_action = teleop.get_action()
-        expert_action_raw = dict(teleop_action_processor((teleop_raw_action, raw_obs)))
+        expert_action_raw = normalize_gripper_command_keys(
+            dict(teleop_action_processor((teleop_raw_action, raw_obs))),
+            gripper_action_keys,
+        )
+        for arm, key in gripper_action_keys.items():
+            if key in expert_action_raw or key in missing_gripper_warning_keys:
+                continue
+            logging.warning(
+                "[run_mix] expert action is missing expected %s gripper key `%s`; "
+                "known aliases are %s. This frame will not be a complete expert label.",
+                arm,
+                key,
+                list(GRIPPER_COMMAND_KEY_CANDIDATES[arm]),
+            )
+            missing_gripper_warning_keys.add(key)
         expert_action_missing_names = _missing_or_invalid_action_names(expert_action_raw, action_names)
         expert_action = dict(expert_action_raw)
         is_arm_override, arm_override_reason = _is_arm_override_active(teleop_raw_action)
@@ -694,6 +851,7 @@ def run_mix_record_loop(
                 teleop_raw_action,
                 last_teleop_raw_action,
                 gripper_soft_takeover,
+                gripper_action_keys,
             )
             for arm in ("left", "right")
         }
@@ -720,11 +878,12 @@ def run_mix_record_loop(
                 state=gripper_soft_takeover,
                 gripper_request_reason=gripper_reason,
                 hold_without_manual=is_arm_override,
+                gripper_keys=gripper_action_keys,
             )
             if gripper_overridden and gripper_override_reason is not None:
-                overridden_action_names.update(
-                    name for name in action_names if name.startswith(f"{arm}_gripper_cmd")
-                )
+                gripper_key = gripper_action_keys.get(arm)
+                if gripper_key is not None:
+                    overridden_action_names.add(gripper_key)
                 override_reasons.append(gripper_override_reason)
 
         if override_reasons:
@@ -749,7 +908,7 @@ def run_mix_record_loop(
         else:
             pass
 
-        _clip_gripper_channels(exec_action)
+        _clip_gripper_channels(exec_action, gripper_action_keys)
         # Keep the expert label independent from policy/sent action. Missing
         # dimensions are zero-filled only so the raw LeRobot schema can be
         # written; export drops these rows via expert_label_complete=False.
@@ -757,8 +916,8 @@ def run_mix_record_loop(
             name
             for arm in ("left", "right")
             if gripper_soft_takeover[arm].get("released_to_policy", False)
-            for name in action_names
-            if name.startswith(f"{arm}_gripper_cmd")
+            for name in [gripper_action_keys.get(arm)]
+            if name is not None
         ]
         expert_action_missing_names = sorted(
             set(expert_action_missing_names) | set(released_to_policy_action_names)
@@ -810,7 +969,10 @@ def run_mix_record_loop(
 
         # (4) Execute action.
         robot_action_to_send = robot_action_processor((exec_action, raw_obs))
-        sent_action = _complete_action_dict(dict(robot_action_to_send), action_names, fallback_action=exec_action)
+        sent_action = normalize_gripper_command_keys(
+            _complete_action_dict(dict(robot_action_to_send), action_names, fallback_action=exec_action),
+            gripper_action_keys,
+        )
         _ = robot.send_action(sent_action)
         last_exec_action = dict(sent_action)
 
@@ -981,19 +1143,23 @@ def run_record(record_cfg: RecordConfig):
         teleop_config = record_cfg.create_teleop_config()
         
         # Create robot configuration dynamically based on robot_type
+        robot_config_kwargs = {
+            "robot_ip": record_cfg.robot_ip,
+            "robot_port": record_cfg.robot_port,
+            "cameras": camera_config,
+            "debug": record_cfg.debug,
+            "use_gripper": record_cfg.use_gripper,
+            "gripper_max_open": record_cfg.gripper_max_open,
+            "gripper_force": record_cfg.gripper_force,
+            "gripper_speed": record_cfg.gripper_speed,
+            "close_threshold": record_cfg.close_threshold,
+            "gripper_reverse": record_cfg.gripper_reverse,
+            "control_mode": record_cfg.control_mode,
+            **record_cfg.robot_extra_config,
+        }
         robot_config = create_robot_config(
             record_cfg.robot_type,
-            robot_ip=record_cfg.robot_ip,
-            robot_port=record_cfg.robot_port,
-            cameras=camera_config,
-            debug=record_cfg.debug,
-            use_gripper=record_cfg.use_gripper,
-            gripper_max_open=record_cfg.gripper_max_open,
-            gripper_force=record_cfg.gripper_force,
-            gripper_speed=record_cfg.gripper_speed,
-            close_threshold=record_cfg.close_threshold,
-            gripper_reverse=record_cfg.gripper_reverse,
-            control_mode=record_cfg.control_mode,
+            **robot_config_kwargs,
         )
         
         # Initialize the robot dynamically based on robot_type
@@ -1358,7 +1524,7 @@ def run_record(record_cfg: RecordConfig):
 
 def main():
     parent_path = Path(__file__).resolve().parent
-    cfg_path = parent_path.parent / "config" / "record_cfg.yaml"
+    cfg_path = parent_path.parent / "config" / "record_cfg.yaml" # record_cfg.yaml | record_franka_cfg.yaml
     with open(cfg_path, 'r') as f:
         cfg = yaml.safe_load(f)
 

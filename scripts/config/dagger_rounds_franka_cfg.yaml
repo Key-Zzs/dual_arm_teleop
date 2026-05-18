@@ -1,0 +1,120 @@
+dagger_rounds:
+  seed_repo_id: "franka_task3_step1/TODO_seed_dataset"
+  seed_dataset_path: "./data/lerobot/franka_task3_step1/TODO_seed_dataset"
+
+  # TODO(franka): set to a Franka ACT checkpoint. Mixing Nero checkpoints is only
+  # allowed after schema compatibility and real action semantics are verified.
+  initial_pretrained_path:
+
+  num_rounds: 3
+  round_schedule:
+    max_rounds: 3
+    early_stop:
+      enabled: true
+      patience: 2
+      min_exported_frames: 30
+      min_exported_episodes: 1
+      min_expert_frame_ratio: 0.02
+      stop_if_no_new_data: true
+      stop_if_low_expert_ratio: false
+      stop_if_export_too_small: true
+    train_steps:
+      mode: auto_by_export_mode
+      fixed_steps:
+      min_steps: 500
+      max_steps: 3000
+      steps_per_exported_frame: 4
+      steps_per_exported_episode: 300
+      steps_per_full_episode: 300
+      steps_per_recovery_segment: 200
+      steps_per_recovery_frame: 3
+      intervention_segments_mode: hybrid
+      full_success_episode_mode: by_exported_episodes
+      hybrid_mode: by_export_subtype
+      round1_steps:
+      decay_per_round: 1.0
+      warm_start_from_previous: true
+
+  episodes_per_round: 5
+  output_root: "./outputs/dagger_rounds/franka_task3_step1/TODO_round_run"
+  record_cfg_path: "./scripts/config/record_franka_cfg.yaml"
+  train_cfg_path: "./scripts/config/train_franka_cfg.yaml"
+
+  policy_backend:
+    type: act
+    runner:
+      type: act
+      checkpoint_path:
+      device: cuda
+    export:
+      profile: act_chunk
+      export_mode: full_success_episode
+      min_episode_len:
+      pre_takeover_context: 0
+      require_complete_expert_action: true
+      gripper_action_indices:
+      intervention_segments:
+        keep_frame_roles: [takeover_start, recovery]
+        label_source: expert_action
+        require_complete_expert_action: true
+        max_segments_per_episode:
+      full_episode:
+        success_policy: recorded_is_success
+        require_success: true
+        success_field: success
+        fallback_success_from_episode_metadata: true
+        action_label_source: sent_action
+        drop_reset_ignore_frames: true
+        require_no_reset: true
+        require_min_len: true
+      hybrid:
+        include_full_success_episode: true
+        include_intervention_segments: true
+        max_recovery_segments_per_episode: 1
+        max_recovery_frames_ratio: 0.25
+        prefer_full_episode_when_duplicate: false
+    trainer:
+      type: act
+      train_cfg_path:
+
+  overwrite: true
+  train_round0_if_missing: true
+  export_min_segment_frames: 1
+
+dagger_export:
+  raw_repo_id: "franka_task3_step1/TODO_raw_run_mix"
+  raw_root: "./data/lerobot/franka_task3_step1/TODO_raw_run_mix"
+  output_repo_id: "franka_task3_step1/TODO_dagger_export"
+  output_root: "./outputs/dagger_export/franka_task3_step1/TODO_dagger_export"
+  seed_repo_id: "franka_task3_step1/TODO_seed_dataset"
+  seed_root: "./data/lerobot/franka_task3_step1/TODO_seed_dataset"
+  export_mode: intervention_segments
+  keep_frame_roles: ["takeover_start", "recovery"]
+  min_segment_frames: 1
+  min_episode_len_for_act: 30
+  pre_takeover_context: 0
+  require_complete_expert_action: true
+  gripper_action_indices:
+  full_episode:
+    success_policy: recorded_is_success
+    require_success: true
+    success_field: success
+    fallback_success_from_episode_metadata: true
+    action_label_source: sent_action
+    drop_reset_ignore_frames: true
+    require_no_reset: true
+    require_min_len: true
+  intervention_segments:
+    keep_frame_roles: [takeover_start, recovery]
+    label_source: expert_action
+    require_complete_expert_action: true
+    max_segments_per_episode:
+  hybrid:
+    include_full_success_episode: true
+    include_intervention_segments: true
+    max_recovery_segments_per_episode: 1
+    max_recovery_frames_ratio: 0.25
+    prefer_full_episode_when_duplicate: true
+  overwrite: true
+  image_writer_processes: 0
+  image_writer_threads: 4

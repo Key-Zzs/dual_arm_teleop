@@ -1645,7 +1645,7 @@ def main() -> None:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path(__file__).resolve().parent.parent / "config" / "dagger_rounds_cfg.yaml",
+        default=Path(__file__).resolve().parent.parent / "config" / "dagger_rounds_cfg.yaml", # dagger_rounds_cfg.yaml | dagger_rounds_franka_cfg.yaml
     )
     args = parser.parse_args()
 
