@@ -95,6 +95,20 @@ def _configured_export_mode(dagger_rounds_cfg: dict[str, Any]) -> str:
     return mode
 
 
+def _dagger_sampling_cfg(dagger_rounds_cfg: dict[str, Any]) -> dict[str, Any]:
+    dagger_training = copy.deepcopy(dagger_rounds_cfg.get("dagger_training") or {})
+    sampling = dagger_training.get("sampling", {})
+    return copy.deepcopy(sampling if isinstance(sampling, dict) else {})
+
+
+def _sampling_train_cfg(sampling_cfg: dict[str, Any], source_index_path: Path | None) -> dict[str, Any]:
+    cfg = copy.deepcopy(sampling_cfg)
+    cfg.setdefault("enabled", False)
+    if source_index_path is not None:
+        cfg["source_index_path"] = str(source_index_path)
+    return cfg
+
+
 def _resolve_modes(mode: str | None, dagger_rounds_cfg: dict[str, Any]) -> list[str]:
     mode = _configured_export_mode(dagger_rounds_cfg) if mode is None else mode.strip().lower()
     if mode == "all":
@@ -256,6 +270,7 @@ def _prepare_train_cfg(
     aggregated_root: Path,
     base_repo_id: str,
     resolved_steps: int,
+    dagger_sampling: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     train_overrides: dict[str, Any] = {}
     if args.steps is not None:
@@ -273,6 +288,7 @@ def _prepare_train_cfg(
         resolved_steps=resolved_steps,
         seed_repo_id=base_repo_id,
         seed_root=args.base_dataset,
+        dagger_sampling=dagger_sampling,
     )
     train_cfg["job_name"] = f"dagger_export_train_{mode}"
     if args.batch_size is not None:
@@ -472,6 +488,33 @@ def run_one_mode(
         state["aggregate_summary"] = _aggregate_summary(aggregated_repo_id, aggregated_root)
         _write_json(mode_dir / "aggregate_summary.json", _to_jsonable(state["aggregate_summary"]))
 
+        from scripts.core.dagger_sampling import (
+            format_sampling_stats,
+            summarize_sampling_for_dataset_root,
+            write_aggregated_source_index,
+        )
+
+        source_index_path = write_aggregated_source_index(
+            previous_root=args.base_dataset,
+            current_root=export_section["output_root"],
+            aggregated_root=aggregated_root,
+            round_id=1,
+            export_mode=mode,
+            previous_fallback_source="seed",
+        )
+        dagger_sampling_train_cfg = _sampling_train_cfg(
+            _dagger_sampling_cfg(dagger_rounds_cfg),
+            source_index_path,
+        )
+        dagger_sampling_summary = summarize_sampling_for_dataset_root(
+            dataset_root=aggregated_root,
+            source_index_path=source_index_path,
+            sampling_cfg=dagger_sampling_train_cfg,
+        )
+        logging.info("[%s] %s", mode, format_sampling_stats(dagger_sampling_summary))
+        state["dagger_source_index_path"] = str(source_index_path)
+        state["dagger_sampling"] = _to_jsonable(dagger_sampling_summary)
+
         train_cfg, train_overrides = _prepare_train_cfg(
             mode=mode,
             mode_dir=mode_dir,
@@ -482,6 +525,7 @@ def run_one_mode(
             aggregated_root=aggregated_root,
             base_repo_id=base_repo_id,
             resolved_steps=resolved_train_steps,
+            dagger_sampling=dagger_sampling_train_cfg,
         )
         state["train_cfg_overrides"] = train_overrides
         _write_yaml(mode_dir / "train_cfg_resolved.yaml", _to_jsonable(train_cfg))
@@ -728,6 +772,7 @@ def _print_dry_run(args: argparse.Namespace, modes: list[str], dagger_rounds_cfg
     }
     preview["policy_backend"] = dagger_rounds_cfg.get("policy_backend", {})
     preview["round_schedule"] = dagger_rounds_cfg.get("round_schedule", {})
+    preview["dagger_training"] = dagger_rounds_cfg.get("dagger_training", {})
     preview["configured_export_mode"] = getattr(args, "configured_export_mode", None)
     preview["mode_source"] = getattr(args, "mode_source", None)
     preview["train_steps_source"] = (

@@ -66,13 +66,13 @@ dagger_rounds:
   dagger_training:
     sampling:
       # 默认关闭，保持现有 ACT+DAgger round 训练行为不变。
-      enabled: false
+      enabled: true
 
       # source_weighted | none
       strategy: source_weighted
 
       # 期望训练抽样中 DAgger 样本占比，范围 [0, 1]。
-      dagger_sample_ratio: 0.4
+      dagger_sample_ratio: 0.5
 
       # metadata | episode_index_range | dataset_source_sidecar | metadata_or_sidecar
       # 当前实现优先使用 round controller 写入的 dagger_source_index.json sidecar。
