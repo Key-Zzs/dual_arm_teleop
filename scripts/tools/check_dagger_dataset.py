@@ -198,11 +198,24 @@ def inspect_export_summary(export_root: Path) -> list[str]:
 
     print(json.dumps(summary, indent=2, ensure_ascii=False))
     rules = summary.get("rules", {})
-    if rules.get("label_source") != "expert_action" or rules.get("standard_action_field") != ACTION:
-        risks.append("export summary does not say action came from expert_action")
-        print("[ERROR] export summary does not confirm action = expert_action.")
-    else:
+    export_mode = rules.get("export_mode", "intervention_segments")
+    label_source = rules.get("label_source")
+    if rules.get("standard_action_field") != ACTION:
+        risks.append("export summary does not confirm standard action field")
+        print("[ERROR] export summary does not confirm standard action field.")
+    elif export_mode == "intervention_segments" and label_source != "expert_action":
+        risks.append("intervention export summary does not say action came from expert_action")
+        print("[ERROR] intervention export summary does not confirm action = expert_action.")
+    elif export_mode == "full_success_episode" and label_source != "sent_action":
+        risks.append("full-success export summary does not say action came from sent_action")
+        print("[ERROR] full-success export summary does not confirm action = sent_action.")
+    elif export_mode == "hybrid" and label_source != "by_export_subtype":
+        risks.append("hybrid export summary does not say action labels are chosen by subtype")
+        print("[ERROR] hybrid export summary does not confirm subtype-specific action labels.")
+    elif export_mode == "intervention_segments":
         print("[OK] export summary confirms ACT label source: action = expert_action.")
+    else:
+        print(f"[OK] export summary confirms {export_mode} action label source: {label_source}.")
     return risks
 
 
@@ -356,6 +369,14 @@ def inspect_raw_interventions(
 
     raw_dataset = _load_dataset("raw", raw_root, raw_repo_id)
     export_cfg = _cfg_section(cfg, "dagger_export")
+    export_mode = export_cfg.get("export_mode", "intervention_segments")
+    if export_mode != "intervention_segments":
+        print(
+            f"[SKIP] raw intervention continuity strict check is for intervention_segments; "
+            f"current export_mode={export_mode}."
+        )
+        return risks
+
     keep_frame_roles = set(export_cfg.get("keep_frame_roles", ["takeover_start", "recovery"]))
     pre_takeover_context = int(export_cfg.get("pre_takeover_context") or 0)
     require_complete = bool(export_cfg.get("require_complete_expert_action", True))

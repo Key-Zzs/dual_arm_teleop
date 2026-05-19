@@ -1,5 +1,5 @@
 record:
-  repo_id: &repo_id "nero_task3_step1/8mL_empty_left_dagger_raw"
+  repo_id: &repo_id "nero_task3_step1/8mL_empty_left"
   # Suggested format: <robot_task<num>_step<num>>/<description>, e.g. nero_task3_step1/2mL_empty
   # <description>: (https://github.com/wbcdcompetition/wbcd_tasks/tree/main/track-3-lab-experiments)
     ## step1
@@ -21,7 +21,7 @@ record:
   fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
   use_gripper: &use_gripper true  # whether to use gripper
-  run_mode: "run_record" # "run_record" or "run_policy" or "run_mix"
+  run_mode: "run_policy" # "run_record" or "run_policy" or "run_mix"
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka
   robot_type: &robot_type "nero_dual_arm"
@@ -30,7 +30,9 @@ record:
     control_mode: *control_mode
     dual_arm: true  # dual-arm mode
     oculus_config:
-      ip: "192.168.110.43"  # Oculus Quest IP address
+      # ip: "192.168.110.43"  # Oculus Quest IP address
+      # ip: "192.168.110.16"  # Oculus Quest IP address
+      ip: null
       use_gripper: *use_gripper
       left_pose_scaler: [1.2, 1.2]   # left arm scaler
       left_channel_signs: [-1, -1, 1, 1, 1, 1]  # left arm signs
@@ -41,8 +43,9 @@ record:
       visualize_placo: false  # whether to visualize robot using placo
       
   robot:
-    robot_ip: &ip "192.168.110.203" # dobot server ip
+    # robot_ip: &ip "192.168.110.203" # dobot server ip
     # robot_ip: &ip "localhost" # nero server ip
+    robot_ip: &ip "10.10.10.1" # dobot server ip
     robot_port: 4242  # dual-arm zerorpc port (single port for both arms)
     use_gripper: *use_gripper
     # gripper_ip: "192.168.110.15" # gripper zerorpc ip, if different from robot_ip, set to robot_ip
@@ -65,10 +68,10 @@ record:
     type: "act"
     device: "cuda"  # 运行设备 (cuda, cpu)
     push_to_hub: False  # 禁用模型推送
-    temporal_ensemble_coeff: 0.05  # 关闭时序加权，降低启动迟滞
+    temporal_ensemble_coeff: 0.03  # 关闭时序加权，降低启动迟滞
     chunk_size: 30
     n_action_steps: 1
-    pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds/task3_step1/8mL_empty_left_v01/round_003/train/checkpoints/last/pretrained_model"
+    pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds/task3_step1/8mL_empty_left_v02/round_002/train/checkpoints/last/pretrained_model"
     # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/8mL_empty_left\
     #                   /act_20260509_E125_SW_V01/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
     # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
@@ -81,6 +84,10 @@ record:
     display: True # Whether to display the data during recording
     resume: false # whether to resume from an existing dataset
     resume_dataset: roboticiq/pick_all_yellow_cube_to_brown_basket_20260208_v01 # dataset to resume from if resume is True
+    # robot-dagger sets success_policy automatically for full_success_episode/hybrid.
+    # explicit prompts y/n; recorded_is_success saves every kept episode as success=true.
+    success_policy:
+    annotate_success: false # ask after each run_mix episode and write a per-frame success flag
   
   time:
     episode_time_sec: 6000 # max time per episode in seconds

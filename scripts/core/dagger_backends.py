@@ -19,8 +19,14 @@ EXPORT_DAGGER_DATASET_KEYS = (
     "keep_frame_roles",
     "min_segment_frames",
     "min_episode_len_for_act",
+    "export_mode",
     "pre_takeover_context",
     "require_complete_expert_action",
+    "full_episode",
+    "intervention_segments",
+    "hybrid",
+    "gripper_action_indices",
+    "gripper_open_threshold",
     "overwrite",
     "image_writer_processes",
     "image_writer_threads",
@@ -142,15 +148,34 @@ class ACTChunkExportProfile(DAggerExportProfile):
             if "require_complete_expert_action" in self.cfg
             else round_cfg.get("require_complete_expert_action", True)
         )
+        export_mode = str(self.cfg.get("export_mode", "intervention_segments")).lower()
         keep_frame_roles = self.cfg.get("keep_frame_roles", ["takeover_start", "recovery"])
+        full_episode_cfg = copy.deepcopy(self.cfg.get("full_episode") or {})
+        intervention_segments_cfg = copy.deepcopy(self.cfg.get("intervention_segments") or {})
+        hybrid_cfg = copy.deepcopy(self.cfg.get("hybrid") or {})
+
+        intervention_segments_cfg.setdefault("keep_frame_roles", keep_frame_roles)
+        intervention_segments_cfg.setdefault("label_source", "expert_action")
+        intervention_segments_cfg.setdefault(
+            "require_complete_expert_action",
+            bool(require_complete_expert_action),
+        )
 
         export_section["label_source"] = "expert_action"
         export_section["standard_action_field"] = "action"
         export_section["keep_frame_roles"] = tuple(keep_frame_roles)
         export_section["dropped_frame_roles"] = ["policy", "reset", "ignore"]
         export_section["min_episode_len_for_act"] = int(min_episode_len)
+        export_section["export_mode"] = export_mode
         export_section["pre_takeover_context"] = int(pre_takeover_context or 0)
         export_section["require_complete_expert_action"] = bool(require_complete_expert_action)
+        export_section["full_episode"] = full_episode_cfg
+        export_section["intervention_segments"] = intervention_segments_cfg
+        export_section["hybrid"] = hybrid_cfg
+        if "gripper_action_indices" in self.cfg:
+            export_section["gripper_action_indices"] = copy.deepcopy(self.cfg["gripper_action_indices"])
+        if "gripper_open_threshold" in self.cfg:
+            export_section["gripper_open_threshold"] = self.cfg["gripper_open_threshold"]
         return export_section
 
     def export(self, export_cfg: dict[str, Any]) -> dict[str, Any]:
@@ -217,9 +242,17 @@ class ACTTrainer(PolicyTrainer):
         dagger_training["save_checkpoint"] = True
         train_section["save_checkpoint"] = True
 
+        dagger_sampling = kwargs.get("dagger_sampling")
+        if dagger_sampling is not None:
+            train_section["dagger_sampling"] = copy.deepcopy(dagger_sampling)
+
         return train_section
 
     def train(self, train_cfg: dict[str, Any]) -> str:
+        from scripts.utils.training_device import apply_cuda_visible_devices_from_train_cfg
+
+        apply_cuda_visible_devices_from_train_cfg(train_cfg)
+
         from scripts.core.run_train import run_act_dagger_from_train_cfg
 
         run_act_dagger_from_train_cfg(train_cfg)

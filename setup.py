@@ -36,9 +36,11 @@ setup(
             "robot-reset = scripts.core.reset_robot:main",
             "robot-train = scripts.core.run_train:main",
             "robot-dagger = scripts.core.run_dagger_rounds:main",
+            "robot-dagger-export = scripts.core.run_dagger_export:main",
 
             # tools commands (helper tools)
             "tools-check-dataset = scripts.tools.check_dataset_info:main",
+            "tools-check-dagger-dataset = scripts.tools.check_dagger_dataset:main",
             "tools-check-rs = scripts.tools.rs_devices:main",
 
             # unified help command

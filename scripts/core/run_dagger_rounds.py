@@ -13,6 +13,16 @@ from typing import Any
 import yaml
 
 
+SUCCESS_POLICY_EXPLICIT = "explicit"
+SUCCESS_POLICY_RECORDED_IS_SUCCESS = "recorded_is_success"
+SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE = "allow_missing_for_smoke"
+VALID_SUCCESS_POLICIES = {
+    SUCCESS_POLICY_EXPLICIT,
+    SUCCESS_POLICY_RECORDED_IS_SUCCESS,
+    SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE,
+}
+
+
 @dataclass
 class DAggerRoundsConfig:
     output_root: str | Path
@@ -31,6 +41,7 @@ class DAggerRoundsConfig:
     pre_takeover_context: int = 0
     require_complete_expert_action: bool = True
     round_schedule: dict[str, Any] | None = None
+    dagger_training: dict[str, Any] | None = None
     policy_backend: dict[str, Any] | None = None
 
 
@@ -108,6 +119,91 @@ def _clamp_steps(steps: int, min_steps: int | None, max_steps: int | None) -> in
     return int(steps)
 
 
+def _summary_containers(exported_summary: dict[str, Any] | None) -> list[dict[str, Any]]:
+    summary = exported_summary or {}
+    containers: list[dict[str, Any]] = []
+    for value in (
+        summary,
+        summary.get("stats", {}),
+        summary.get("exported_dataset", {}),
+        summary.get("rules", {}),
+    ):
+        if isinstance(value, dict):
+            containers.append(value)
+    return containers
+
+
+def _first_available(
+    exported_summary: dict[str, Any] | None,
+    keys: tuple[str, ...],
+    default: Any = None,
+) -> Any:
+    for container in _summary_containers(exported_summary):
+        for key in keys:
+            if key in container and container[key] is not None:
+                return container[key]
+    return default
+
+
+def _first_available_int(
+    exported_summary: dict[str, Any] | None,
+    keys: tuple[str, ...],
+    default: int = 0,
+) -> int:
+    value = _first_available(exported_summary, keys)
+    if value is None or value == "":
+        return int(default)
+    return int(value)
+
+
+def _subtype_count(
+    exported_summary: dict[str, Any] | None,
+    table_name: str,
+    subtype: str,
+    default: int = 0,
+) -> int:
+    summary = exported_summary or {}
+    for container in (summary, summary.get("stats", {})):
+        if not isinstance(container, dict):
+            continue
+        subtype_table = container.get(table_name)
+        if isinstance(subtype_table, dict) and subtype_table.get(subtype) is not None:
+            return int(subtype_table[subtype])
+    return int(default)
+
+
+def _export_mode_from_summary(exported_summary: dict[str, Any] | None) -> str | None:
+    value = _first_available(exported_summary, ("export_mode",))
+    if value is None or value == "":
+        return None
+    return str(value).strip().lower()
+
+
+def _normalize_optional_export_mode(export_mode: str | None) -> str | None:
+    if export_mode is None:
+        return None
+    export_mode = str(export_mode).strip().lower()
+    return export_mode or None
+
+
+def _resolve_train_steps_export_mode(
+    exported_summary: dict[str, Any] | None,
+    configured_export_mode: str | None = None,
+    round_id: int | None = None,
+) -> str:
+    summary_mode = _export_mode_from_summary(exported_summary)
+    configured_mode = _normalize_optional_export_mode(configured_export_mode)
+    if summary_mode and configured_mode and summary_mode != configured_mode:
+        prefix = f"[round {round_id:03d}] " if round_id is not None else ""
+        logging.warning(
+            "%strain steps export_mode mismatch: summary=%s configured=%s; using summary.",
+            prefix,
+            summary_mode,
+            configured_mode,
+        )
+    return summary_mode or configured_mode or "intervention_segments"
+
+
 def _round_schedule_cfg(config: DAggerRoundsConfig) -> dict[str, Any]:
     return copy.deepcopy(config.round_schedule or {})
 
@@ -139,10 +235,71 @@ def _early_stop_cfg(schedule_cfg: dict[str, Any] | None) -> dict[str, Any]:
     return {}
 
 
+def _dagger_sampling_cfg(config: DAggerRoundsConfig) -> dict[str, Any]:
+    dagger_training = copy.deepcopy(config.dagger_training or {})
+    sampling = dagger_training.get("sampling", {})
+    return copy.deepcopy(sampling if isinstance(sampling, dict) else {})
+
+
+def _sampling_train_cfg(
+    sampling_cfg: dict[str, Any],
+    source_index_path: Path | None,
+) -> dict[str, Any]:
+    cfg = copy.deepcopy(sampling_cfg)
+    cfg.setdefault("enabled", False)
+    if source_index_path is not None:
+        cfg["source_index_path"] = str(source_index_path)
+    return cfg
+
+
+def _policy_backend_export_cfg(round_cfg: dict[str, Any]) -> dict[str, Any]:
+    export_cfg = (round_cfg.get("policy_backend") or {}).get("export", {})
+    if not isinstance(export_cfg, dict):
+        return {}
+    return export_cfg
+
+
+def _full_episode_export_enabled(round_cfg: dict[str, Any]) -> bool:
+    export_cfg = _policy_backend_export_cfg(round_cfg)
+    if not export_cfg:
+        return False
+
+    export_mode = str(export_cfg.get("export_mode", "intervention_segments")).lower()
+    hybrid_cfg = export_cfg.get("hybrid") or {}
+    if export_mode == "full_success_episode":
+        return True
+    return export_mode == "hybrid" and bool(
+        hybrid_cfg.get("include_full_success_episode", True)
+    )
+
+
+def _full_episode_success_policy(round_cfg: dict[str, Any]) -> str:
+    export_cfg = _policy_backend_export_cfg(round_cfg)
+    full_episode_cfg = export_cfg.get("full_episode") or {}
+    success_policy = full_episode_cfg.get("success_policy")
+    if success_policy is None:
+        return (
+            SUCCESS_POLICY_EXPLICIT
+            if bool(full_episode_cfg.get("require_success", True))
+            else SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE
+        )
+
+    success_policy = str(success_policy).strip().lower()
+    if success_policy not in VALID_SUCCESS_POLICIES:
+        raise ValueError(
+            "`full_episode.success_policy` must be one of "
+            f"{sorted(VALID_SUCCESS_POLICIES)}. Got: {success_policy!r}"
+        )
+    return success_policy
+
+
 def _exported_counts(exported_summary: dict[str, Any] | None) -> tuple[int, int]:
-    exported_dataset = (exported_summary or {}).get("exported_dataset", {})
-    exported_frames = int(exported_dataset.get("total_frames", 0) or 0)
-    exported_episodes = int(exported_dataset.get("total_episodes", 0) or 0)
+    exported_frames = _first_available_int(exported_summary, ("exported_frames", "total_frames"), default=0)
+    exported_episodes = _first_available_int(
+        exported_summary,
+        ("exported_episodes", "total_episodes"),
+        default=0,
+    )
     return exported_frames, exported_episodes
 
 
@@ -155,30 +312,103 @@ def _export_metrics(export_summary: dict[str, Any], run_mix_stats: dict[str, Any
     return {
         "exported_frames": int(exported_frames),
         "exported_episodes": int(exported_episodes),
+        "export_mode": _resolve_train_steps_export_mode(export_summary),
+        "full_episode_count": _first_available_int(
+            export_summary,
+            ("full_episode_count", "full_episode_exported", "hybrid_full_episodes"),
+            default=_subtype_count(export_summary, "subtype_episodes", "full_success_episode", 0),
+        ),
+        "full_episode_frames": _first_available_int(
+            export_summary,
+            ("full_episode_frames", "full_episode_frames_exported", "hybrid_full_frames"),
+            default=_subtype_count(export_summary, "subtype_frames", "full_success_episode", 0),
+        ),
+        "recovery_frames": _first_available_int(
+            export_summary,
+            ("recovery_frames", "hybrid_recovery_frames", "intervention_frames", "intervention_segment_frames_exported"),
+            default=_subtype_count(export_summary, "subtype_frames", "intervention_segment", 0),
+        ),
+        "recovery_segment_count": _first_available_int(
+            export_summary,
+            ("recovery_segment_count", "hybrid_recovery_segments", "intervention_segments_exported"),
+            default=_subtype_count(export_summary, "subtype_episodes", "intervention_segment", 0),
+        ),
         "expert_frame_ratio": float(expert_frame_ratio or 0.0),
         "intervention_count": int(intervention_count or 0),
         "skipped_short_segments": int(stats.get("skipped_short_segments", 0) or 0),
         "incomplete_expert_label_frames": stats.get("incomplete_expert_label_frames"),
+        "success_policy": stats.get("success_policy"),
+        "success_inferred_episodes": int(stats.get("success_inferred_episodes", 0) or 0),
+        "success_explicit_true_episodes": int(stats.get("success_explicit_true_episodes", 0) or 0),
+        "success_explicit_false_episodes": int(stats.get("success_explicit_false_episodes", 0) or 0),
+        "skipped_explicit_failure": int(stats.get("skipped_explicit_failure", 0) or 0),
     }
 
 
-def resolve_train_steps(
-    round_id: int,
+def resolve_effective_train_step_mode(export_mode: str, train_steps_cfg: dict[str, Any]) -> str:
+    configured_mode = str(train_steps_cfg.get("mode", "fixed")).strip().lower()
+    if configured_mode != "auto_by_export_mode":
+        return configured_mode
+
+    export_mode = str(export_mode or "").strip().lower()
+    if export_mode == "intervention_segments":
+        return str(train_steps_cfg.get("intervention_segments_mode") or "hybrid").strip().lower()
+    if export_mode == "full_success_episode":
+        return str(train_steps_cfg.get("full_success_episode_mode") or "by_exported_episodes").strip().lower()
+    if export_mode == "hybrid":
+        return str(train_steps_cfg.get("hybrid_mode") or "by_export_subtype").strip().lower()
+    raise ValueError(
+        "round_schedule.train_steps.mode=auto_by_export_mode requires export_mode "
+        "to be one of: intervention_segments, full_success_episode, hybrid. "
+        f"Got: {export_mode!r}."
+    )
+
+
+def _subtype_train_step_counts(exported_summary: dict[str, Any]) -> dict[str, int]:
+    full_episode_count = _first_available_int(
+        exported_summary,
+        ("full_episode_count", "full_episode_exported", "hybrid_full_episodes"),
+        default=_subtype_count(exported_summary, "subtype_episodes", "full_success_episode", 0),
+    )
+    recovery_segment_count = _first_available_int(
+        exported_summary,
+        ("recovery_segment_count", "hybrid_recovery_segments", "intervention_segments_exported"),
+        default=_subtype_count(exported_summary, "subtype_episodes", "intervention_segment", 0),
+    )
+    recovery_frames = _first_available_int(
+        exported_summary,
+        ("recovery_frames", "hybrid_recovery_frames", "intervention_frames", "intervention_segment_frames_exported"),
+        default=_subtype_count(exported_summary, "subtype_frames", "intervention_segment", 0),
+    )
+    return {
+        "full_episode_count": full_episode_count,
+        "recovery_segment_count": recovery_segment_count,
+        "recovery_frames": recovery_frames,
+    }
+
+
+def resolve_train_steps_by_mode(
+    effective_mode: str,
     exported_summary: dict[str, Any],
-    base_train_steps: int,
-    schedule_cfg: dict[str, Any] | None,
-) -> int:
-    """Resolve per-round train steps for the supported round DAgger controller.
-
-    This helper only schedules the round-based `robot-dagger` path. It is not
-    related to the removed offline DAgger trainer/pipeline.
-    """
-
-    train_steps_cfg = _train_steps_cfg(schedule_cfg)
-    mode = str(train_steps_cfg.get("mode", "fixed"))
+    train_steps_cfg: dict[str, Any],
+    base_steps: int,
+    round_id: int,
+) -> tuple[int, dict[str, Any]]:
+    effective_mode = str(effective_mode).strip().lower()
     exported_frames, exported_episodes = _exported_counts(exported_summary)
+    components: dict[str, Any] = {
+        "exported_frames": int(exported_frames),
+        "exported_episodes": int(exported_episodes),
+    }
     if exported_frames <= 0 or exported_episodes <= 0:
-        return 0
+        components.update(
+            {
+                "skipped_empty_export": True,
+                "raw_steps": 0,
+                "clamped_steps": 0,
+            }
+        )
+        return 0, components
 
     fixed_steps = _optional_int(train_steps_cfg.get("fixed_steps"))
     min_steps = _optional_int(train_steps_cfg.get("min_steps"))
@@ -190,41 +420,191 @@ def resolve_train_steps(
     if decay_per_round <= 0:
         raise ValueError("round_schedule.train_steps.decay_per_round must be > 0.")
 
+    clamp_result = False
     if round_id == 1 and round1_steps is not None:
-        resolved = round1_steps
+        resolved = int(round1_steps)
         clamp_result = True
-    elif mode == "fixed":
-        resolved = fixed_steps if fixed_steps is not None else int(base_train_steps)
+        components.update({"override": "round1_steps", "round1_steps": int(round1_steps)})
+    elif effective_mode == "fixed":
+        resolved = fixed_steps if fixed_steps is not None else int(base_steps)
         clamp_result = decay_per_round != 1.0
-    elif mode == "by_exported_frames":
+        components.update({"fixed_steps": resolved})
+    elif effective_mode == "by_exported_frames":
         steps_per_frame = int(train_steps_cfg.get("steps_per_exported_frame", 1))
         resolved = exported_frames * steps_per_frame
         clamp_result = True
-    elif mode == "by_exported_episodes":
-        steps_per_episode = int(train_steps_cfg.get("steps_per_exported_episode", int(base_train_steps)))
+        components.update(
+            {
+                "steps_per_exported_frame": steps_per_frame,
+                "frame_steps": int(resolved),
+            }
+        )
+    elif effective_mode == "by_exported_episodes":
+        steps_per_episode = int(train_steps_cfg.get("steps_per_exported_episode", int(base_steps)))
         resolved = exported_episodes * steps_per_episode
         clamp_result = True
-    elif mode == "hybrid":
+        components.update(
+            {
+                "steps_per_exported_episode": steps_per_episode,
+                "episode_steps": int(resolved),
+            }
+        )
+    elif effective_mode == "hybrid":
         steps_per_frame = int(train_steps_cfg.get("steps_per_exported_frame", 1))
-        steps_per_episode = int(train_steps_cfg.get("steps_per_exported_episode", int(base_train_steps)))
+        steps_per_episode = int(train_steps_cfg.get("steps_per_exported_episode", int(base_steps)))
         frame_steps = exported_frames * steps_per_frame
         episode_steps = exported_episodes * steps_per_episode
         resolved = max(frame_steps, episode_steps)
         clamp_result = True
+        components.update(
+            {
+                "steps_per_exported_frame": steps_per_frame,
+                "steps_per_exported_episode": steps_per_episode,
+                "frame_steps": int(frame_steps),
+                "episode_steps": int(episode_steps),
+            }
+        )
+    elif effective_mode == "by_export_subtype":
+        subtype_counts = _subtype_train_step_counts(exported_summary)
+        full_episode_count = subtype_counts["full_episode_count"]
+        recovery_segment_count = subtype_counts["recovery_segment_count"]
+        recovery_frames = subtype_counts["recovery_frames"]
+        if full_episode_count == 0 and recovery_segment_count == 0 and recovery_frames == 0:
+            logging.warning(
+                "by_export_subtype requested but subtype summary is missing; "
+                "fallback to by_exported_episodes"
+            )
+            steps_per_episode = int(train_steps_cfg.get("steps_per_exported_episode", int(base_steps)))
+            resolved = exported_episodes * steps_per_episode
+            components.update(
+                {
+                    "fallback_mode": "by_exported_episodes",
+                    "steps_per_exported_episode": steps_per_episode,
+                    "episode_steps": int(resolved),
+                }
+            )
+        else:
+            steps_per_full_episode = int(
+                train_steps_cfg.get(
+                    "steps_per_full_episode",
+                    train_steps_cfg.get("steps_per_exported_episode", int(base_steps)),
+                )
+            )
+            steps_per_recovery_segment = int(train_steps_cfg.get("steps_per_recovery_segment", 0))
+            steps_per_recovery_frame = int(
+                train_steps_cfg.get(
+                    "steps_per_recovery_frame",
+                    train_steps_cfg.get("steps_per_exported_frame", 1),
+                )
+            )
+            full_steps = full_episode_count * steps_per_full_episode
+            recovery_steps = (
+                recovery_segment_count * steps_per_recovery_segment
+                + recovery_frames * steps_per_recovery_frame
+            )
+            resolved = full_steps + recovery_steps
+            components.update(
+                {
+                    "full_episode_count": full_episode_count,
+                    "steps_per_full_episode": steps_per_full_episode,
+                    "full_steps": int(full_steps),
+                    "recovery_segment_count": recovery_segment_count,
+                    "steps_per_recovery_segment": steps_per_recovery_segment,
+                    "recovery_frames": recovery_frames,
+                    "steps_per_recovery_frame": steps_per_recovery_frame,
+                    "recovery_steps": int(recovery_steps),
+                }
+            )
+        clamp_result = True
     else:
         raise ValueError(
-            "round_schedule.train_steps.mode must be one of: "
-            "fixed, by_exported_frames, by_exported_episodes, hybrid."
+            "round_schedule.train_steps mode must be one of: fixed, by_exported_frames, "
+            "by_exported_episodes, hybrid, auto_by_export_mode, by_export_subtype."
         )
 
+    components["pre_decay_steps"] = int(resolved)
     if decay_per_round != 1.0:
         decay_factor = decay_per_round ** max(0, int(round_id) - 1)
         resolved = int(round(float(resolved) * decay_factor))
         clamp_result = True
+        components["decay_per_round"] = float(decay_per_round)
+        components["decay_factor"] = float(decay_factor)
 
+    components["raw_steps"] = int(resolved)
     if clamp_result:
         resolved = _clamp_steps(int(resolved), min_steps, max_steps)
-    return int(resolved)
+    components["clamped_steps"] = int(resolved)
+    return int(resolved), components
+
+
+def resolve_train_steps_schedule(
+    round_id: int,
+    exported_summary: dict[str, Any],
+    base_train_steps: int,
+    schedule_cfg: dict[str, Any] | None,
+    export_mode: str | None = None,
+) -> dict[str, Any]:
+    """Resolve per-round train steps plus metadata for state/logging."""
+
+    train_steps_cfg = _train_steps_cfg(schedule_cfg)
+    configured_mode = str(train_steps_cfg.get("mode", "fixed")).strip().lower()
+    resolved_export_mode = _resolve_train_steps_export_mode(exported_summary, export_mode, round_id)
+    effective_mode = resolve_effective_train_step_mode(resolved_export_mode, train_steps_cfg)
+    resolved_steps, components = resolve_train_steps_by_mode(
+        effective_mode=effective_mode,
+        exported_summary=exported_summary,
+        train_steps_cfg=train_steps_cfg,
+        base_steps=base_train_steps,
+        round_id=round_id,
+    )
+    return {
+        "train_steps_configured_mode": configured_mode,
+        "train_steps_effective_mode": effective_mode,
+        "export_mode": resolved_export_mode,
+        "base_train_steps": int(base_train_steps),
+        "resolved_train_steps": int(resolved_steps),
+        "train_steps_components": components,
+    }
+
+
+def resolve_train_steps(
+    round_id: int,
+    exported_summary: dict[str, Any],
+    base_train_steps: int,
+    schedule_cfg: dict[str, Any] | None,
+    export_mode: str | None = None,
+) -> int:
+    """Resolve per-round train steps for the supported round DAgger controller.
+
+    This helper only schedules the round-based `robot-dagger` path. It is not
+    related to the removed offline DAgger trainer/pipeline.
+    """
+
+    schedule = resolve_train_steps_schedule(
+        round_id=round_id,
+        exported_summary=exported_summary,
+        base_train_steps=base_train_steps,
+        schedule_cfg=schedule_cfg,
+        export_mode=export_mode,
+    )
+    return int(schedule["resolved_train_steps"])
+
+
+def _format_train_steps_components(components: dict[str, Any]) -> str:
+    preferred_keys = (
+        "full_episode_count",
+        "full_steps",
+        "recovery_segment_count",
+        "recovery_frames",
+        "recovery_steps",
+        "frame_steps",
+        "episode_steps",
+        "fallback_mode",
+        "raw_steps",
+        "clamped_steps",
+    )
+    parts = [f"{key}={components[key]}" for key in preferred_keys if key in components]
+    return ", ".join(parts) if parts else str(components)
 
 
 def _dagger_rounds_with_current(
@@ -261,23 +641,28 @@ def should_stop_dagger(
     exported_episodes = int(current_round_state.get("exported_episodes", 0) or 0)
     intervention_count = int(current_round_state.get("intervention_count", 0) or 0)
 
-    if bool(early_stop_cfg.get("stop_if_no_new_data", True)) and (
-        exported_frames <= 0 or exported_episodes <= 0
-    ):
-        if intervention_count == 0 and exported_frames <= 0:
-            return (
-                True,
-                "no exported DAgger data: intervention_count=0 and exported_frames=0 "
-                "(policy may already be good, or this round had no effective takeover)",
-            )
-        return (
-            True,
-            f"no exported DAgger data: exported_frames={exported_frames}, "
-            f"exported_episodes={exported_episodes}",
-        )
-
     patience = max(1, int(early_stop_cfg.get("patience", 1) or 1))
     rounds = _dagger_rounds_with_current(round_history, current_round_state)
+
+    if bool(early_stop_cfg.get("stop_if_no_new_data", True)):
+        no_data_count = _tail_count(
+            rounds,
+            lambda state: int(state.get("exported_frames", 0) or 0) <= 0
+            or int(state.get("exported_episodes", 0) or 0) <= 0,
+        )
+        if no_data_count >= patience:
+            if intervention_count == 0 and exported_frames <= 0:
+                return (
+                    True,
+                    f"no exported DAgger data for {no_data_count} consecutive round(s): "
+                    "intervention_count=0 and exported_frames=0 "
+                    "(policy may already be good, or this round had no effective takeover)",
+                )
+            return (
+                True,
+                f"no exported DAgger data for {no_data_count} consecutive round(s): "
+                f"exported_frames={exported_frames}, exported_episodes={exported_episodes}",
+            )
 
     if bool(early_stop_cfg.get("stop_if_export_too_small", True)):
         min_exported_frames = int(early_stop_cfg.get("min_exported_frames", 1) or 0)
@@ -333,6 +718,10 @@ def _make_record_section(
     record_section.setdefault("task", {})
     record_section["task"]["num_episodes"] = episodes_per_round
     record_section["task"]["resume"] = False
+    if _full_episode_export_enabled(round_cfg):
+        success_policy = _full_episode_success_policy(round_cfg)
+        record_section["task"]["success_policy"] = success_policy
+        record_section["task"]["annotate_success"] = success_policy == SUCCESS_POLICY_EXPLICIT
     record_section.setdefault("storage", {})
     record_section["storage"]["push_to_hub"] = False
     return policy_runner.prepare_record_cfg(record_section, checkpoint_path, round_cfg)
@@ -349,6 +738,7 @@ def _train_round(
     seed_repo_id: str,
     seed_root: Path,
     train_steps: int | None = None,
+    dagger_sampling: dict[str, Any] | None = None,
 ) -> Path:
     train_output_dir = round_dir / "train"
     train_section = trainer.prepare_train_cfg(
@@ -361,6 +751,7 @@ def _train_round(
         resolved_steps=train_steps,
         seed_repo_id=seed_repo_id,
         seed_root=seed_root,
+        dagger_sampling=dagger_sampling,
     )
     logging.info(
         "[round %03d] train output: %s steps=%s",
@@ -373,6 +764,12 @@ def _train_round(
 
 def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, Any]:
     from scripts.core.dagger_backends import make_policy_backend
+    from scripts.core.dagger_sampling import (
+        format_sampling_stats,
+        source_index_path_for_dataset,
+        summarize_sampling_for_dataset_root,
+        write_aggregated_source_index,
+    )
     from scripts.core.run_dagger_export import assert_dataset_roots_schema_compatible
     from scripts.core.run_record import RecordConfig, run_record
 
@@ -398,6 +795,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
     train_steps_cfg = _train_steps_cfg(round_schedule_cfg)
     train_steps_mode = str(train_steps_cfg.get("mode", "fixed"))
     warm_start_from_previous = bool(train_steps_cfg.get("warm_start_from_previous", True))
+    dagger_sampling_cfg = _dagger_sampling_cfg(config)
 
     current_checkpoint = Path(config.initial_pretrained_path) if config.initial_pretrained_path else None
     previous_aggregated_repo_id = seed_repo_id
@@ -504,6 +902,11 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
         )
         export_summary = policy_backend.export_profile.export(export_section)
         logging.info("[round %03d] exported dagger dataset: %s", round_idx, exported_root)
+        configured_export_mode = (
+            export_section.get("export_mode")
+            if isinstance(export_section, dict)
+            else None
+        ) or _policy_backend_export_cfg(round_cfg).get("export_mode")
 
         run_mix_stats = record_result.get("run_mix_stats", {})
         export_metrics = _export_metrics(export_summary, run_mix_stats)
@@ -520,27 +923,56 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             intervention_count,
         )
 
-        resolved_train_steps = resolve_train_steps(
+        train_steps_schedule = resolve_train_steps_schedule(
             round_id=round_idx,
             exported_summary=export_summary,
             base_train_steps=base_train_steps,
             schedule_cfg=round_schedule_cfg,
+            export_mode=configured_export_mode,
+        )
+        resolved_train_steps = int(train_steps_schedule["resolved_train_steps"])
+        train_steps_effective_mode = str(train_steps_schedule["train_steps_effective_mode"])
+        train_steps_export_mode = str(train_steps_schedule["export_mode"])
+        train_steps_components = train_steps_schedule["train_steps_components"]
+        logging.info(
+            "[round %03d] train steps mode: configured=%s effective=%s export_mode=%s",
+            round_idx,
+            train_steps_mode,
+            train_steps_effective_mode,
+            train_steps_export_mode,
         )
         logging.info(
             "[round %03d] train steps resolved: base=%d, exported_frames=%d, "
-            "exported_episodes=%d, mode=%s, resolved=%d",
+            "exported_episodes=%d, resolved=%d",
             round_idx,
             base_train_steps,
             exported_frames,
             exported_episodes,
-            train_steps_mode,
             resolved_train_steps,
+        )
+        logging.info(
+            "[round %03d] train steps components: %s",
+            round_idx,
+            _format_train_steps_components(train_steps_components),
         )
         logging.info("[round %03d] resolved train steps=%d", round_idx, resolved_train_steps)
 
         skipped_train = exported_frames <= 0 or exported_episodes <= 0
         skipped_train_reason = None
         train_checkpoint_in = None
+        source_index_path: Path | None = None
+        dagger_sampling_summary: dict[str, Any] = {
+            "requested_enabled": bool(dagger_sampling_cfg.get("enabled", False)),
+            "sampler_enabled": False,
+            "strategy": dagger_sampling_cfg.get("strategy", "source_weighted"),
+            "dagger_sample_ratio": dagger_sampling_cfg.get("dagger_sample_ratio"),
+            "replacement": dagger_sampling_cfg.get("replacement", True),
+            "source_index_path": None,
+            "seed_samples": None,
+            "dagger_samples": None,
+            "estimated_dagger_ratio": None,
+            "disabled_reason": "train_not_started",
+        }
         if skipped_train:
             skipped_train_reason = (
                 f"empty exported DAgger dataset: exported_frames={exported_frames}, "
@@ -553,6 +985,10 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             )
             aggregated_repo_id = previous_aggregated_repo_id
             aggregated_root = previous_aggregated_root
+            previous_source_index_path = source_index_path_for_dataset(aggregated_root)
+            source_index_path = previous_source_index_path if previous_source_index_path.is_file() else None
+            dagger_sampling_summary["source_index_path"] = str(source_index_path) if source_index_path else None
+            dagger_sampling_summary["disabled_reason"] = "train_skipped"
             train_checkpoint = current_checkpoint
         else:
             from lerobot.datasets.aggregate import aggregate_datasets
@@ -593,6 +1029,22 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
 
             logging.info("[round %03d] aggregated dataset: %s", round_idx, aggregated_root)
             assert_dataset_roots_schema_compatible(seed_repo_id, seed_root, aggregated_repo_id, aggregated_root)
+            previous_fallback_source = "seed" if round_idx == 1 else "seed_or_previous"
+            source_index_path = write_aggregated_source_index(
+                previous_root=previous_aggregated_root,
+                current_root=exported_root,
+                aggregated_root=aggregated_root,
+                round_id=round_idx,
+                export_mode=train_steps_export_mode,
+                previous_fallback_source=previous_fallback_source,
+            )
+            dagger_sampling_train_cfg = _sampling_train_cfg(dagger_sampling_cfg, source_index_path)
+            dagger_sampling_summary = summarize_sampling_for_dataset_root(
+                dataset_root=aggregated_root,
+                source_index_path=source_index_path,
+                sampling_cfg=dagger_sampling_train_cfg,
+            )
+            logging.info("[round %03d] %s", round_idx, format_sampling_stats(dagger_sampling_summary))
             train_checkpoint_in = current_checkpoint if warm_start_from_previous else None
             train_checkpoint = _train_round(
                 trainer=policy_backend.trainer,
@@ -605,6 +1057,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
                 seed_repo_id=seed_repo_id,
                 seed_root=seed_root,
                 train_steps=resolved_train_steps,
+                dagger_sampling=dagger_sampling_train_cfg,
             )
             logging.info("[round %03d] next checkpoint: %s", round_idx, train_checkpoint)
 
@@ -617,17 +1070,30 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             "raw_dataset_path": str(raw_root),
             "exported_dataset_path": str(exported_root),
             "aggregated_dataset_path": str(aggregated_root),
+            "dagger_source_index_path": str(source_index_path) if source_index_path else None,
             "train_output_dir": str(round_dir / "train"),
             "selected_checkpoint_path": str(train_checkpoint),
             "exported_frames": exported_frames,
             "exported_episodes": exported_episodes,
+            "export_mode": train_steps_export_mode,
+            "full_episode_count": export_metrics["full_episode_count"],
+            "full_episode_frames": export_metrics["full_episode_frames"],
+            "recovery_segment_count": export_metrics["recovery_segment_count"],
+            "recovery_frames": export_metrics["recovery_frames"],
             "expert_frame_ratio": expert_frame_ratio,
             "intervention_count": intervention_count,
             "skipped_short_segments": export_metrics["skipped_short_segments"],
             "incomplete_expert_label_frames": export_metrics["incomplete_expert_label_frames"],
+            "success_policy": export_metrics["success_policy"],
+            "success_inferred_episodes": export_metrics["success_inferred_episodes"],
+            "success_explicit_true_episodes": export_metrics["success_explicit_true_episodes"],
+            "success_explicit_false_episodes": export_metrics["success_explicit_false_episodes"],
+            "skipped_explicit_failure": export_metrics["skipped_explicit_failure"],
             "base_train_steps": base_train_steps,
             "resolved_train_steps": resolved_train_steps,
             "train_steps_mode": train_steps_mode,
+            "train_steps_effective_mode": train_steps_effective_mode,
+            "train_steps_components": train_steps_components,
             "skipped_train": skipped_train,
             "skipped_train_reason": skipped_train_reason,
             "early_stop_triggered": False,
@@ -641,15 +1107,22 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             "aggregated_dataset": {
                 "repo_id": aggregated_repo_id,
                 "root": str(aggregated_root),
+                "source_index_path": str(source_index_path) if source_index_path else None,
             },
+            "dagger_sampling": dagger_sampling_summary,
             "train_output": str(round_dir / "train"),
             "checkpoint_out": str(train_checkpoint),
             "policy_backend": policy_backend_info,
             "run_mix_stats": run_mix_stats,
             "schedule": {
+                **train_steps_schedule,
                 "resolved_train_steps": resolved_train_steps,
                 "base_train_steps": base_train_steps,
                 "train_steps_mode": train_steps_mode,
+                "train_steps_configured_mode": train_steps_mode,
+                "train_steps_effective_mode": train_steps_effective_mode,
+                "export_mode": train_steps_export_mode,
+                "train_steps_components": train_steps_components,
                 "warm_start_from_previous": warm_start_from_previous,
                 "early_stop_checked": True,
                 "early_stop_triggered": False,
@@ -696,6 +1169,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
         "stop_reason": stop_state["reason"],
         "stop": stop_state,
         "round_schedule": round_schedule_cfg,
+        "dagger_training": copy.deepcopy(config.dagger_training or {}),
         "round_schedules": [
             {
                 "round": state.get("round_id"),
@@ -704,6 +1178,10 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
                 "resolved_train_steps": state.get("resolved_train_steps"),
                 "base_train_steps": state.get("base_train_steps"),
                 "train_steps_mode": state.get("train_steps_mode"),
+                "train_steps_effective_mode": state.get("train_steps_effective_mode"),
+                "export_mode": state.get("export_mode"),
+                "train_steps_components": state.get("train_steps_components"),
+                "dagger_sampling": state.get("dagger_sampling"),
                 "skipped_train": state.get("skipped_train"),
                 "early_stop_triggered": state.get("early_stop_triggered"),
                 "early_stop_reason": state.get("early_stop_reason"),

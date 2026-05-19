@@ -28,24 +28,73 @@ dagger_rounds:
       stop_if_export_too_small: true
 
     train_steps:
-      mode: hybrid   # fixed | by_exported_frames | by_exported_episodes | hybrid
+      # fixed | by_exported_frames | by_exported_episodes | hybrid |
+      # auto_by_export_mode | by_export_subtype
+      #
+      # auto_by_export_mode keeps intervention_segments frame-sensitive,
+      # uses episode-based steps for full_success_episode, and uses
+      # subtype-based steps for hybrid. Full episode exports often contain many
+      # frames, so frame-based scheduling can frequently clamp to max_steps.
+      mode: auto_by_export_mode
       # null keeps the current train_cfg.yaml train.steps value.
       fixed_steps:
 
       min_steps: 500
-      max_steps: 2000
+      max_steps: 3000
 
       steps_per_exported_frame: 4
       steps_per_exported_episode: 300
+
+      # Subtype-aware coefficients for hybrid/full-success exports.
+      steps_per_full_episode: 300
+      steps_per_recovery_segment: 200
+      steps_per_recovery_frame: 3
+
+      # Recommended effective modes by export_mode:
+      # - intervention_segments: hybrid/frame-sensitive
+      # - full_success_episode: by_exported_episodes
+      # - hybrid: by_export_subtype
+      intervention_segments_mode: hybrid
+      full_success_episode_mode: by_exported_episodes
+      hybrid_mode: by_export_subtype
 
       round1_steps:
       decay_per_round: 1.0
 
       warm_start_from_previous: true
-  episodes_per_round: 25
+
+  dagger_training:
+    sampling:
+      # 默认关闭，保持现有 ACT+DAgger round 训练行为不变。
+      enabled: true
+
+      # source_weighted | none
+      strategy: source_weighted
+
+      # 期望训练抽样中 DAgger 样本占比，范围 [0, 1]。
+      dagger_sample_ratio: 0.5
+
+      # metadata | episode_index_range | dataset_source_sidecar | metadata_or_sidecar
+      # 当前实现优先使用 round controller 写入的 dagger_source_index.json sidecar。
+      source_field_policy: metadata_or_sidecar
+
+      dagger_source_values:
+        - dagger
+        - exported_dagger
+        - full_success_episode
+        - intervention_segment
+        - intervention_segments
+        - hybrid_full
+        - hybrid_recovery
+
+      # disable_sampler | treat_as_seed | error
+      on_missing_source: disable_sampler
+
+      replacement: true
+  episodes_per_round: 5
   # TODO: output_id
   output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds\
-                /task3_step1/8mL_empty_left_v01"
+                /task3_step1/8mL_empty_left_v06"
 
   record_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/record_cfg.yaml"
   # Legacy-compatible top-level path. If this is omitted, the controller falls
@@ -64,6 +113,8 @@ dagger_rounds:
 
     export:
       profile: act_chunk
+      # Default remains intervention_segments for backward compatibility.
+      export_mode: full_success_episode # intervention_segments | full_success_episode | hybrid.
       # Backend export settings are the active source for round export behavior.
       # If min_episode_len is empty, ACTChunkExportProfile falls back to the
       # legacy dagger_rounds.min_episode_len_for_act when present, then to
@@ -71,6 +122,40 @@ dagger_rounds:
       min_episode_len:
       pre_takeover_context: 0
       require_complete_expert_action: true
+      # Optional gripper/release timing diagnostics. Leave empty/null to
+      # auto-detect by action names, set [] to skip, or provide indices like [6, 13].
+      gripper_action_indices:
+
+      intervention_segments:
+        keep_frame_roles: [takeover_start, recovery]
+        label_source: expert_action
+        require_complete_expert_action: true
+        max_segments_per_episode:
+
+      # Full successful mixed episodes are corrected demonstrations: action is
+      # the command actually sent to the robot, not necessarily the expert
+      # oracle label on every frame.
+      full_episode:
+        # success_policy takes priority over legacy require_success:
+        #   explicit: require an explicit success label; robot-dagger prompts y/n.
+        #   recorded_is_success: saved run_mix episodes are success=true; use
+        #     left arrow to discard failures/incomplete/low-quality episodes.
+        #   allow_missing_for_smoke: debug only; export without validation.
+        success_policy: recorded_is_success # explicit | recorded_is_success | allow_missing_for_smoke
+        require_success: true
+        success_field: success
+        fallback_success_from_episode_metadata: true
+        action_label_source: sent_action
+        drop_reset_ignore_frames: true
+        require_no_reset: true
+        require_min_len: true
+
+      hybrid:
+        include_full_success_episode: true
+        include_intervention_segments: true
+        max_recovery_segments_per_episode: 1
+        max_recovery_frames_ratio: 0.25
+        prefer_full_episode_when_duplicate: false # if true in ACT, same as full_success_episode
 
     trainer:
       type: act
@@ -98,11 +183,33 @@ dagger_export:
 
   seed_repo_id: "nero_task3_step1/8mL_empty_left_merged_20260508_E125"
   seed_root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/8mL_empty_left_merged_20260508_E125"
+  export_mode: intervention_segments
   keep_frame_roles: ["takeover_start", "recovery"]
   min_segment_frames: 1
   min_episode_len_for_act: 30
   pre_takeover_context: 0
   require_complete_expert_action: true
+  gripper_action_indices:
+  full_episode:
+    success_policy: recorded_is_success
+    require_success: true
+    success_field: success
+    fallback_success_from_episode_metadata: true
+    action_label_source: sent_action
+    drop_reset_ignore_frames: true
+    require_no_reset: true
+    require_min_len: true
+  intervention_segments:
+    keep_frame_roles: [takeover_start, recovery]
+    label_source: expert_action
+    require_complete_expert_action: true
+    max_segments_per_episode:
+  hybrid:
+    include_full_success_episode: true
+    include_intervention_segments: true
+    max_recovery_segments_per_episode: 1
+    max_recovery_frames_ratio: 0.25
+    prefer_full_episode_when_duplicate: true
   overwrite: true
   image_writer_processes: 0
   image_writer_threads: 4
