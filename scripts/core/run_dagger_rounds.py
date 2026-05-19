@@ -41,6 +41,7 @@ class DAggerRoundsConfig:
     pre_takeover_context: int = 0
     require_complete_expert_action: bool = True
     round_schedule: dict[str, Any] | None = None
+    dagger_training: dict[str, Any] | None = None
     policy_backend: dict[str, Any] | None = None
 
 
@@ -232,6 +233,23 @@ def _early_stop_cfg(schedule_cfg: dict[str, Any] | None) -> dict[str, Any]:
     if isinstance(early_stop, dict):
         return early_stop
     return {}
+
+
+def _dagger_sampling_cfg(config: DAggerRoundsConfig) -> dict[str, Any]:
+    dagger_training = copy.deepcopy(config.dagger_training or {})
+    sampling = dagger_training.get("sampling", {})
+    return copy.deepcopy(sampling if isinstance(sampling, dict) else {})
+
+
+def _sampling_train_cfg(
+    sampling_cfg: dict[str, Any],
+    source_index_path: Path | None,
+) -> dict[str, Any]:
+    cfg = copy.deepcopy(sampling_cfg)
+    cfg.setdefault("enabled", False)
+    if source_index_path is not None:
+        cfg["source_index_path"] = str(source_index_path)
+    return cfg
 
 
 def _policy_backend_export_cfg(round_cfg: dict[str, Any]) -> dict[str, Any]:
@@ -720,6 +738,7 @@ def _train_round(
     seed_repo_id: str,
     seed_root: Path,
     train_steps: int | None = None,
+    dagger_sampling: dict[str, Any] | None = None,
 ) -> Path:
     train_output_dir = round_dir / "train"
     train_section = trainer.prepare_train_cfg(
@@ -732,6 +751,7 @@ def _train_round(
         resolved_steps=train_steps,
         seed_repo_id=seed_repo_id,
         seed_root=seed_root,
+        dagger_sampling=dagger_sampling,
     )
     logging.info(
         "[round %03d] train output: %s steps=%s",
@@ -744,6 +764,12 @@ def _train_round(
 
 def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, Any]:
     from scripts.core.dagger_backends import make_policy_backend
+    from scripts.core.dagger_sampling import (
+        format_sampling_stats,
+        source_index_path_for_dataset,
+        summarize_sampling_for_dataset_root,
+        write_aggregated_source_index,
+    )
     from scripts.core.run_dagger_export import assert_dataset_roots_schema_compatible
     from scripts.core.run_record import RecordConfig, run_record
 
@@ -769,6 +795,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
     train_steps_cfg = _train_steps_cfg(round_schedule_cfg)
     train_steps_mode = str(train_steps_cfg.get("mode", "fixed"))
     warm_start_from_previous = bool(train_steps_cfg.get("warm_start_from_previous", True))
+    dagger_sampling_cfg = _dagger_sampling_cfg(config)
 
     current_checkpoint = Path(config.initial_pretrained_path) if config.initial_pretrained_path else None
     previous_aggregated_repo_id = seed_repo_id
@@ -933,6 +960,19 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
         skipped_train = exported_frames <= 0 or exported_episodes <= 0
         skipped_train_reason = None
         train_checkpoint_in = None
+        source_index_path: Path | None = None
+        dagger_sampling_summary: dict[str, Any] = {
+            "requested_enabled": bool(dagger_sampling_cfg.get("enabled", False)),
+            "sampler_enabled": False,
+            "strategy": dagger_sampling_cfg.get("strategy", "source_weighted"),
+            "dagger_sample_ratio": dagger_sampling_cfg.get("dagger_sample_ratio"),
+            "replacement": dagger_sampling_cfg.get("replacement", True),
+            "source_index_path": None,
+            "seed_samples": None,
+            "dagger_samples": None,
+            "estimated_dagger_ratio": None,
+            "disabled_reason": "train_not_started",
+        }
         if skipped_train:
             skipped_train_reason = (
                 f"empty exported DAgger dataset: exported_frames={exported_frames}, "
@@ -945,6 +985,10 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             )
             aggregated_repo_id = previous_aggregated_repo_id
             aggregated_root = previous_aggregated_root
+            previous_source_index_path = source_index_path_for_dataset(aggregated_root)
+            source_index_path = previous_source_index_path if previous_source_index_path.is_file() else None
+            dagger_sampling_summary["source_index_path"] = str(source_index_path) if source_index_path else None
+            dagger_sampling_summary["disabled_reason"] = "train_skipped"
             train_checkpoint = current_checkpoint
         else:
             from lerobot.datasets.aggregate import aggregate_datasets
@@ -985,6 +1029,22 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
 
             logging.info("[round %03d] aggregated dataset: %s", round_idx, aggregated_root)
             assert_dataset_roots_schema_compatible(seed_repo_id, seed_root, aggregated_repo_id, aggregated_root)
+            previous_fallback_source = "seed" if round_idx == 1 else "seed_or_previous"
+            source_index_path = write_aggregated_source_index(
+                previous_root=previous_aggregated_root,
+                current_root=exported_root,
+                aggregated_root=aggregated_root,
+                round_id=round_idx,
+                export_mode=train_steps_export_mode,
+                previous_fallback_source=previous_fallback_source,
+            )
+            dagger_sampling_train_cfg = _sampling_train_cfg(dagger_sampling_cfg, source_index_path)
+            dagger_sampling_summary = summarize_sampling_for_dataset_root(
+                dataset_root=aggregated_root,
+                source_index_path=source_index_path,
+                sampling_cfg=dagger_sampling_train_cfg,
+            )
+            logging.info("[round %03d] %s", round_idx, format_sampling_stats(dagger_sampling_summary))
             train_checkpoint_in = current_checkpoint if warm_start_from_previous else None
             train_checkpoint = _train_round(
                 trainer=policy_backend.trainer,
@@ -997,6 +1057,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
                 seed_repo_id=seed_repo_id,
                 seed_root=seed_root,
                 train_steps=resolved_train_steps,
+                dagger_sampling=dagger_sampling_train_cfg,
             )
             logging.info("[round %03d] next checkpoint: %s", round_idx, train_checkpoint)
 
@@ -1009,6 +1070,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             "raw_dataset_path": str(raw_root),
             "exported_dataset_path": str(exported_root),
             "aggregated_dataset_path": str(aggregated_root),
+            "dagger_source_index_path": str(source_index_path) if source_index_path else None,
             "train_output_dir": str(round_dir / "train"),
             "selected_checkpoint_path": str(train_checkpoint),
             "exported_frames": exported_frames,
@@ -1045,7 +1107,9 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             "aggregated_dataset": {
                 "repo_id": aggregated_repo_id,
                 "root": str(aggregated_root),
+                "source_index_path": str(source_index_path) if source_index_path else None,
             },
+            "dagger_sampling": dagger_sampling_summary,
             "train_output": str(round_dir / "train"),
             "checkpoint_out": str(train_checkpoint),
             "policy_backend": policy_backend_info,
@@ -1105,6 +1169,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
         "stop_reason": stop_state["reason"],
         "stop": stop_state,
         "round_schedule": round_schedule_cfg,
+        "dagger_training": copy.deepcopy(config.dagger_training or {}),
         "round_schedules": [
             {
                 "round": state.get("round_id"),
@@ -1116,6 +1181,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
                 "train_steps_effective_mode": state.get("train_steps_effective_mode"),
                 "export_mode": state.get("export_mode"),
                 "train_steps_components": state.get("train_steps_components"),
+                "dagger_sampling": state.get("dagger_sampling"),
                 "skipped_train": state.get("skipped_train"),
                 "early_stop_triggered": state.get("early_stop_triggered"),
                 "early_stop_reason": state.get("early_stop_reason"),

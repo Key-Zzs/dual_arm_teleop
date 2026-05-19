@@ -242,6 +242,10 @@ class ACTTrainer(PolicyTrainer):
         dagger_training["save_checkpoint"] = True
         train_section["save_checkpoint"] = True
 
+        dagger_sampling = kwargs.get("dagger_sampling")
+        if dagger_sampling is not None:
+            train_section["dagger_sampling"] = copy.deepcopy(dagger_sampling)
+
         return train_section
 
     def train(self, train_cfg: dict[str, Any]) -> str:

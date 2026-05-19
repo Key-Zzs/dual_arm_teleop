@@ -62,10 +62,39 @@ dagger_rounds:
       decay_per_round: 1.0
 
       warm_start_from_previous: true
+
+  dagger_training:
+    sampling:
+      # 默认关闭，保持现有 ACT+DAgger round 训练行为不变。
+      enabled: false
+
+      # source_weighted | none
+      strategy: source_weighted
+
+      # 期望训练抽样中 DAgger 样本占比，范围 [0, 1]。
+      dagger_sample_ratio: 0.4
+
+      # metadata | episode_index_range | dataset_source_sidecar | metadata_or_sidecar
+      # 当前实现优先使用 round controller 写入的 dagger_source_index.json sidecar。
+      source_field_policy: metadata_or_sidecar
+
+      dagger_source_values:
+        - dagger
+        - exported_dagger
+        - full_success_episode
+        - intervention_segment
+        - intervention_segments
+        - hybrid_full
+        - hybrid_recovery
+
+      # disable_sampler | treat_as_seed | error
+      on_missing_source: disable_sampler
+
+      replacement: true
   episodes_per_round: 5
   # TODO: output_id
   output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds\
-                /task3_step1/8mL_empty_left_v03"
+                /task3_step1/8mL_empty_left_v06"
 
   record_cfg_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/record_cfg.yaml"
   # Legacy-compatible top-level path. If this is omitted, the controller falls

@@ -305,6 +305,7 @@ class TrainPipelineConfig(HubMixin):
         # Number of workers for the dataloader.
         self.num_workers: int = cfg["num_workers"]
         self.batch_size: int = cfg["batch_size"]
+        self.dagger_sampling: dict[str, Any] = dict(cfg.get("dagger_sampling", {"enabled": False}))
         self.steps: int = cfg["steps"]
         self.eval_freq: int = cfg["eval_freq"]
         self.log_freq: int = cfg["log_freq"]
@@ -756,6 +757,30 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     else:
         shuffle = True
         sampler = None
+
+    dagger_sampling_cfg = getattr(cfg, "dagger_sampling", {"enabled": False})
+    if isinstance(dagger_sampling_cfg, dict) and dagger_sampling_cfg.get("enabled", False):
+        if sampler is not None:
+            logging.warning(
+                "DAgger source-aware sampler requested, but another sampler is already active; "
+                "keeping the existing sampler."
+            )
+        elif cfg.dataset.streaming:
+            logging.warning(
+                "DAgger source-aware sampler requested, but streaming datasets do not support "
+                "WeightedRandomSampler; keeping default DataLoader sampling."
+            )
+        else:
+            from scripts.core.dagger_sampling import (
+                build_source_weighted_sampler_for_dataset,
+                format_sampling_stats,
+            )
+
+            sampling_result = build_source_weighted_sampler_for_dataset(dataset, dagger_sampling_cfg)
+            logging.info(format_sampling_stats(sampling_result.stats))
+            if sampling_result.sampler is not None:
+                sampler = sampling_result.sampler
+                shuffle = False
 
     dataloader = torch.utils.data.DataLoader(
         dataset,
