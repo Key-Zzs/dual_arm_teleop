@@ -97,6 +97,12 @@ from huggingface_hub.errors import HfHubHTTPError
 TRAIN_CONFIG_NAME = "train_config.json"
 
 
+def _mixed_precision_for_policy(use_amp: bool, device_type: str) -> str:
+    if not use_amp or device_type != "cuda":
+        return "no"
+    return "bf16" if torch.cuda.is_bf16_supported() else "fp16"
+
+
 def _validate_local_pretrained_path(pretrained_path: str | Path | None) -> None:
     """Fail early when an absolute local checkpoint path is misspelled."""
     if not pretrained_path:
@@ -615,8 +621,13 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         from accelerate.utils import DistributedDataParallelKwargs
 
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+        mixed_precision = _mixed_precision_for_policy(
+            bool(getattr(cfg.policy, "use_amp", False)),
+            device_state.final_device.type,
+        )
         accelerator = Accelerator(
             cpu=device_state.final_device.type == "cpu",
+            mixed_precision=mixed_precision,
             step_scheduler_with_optimizer=False,
             kwargs_handlers=[ddp_kwargs],
         )
@@ -640,6 +651,7 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
             )
         cfg.policy.device = accelerator.device.type
         log_training_device_state(device_state)
+        logging.info("  accelerator mixed_precision: %s", accelerator.mixed_precision)
         logging.info(pformat(cfg.to_dict()))
 
     # Initialize wandb only on main process

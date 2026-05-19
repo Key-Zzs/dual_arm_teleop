@@ -13,36 +13,35 @@ train:
       fail_if_cuda_unavailable: false
 
   dataset:
-    repo_id: "dual_franka_2/pick_up_and_seal_20260515_v01"
-    root: "/home/deepcybo/.cache/huggingface/lerobot/dual_franka_2/pick_up_and_seal_20260515_v01"
+    repo_id: "dual_franka2_test/single_arm_pick_20260519_merged"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/dual_franka2_test/single_arm_pick_20260519_merged"
 
   env:
 
   policy:
     type: "act"  # act | diffusion
     device: "cuda"
+    use_amp: true
     repo_id: "shenzhaolong/act_policy"
     push_to_hub: false
     temporal_ensemble_coeff: 0.03
-    chunk_size: 30
+    chunk_size: 20
     n_action_steps: 1
-    # TODO(franka): only warm-start from Nero after schema compatibility and
-    # real robot action semantics have been verified.
-    pretrained_path:
+    # pretrained_path:
 
-  output_dir: "outputs/train/act_dual_franka1_pick_up_and_seal_cleaned_1"
-  job_name: "act_policy_dual_franka1_pick_up_and_seal_cleaned_1"
+  output_dir: "outputs/train/dual_franka2_test/single_arm_pick/act_20260519_E50_V01"
+  job_name: "act_policy_dual_franka2_test_single_arm_pick_20260519_E50_V01"
 
   resume: false
   seed: 1000
   # Number of workers for the dataloader.
   num_workers: 4
-  batch_size: 32
-  steps: 100000
-  eval_freq: 50_00
+  batch_size: 16
+  steps: 40_000
+  eval_freq: 20_00
   log_freq: 200
   save_checkpoint: true
-  save_freq: 10_00
+  save_freq: 20_00
   use_policy_training_preset: true
 
   eval:
