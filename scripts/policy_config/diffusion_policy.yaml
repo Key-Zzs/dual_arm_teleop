@@ -1,6 +1,96 @@
-# Reserved Diffusion Policy configuration file.
-# run_record.py can resolve and read this path when policy.type is one of:
+# LeRobot Diffusion Policy configuration.
+# Used by run_record.py and run_train.py when policy.type is one of:
 # diffusion, dp, diffusion_policy.
+# Defaults are aligned with src/lerobot/policies/diffusion/configuration_diffusion.py.
 #
-# Full DiffusionConfig exposure is intentionally not implemented here yet.
-{}
+# Notes:
+# - Model-architecture fields must match the checkpoint used for inference.
+# - input_features/output_features are usually inferred from the dataset metadata
+#   and should stay empty unless you intentionally want to override them.
+# - push_to_hub follows the LeRobot PreTrainedConfig default. Set it to false
+#   or provide repo_id before a training run that should not push to the Hub.
+
+# -------------------------
+# Runtime / framework
+# -------------------------
+n_obs_steps: 2
+
+input_features: {}
+output_features: {}
+
+device: null
+use_amp: false
+
+push_to_hub: true
+repo_id: null
+private: null
+tags: null
+license: null
+pretrained_path: null
+
+# -------------------------
+# Horizon / action sequence
+# -------------------------
+horizon: 16
+n_action_steps: 8
+
+# DiffusionConfig default: horizon - n_action_steps - n_obs_steps + 1.
+drop_n_last_frames: 7
+
+# -------------------------
+# Normalization
+# -------------------------
+normalization_mapping:
+  VISUAL: MEAN_STD
+  STATE: MIN_MAX
+  ACTION: MIN_MAX
+
+# -------------------------
+# Vision encoder
+# -------------------------
+vision_backbone: resnet18
+crop_shape: [84, 84]
+crop_is_random: true
+pretrained_backbone_weights: null
+use_group_norm: true
+spatial_softmax_num_keypoints: 32
+use_separate_rgb_encoder_per_camera: false
+
+# -------------------------
+# Diffusion U-Net
+# -------------------------
+down_dims: [512, 1024, 2048]
+kernel_size: 5
+n_groups: 8
+diffusion_step_embed_dim: 128
+use_film_scale_modulation: true
+
+# -------------------------
+# Noise scheduler / denoising
+# -------------------------
+noise_scheduler_type: DDPM
+num_train_timesteps: 100
+beta_schedule: squaredcos_cap_v2
+beta_start: 0.0001
+beta_end: 0.02
+prediction_type: epsilon
+clip_sample: true
+clip_sample_range: 1.0
+
+# null means use the same value as num_train_timesteps at inference time.
+num_inference_steps: null
+
+# -------------------------
+# Loss computation
+# -------------------------
+do_mask_loss_for_padding: false
+
+# -------------------------
+# Optimizer / training preset
+# -------------------------
+optimizer_lr: 0.0001
+optimizer_betas: [0.95, 0.999]
+optimizer_eps: 0.00000001
+optimizer_weight_decay: 0.000001
+scheduler_name: cosine
+scheduler_warmup_steps: 500

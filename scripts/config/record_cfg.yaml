@@ -63,10 +63,13 @@ record:
     gripper_force: 2.0 # Robotiq 2F-85 max force in Newtons
 
   policy:
-    # 策略类型: act | diffusion
-    # 轮次式 DAgger 的 run_mix 采集使用 ACT checkpoint 推理。
+    # 策略类型: act | diffusion | dp | diffusion_policy
+    # 轮次式 DAgger 的 run_mix 采集目前只实现 ACT checkpoint 推理。
     type: "act"
     config_path: scripts/policy_config/act_config.yaml
+    # For diffusion:
+    # type: "diffusion"
+    # config_path: scripts/policy_config/diffusion_policy.yaml
 
     # Policy hyperparameters have been moved to scripts/policy_config/*.yaml.
     # record_cfg.yaml should only keep recording/device/camera/path/runtime settings.
@@ -83,6 +86,10 @@ record:
     #                   /act_20260509_E125_SW_V01/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
     # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
     #                   /fused_act_chunk30_fuser_gst_020000_pretrained_model"
+    #
+    # Legacy DiffusionConfig fields are handled the same way: if a field from
+    # DiffusionConfig is left here for an old run, it warns and overrides the
+    # referenced diffusion policy yaml for this run only.
   
   task:
     description: "pick up small vials and insert them in the empty rack" # task description

@@ -21,9 +21,13 @@ train:
   env:
 
   policy:
+    # Supported: act | diffusion | dp | diffusion_policy.
     # 推荐保持为普通 ACT；轮次式 DAgger 会由 run_dagger_rounds.py 在内存中注入训练参数。
     type: "act"
     config_path: scripts/policy_config/act_config.yaml
+    # For diffusion:
+    # type: "diffusion"
+    # config_path: scripts/policy_config/diffusion_policy.yaml
 
     # Policy hyperparameters have been moved to scripts/policy_config/*.yaml.
     # train_cfg.yaml should only keep dataset/output/checkpoint/runtime/training-loop settings.
@@ -38,6 +42,10 @@ train:
     # n_action_steps: 1
     # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
     #                   /task3_step1/8mL_empty_left/[worked]act_20260508_E125/checkpoints/010000/pretrained_model"  # 从 ACT checkpoint 继续训练
+    #
+    # Legacy DiffusionConfig fields are handled the same way: if a field from
+    # DiffusionConfig is left here for an old run, it warns and overrides the
+    # referenced diffusion policy yaml for this run only.
     #
     # TODO: The shared act_config.yaml currently keeps record-time values for
     # pretrained_path and temporal_ensemble_coeff. For scratch training or a

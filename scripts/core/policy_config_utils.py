@@ -64,10 +64,20 @@ def load_policy_yaml(path: Path) -> Dict[str, Any]:
     return cfg
 
 
+def _policy_label(policy_type: str) -> str:
+    return "Diffusion" if policy_type == "diffusion" else "ACT"
+
+
 def get_act_config_field_names() -> set[str]:
     from lerobot.policies import ACTConfig
 
     return {config_field.name for config_field in fields(ACTConfig)}
+
+
+def get_diffusion_config_field_names() -> set[str]:
+    from lerobot.policies import DiffusionConfig
+
+    return {config_field.name for config_field in fields(DiffusionConfig)}
 
 
 def _normalization_mode_from_config(value: Any) -> Any:
@@ -190,12 +200,14 @@ def validate_unknown_fields(
     policy_yaml_dict: Dict[str, Any],
     allowed_fields: set[str],
     config_path: Path | None = None,
+    *,
+    policy_type: str = "act",
 ) -> None:
     unknown_fields = sorted(set(policy_yaml_dict) - allowed_fields)
     if unknown_fields:
         source = f" in {config_path}" if config_path is not None else ""
         raise ValueError(
-            f"Unknown ACT policy config field(s){source}: {unknown_fields}. "
+            f"Unknown {_policy_label(policy_type)} policy config field(s){source}: {unknown_fields}. "
             f"Allowed fields are: {sorted(allowed_fields)}"
         )
 
@@ -205,6 +217,8 @@ def merge_legacy_policy_fields(
     legacy_policy_dict: Dict[str, Any] | None,
     allowed_fields: set[str],
     source_name: str,
+    *,
+    policy_type: str = "act",
 ) -> dict[str, Any]:
     merged = dict(policy_yaml_dict)
     legacy_policy_dict = legacy_policy_dict or {}
@@ -215,9 +229,10 @@ def merge_legacy_policy_fields(
     }
     if legacy_overrides:
         logging.warning(
-            "[DEPRECATED] ACT field(s) still defined in %s: %s. "
+            "[DEPRECATED] %s policy field(s) still defined in %s: %s. "
             "Please move them to scripts/policy_config/*.yaml. "
             "For backward compatibility, these values override the policy yaml for this run.",
+            _policy_label(policy_type),
             source_name,
             sorted(legacy_overrides),
         )
@@ -283,13 +298,14 @@ def build_act_config(
     from lerobot.policies import ACTConfig
 
     allowed_fields = get_act_config_field_names()
-    validate_unknown_fields(policy_yaml_dict, allowed_fields, config_path=config_path)
+    validate_unknown_fields(policy_yaml_dict, allowed_fields, config_path=config_path, policy_type="act")
 
     act_kwargs = merge_legacy_policy_fields(
         policy_yaml_dict,
         legacy_policy_dict,
         allowed_fields,
         source_name=legacy_source_name,
+        policy_type="act",
     )
     if runtime_overrides:
         unknown_runtime_fields = sorted(set(runtime_overrides) - allowed_fields)
@@ -343,6 +359,190 @@ def build_act_config(
     return act_config
 
 
+def _list_or_tuple_to_tuple(value: Any, field_name: str, *, length: int | None = None) -> tuple:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"`{field_name}` must be a list or tuple. Got {type(value).__name__}.")
+    converted = tuple(value)
+    if length is not None and len(converted) != length:
+        raise ValueError(f"`{field_name}` must contain exactly {length} values. Got {converted!r}.")
+    return converted
+
+
+def _normalize_diffusion_scheduler_type(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"`noise_scheduler_type` must be a string. Got {type(value).__name__}.")
+    return value.strip().upper()
+
+
+def _normalize_diffusion_prediction_type(value: Any) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"`prediction_type` must be a string. Got {type(value).__name__}.")
+    return value.strip().lower()
+
+
+def validate_diffusion_config(policy_dict: Dict[str, Any]) -> None:
+    def positive_int(field_name: str) -> None:
+        value = policy_dict.get(field_name)
+        if value is not None and int(value) <= 0:
+            raise ValueError(f"`{field_name}` must be > 0. Got {value!r}.")
+
+    for field_name in (
+        "n_obs_steps",
+        "horizon",
+        "n_action_steps",
+        "num_train_timesteps",
+        "kernel_size",
+        "n_groups",
+        "diffusion_step_embed_dim",
+        "spatial_softmax_num_keypoints",
+    ):
+        positive_int(field_name)
+
+    if policy_dict.get("num_inference_steps") is not None:
+        positive_int("num_inference_steps")
+
+    if policy_dict.get("drop_n_last_frames") is not None and int(policy_dict["drop_n_last_frames"]) < 0:
+        raise ValueError(
+            f"`drop_n_last_frames` must be >= 0. Got {policy_dict['drop_n_last_frames']!r}."
+        )
+    if policy_dict.get("scheduler_warmup_steps") is not None and int(policy_dict["scheduler_warmup_steps"]) < 0:
+        raise ValueError(
+            f"`scheduler_warmup_steps` must be >= 0. Got {policy_dict['scheduler_warmup_steps']!r}."
+        )
+
+    n_obs_steps = int(policy_dict.get("n_obs_steps", 2))
+    horizon = int(policy_dict.get("horizon", 16))
+    n_action_steps = int(policy_dict.get("n_action_steps", 8))
+    max_action_steps = horizon - n_obs_steps + 1
+    if n_action_steps > max_action_steps:
+        raise ValueError(
+            "`n_action_steps` must be <= horizon - n_obs_steps + 1 for DiffusionPolicy "
+            f"select_action caching. Got n_action_steps={n_action_steps}, horizon={horizon}, "
+            f"n_obs_steps={n_obs_steps}."
+        )
+
+    crop_shape = policy_dict.get("crop_shape")
+    if crop_shape is not None:
+        if not isinstance(crop_shape, tuple) or len(crop_shape) != 2:
+            raise ValueError("`crop_shape` must be null or a 2-item list/tuple.")
+        if any(int(dim) <= 0 for dim in crop_shape):
+            raise ValueError(f"`crop_shape` dimensions must be > 0. Got {crop_shape!r}.")
+
+    down_dims = policy_dict.get("down_dims")
+    if down_dims is not None:
+        if not isinstance(down_dims, tuple) or len(down_dims) == 0:
+            raise ValueError("`down_dims` must be a non-empty list/tuple.")
+        if any(int(dim) <= 0 for dim in down_dims):
+            raise ValueError(f"`down_dims` values must be > 0. Got {down_dims!r}.")
+
+    optimizer_betas = policy_dict.get("optimizer_betas")
+    if optimizer_betas is not None:
+        if not isinstance(optimizer_betas, tuple) or len(optimizer_betas) != 2:
+            raise ValueError("`optimizer_betas` must be a 2-item list/tuple.")
+        if any(not 0 <= float(beta) < 1 for beta in optimizer_betas):
+            raise ValueError(f"`optimizer_betas` must be in [0, 1). Got {optimizer_betas!r}.")
+
+    beta_start = policy_dict.get("beta_start")
+    beta_end = policy_dict.get("beta_end")
+    if beta_start is not None and float(beta_start) <= 0:
+        raise ValueError(f"`beta_start` must be > 0. Got {beta_start!r}.")
+    if beta_end is not None and float(beta_end) <= 0:
+        raise ValueError(f"`beta_end` must be > 0. Got {beta_end!r}.")
+    if beta_start is not None and beta_end is not None and float(beta_start) > float(beta_end):
+        raise ValueError(f"`beta_start` must be <= `beta_end`. Got {beta_start!r} > {beta_end!r}.")
+
+
+def build_diffusion_config(
+    policy_yaml_dict: Dict[str, Any],
+    legacy_policy_dict: Dict[str, Any] | None = None,
+    *,
+    legacy_source_name: str = "config",
+    runtime_overrides: Dict[str, Any] | None = None,
+    config_path: Path | None = None,
+) -> PreTrainedConfig:
+    from lerobot.policies import DiffusionConfig
+
+    allowed_fields = get_diffusion_config_field_names()
+    validate_unknown_fields(
+        policy_yaml_dict,
+        allowed_fields,
+        config_path=config_path,
+        policy_type="diffusion",
+    )
+
+    diffusion_kwargs = merge_legacy_policy_fields(
+        policy_yaml_dict,
+        legacy_policy_dict,
+        allowed_fields,
+        source_name=legacy_source_name,
+        policy_type="diffusion",
+    )
+    if runtime_overrides:
+        unknown_runtime_fields = sorted(set(runtime_overrides) - allowed_fields)
+        if unknown_runtime_fields:
+            raise ValueError(f"Unknown Diffusion runtime override field(s): {unknown_runtime_fields}")
+        diffusion_kwargs.update({key: value for key, value in runtime_overrides.items() if value is not None})
+
+    for feature_field in ("input_features", "output_features"):
+        if feature_field in diffusion_kwargs:
+            if diffusion_kwargs[feature_field] == {}:
+                diffusion_kwargs.pop(feature_field)
+            else:
+                diffusion_kwargs[feature_field] = _convert_policy_features(
+                    diffusion_kwargs[feature_field], feature_field
+                )
+
+    if "normalization_mapping" in diffusion_kwargs:
+        diffusion_kwargs["normalization_mapping"] = convert_normalization_mapping(
+            diffusion_kwargs["normalization_mapping"]
+        )
+
+    tuple_fields = {
+        "crop_shape": 2,
+        "down_dims": None,
+        "optimizer_betas": 2,
+    }
+    for field_name, length in tuple_fields.items():
+        if field_name in diffusion_kwargs and diffusion_kwargs[field_name] is not None:
+            diffusion_kwargs[field_name] = _list_or_tuple_to_tuple(
+                diffusion_kwargs[field_name],
+                field_name,
+                length=length,
+            )
+
+    if "noise_scheduler_type" in diffusion_kwargs:
+        diffusion_kwargs["noise_scheduler_type"] = _normalize_diffusion_scheduler_type(
+            diffusion_kwargs["noise_scheduler_type"]
+        )
+    if "prediction_type" in diffusion_kwargs:
+        diffusion_kwargs["prediction_type"] = _normalize_diffusion_prediction_type(
+            diffusion_kwargs["prediction_type"]
+        )
+
+    for field_name in (
+        "device",
+        "repo_id",
+        "license",
+        "pretrained_path",
+        "pretrained_backbone_weights",
+        "vision_backbone",
+        "noise_scheduler_type",
+        "beta_schedule",
+        "prediction_type",
+        "scheduler_name",
+    ):
+        _validate_optional_string_field(diffusion_kwargs, field_name)
+    if "tags" in diffusion_kwargs:
+        _validate_tags(diffusion_kwargs["tags"])
+
+    validate_diffusion_config(diffusion_kwargs)
+    init_device, indexed_device = _act_init_device_and_restore_device(diffusion_kwargs.get("device"))
+    diffusion_kwargs["device"] = init_device
+    diffusion_config = DiffusionConfig(**diffusion_kwargs)
+    _restore_indexed_device_if_available(diffusion_config, indexed_device)
+    return diffusion_config
+
+
 def build_policy_config(
     policy_type: str,
     policy_yaml_dict: Dict[str, Any],
@@ -362,8 +562,12 @@ def build_policy_config(
             config_path=config_path,
         )
     if policy_type in DIFFUSION_POLICY_TYPES:
-        raise NotImplementedError(
-            "Diffusion policy config loading is reserved but not fully implemented yet."
+        return build_diffusion_config(
+            policy_yaml_dict,
+            legacy_policy_dict=legacy_policy_dict,
+            legacy_source_name=legacy_source_name,
+            runtime_overrides=runtime_overrides,
+            config_path=config_path,
         )
     raise ValueError(
         f"No config for policy type: {policy_type}. "
@@ -374,9 +578,12 @@ def build_policy_config(
 def self_test_policy_config_loader() -> None:
     from lerobot.configs.types import NormalizationMode
 
-    def expect_error(case_name: str, cfg: Dict[str, Any], expected: str) -> None:
+    def expect_error(case_name: str, cfg: Dict[str, Any], expected: str, *, policy_type: str = "act") -> None:
         try:
-            build_act_config(cfg)
+            if policy_type == "diffusion":
+                build_diffusion_config(cfg)
+            else:
+                build_act_config(cfg)
         except Exception as exc:
             if expected not in str(exc):
                 raise AssertionError(
@@ -414,5 +621,38 @@ def self_test_policy_config_loader() -> None:
         "unknown ACT field guard",
         {"temporal_ensemble_coef": 0.01},
         "Unknown ACT policy config field",
+    )
+
+    diffusion_cfg = build_diffusion_config(
+        {
+            "normalization_mapping": {
+                "VISUAL": "MEAN_STD",
+                "STATE": "MIN_MAX",
+                "ACTION": "MIN_MAX",
+            },
+            "crop_shape": [84, 84],
+            "down_dims": [512, 1024, 2048],
+            "optimizer_betas": [0.95, 0.999],
+            "noise_scheduler_type": "ddpm",
+        }
+    )
+    if diffusion_cfg.normalization_mapping["STATE"] is not NormalizationMode.MIN_MAX:
+        raise AssertionError("Diffusion normalization_mapping was not converted to NormalizationMode.")
+    if diffusion_cfg.crop_shape != (84, 84) or diffusion_cfg.down_dims != (512, 1024, 2048):
+        raise AssertionError("Diffusion list fields were not converted to tuples.")
+    if diffusion_cfg.noise_scheduler_type != "DDPM":
+        raise AssertionError("Diffusion noise_scheduler_type was not normalized.")
+
+    expect_error(
+        "unknown Diffusion field guard",
+        {"num_inference_stepz": 10},
+        "Unknown Diffusion policy config field",
+        policy_type="diffusion",
+    )
+    expect_error(
+        "Diffusion action horizon guard",
+        {"horizon": 8, "n_obs_steps": 4, "n_action_steps": 8, "down_dims": [128, 256, 512]},
+        "n_action_steps",
+        policy_type="diffusion",
     )
     logging.info("====== [POLICY CONFIG SELF-TEST] OK ======")

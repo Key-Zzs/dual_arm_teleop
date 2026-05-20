@@ -42,6 +42,7 @@ class DAggerRoundsConfig:
     require_complete_expert_action: bool = True
     round_schedule: dict[str, Any] | None = None
     dagger_training: dict[str, Any] | None = None
+    policy: dict[str, Any] | None = None
     policy_backend: dict[str, Any] | None = None
 
 
@@ -53,6 +54,14 @@ def _load_yaml(path: str | Path) -> dict[str, Any]:
 def _load_json(path: Path) -> dict[str, Any]:
     with open(path, "r") as f:
         return json.load(f)
+
+
+def _default_scripts_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_project_root() -> Path:
+    return _default_scripts_dir().parent
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
@@ -97,6 +106,45 @@ def _require_checkpoint_exists(path: Path | None, label: str) -> Path:
     if missing:
         raise FileNotFoundError(f"{label} checkpoint is missing required file(s) {missing}: {path}")
     return path
+
+
+def _validate_round_policy_descriptor(policy_cfg: dict[str, Any] | None) -> dict[str, Any]:
+    from scripts.core.policy_config_utils import (
+        ACT_POLICY_TYPES,
+        DIFFUSION_POLICY_TYPES,
+        load_policy_yaml,
+        resolve_policy_config_path,
+    )
+
+    descriptor = copy.deepcopy(policy_cfg or {"type": "act"})
+    policy_type = str(descriptor.get("type", "act")).strip().lower()
+    if policy_type in DIFFUSION_POLICY_TYPES:
+        policy_path = resolve_policy_config_path(
+            descriptor,
+            scripts_dir=_default_scripts_dir(),
+            project_root=_default_project_root(),
+        )
+        load_policy_yaml(policy_path)
+        raise NotImplementedError(
+            "Diffusion policy is configured, but DAgger diffusion backend is not implemented yet. "
+            f"Resolved diffusion policy config: {policy_path}"
+        )
+    if policy_type not in ACT_POLICY_TYPES:
+        raise ValueError(
+            "dagger_rounds.policy.type must be one of: act | diffusion | dp | diffusion_policy. "
+            f"Got: {policy_type!r}"
+        )
+    return descriptor
+
+
+def _apply_round_policy_descriptor(base_cfg: dict[str, Any], descriptor: dict[str, Any]) -> dict[str, Any]:
+    if not descriptor:
+        return base_cfg
+    policy = base_cfg.setdefault("policy", {})
+    for key in ("type", "config_path"):
+        if descriptor.get(key) is not None:
+            policy[key] = descriptor[key]
+    return base_cfg
 
 
 def _optional_int(value: Any) -> int | None:
@@ -776,6 +824,7 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
     if isinstance(config, dict):
         config = DAggerRoundsConfig(**config)
     round_cfg = copy.deepcopy(config.__dict__)
+    round_policy_descriptor = _validate_round_policy_descriptor(config.policy)
     policy_backend = make_policy_backend(config.policy_backend)
     policy_backend_info = policy_backend.metadata()
 
@@ -789,6 +838,8 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
     if train_cfg_path is None:
         raise ValueError("dagger_rounds.train_cfg_path or policy_backend.trainer.train_cfg_path is required.")
     base_train_cfg = _load_yaml(train_cfg_path)["train"]
+    _apply_round_policy_descriptor(base_record_cfg, round_policy_descriptor)
+    _apply_round_policy_descriptor(base_train_cfg, round_policy_descriptor)
     round_schedule_cfg = _round_schedule_cfg(config)
     max_rounds = _resolve_max_rounds(config, round_schedule_cfg)
     base_train_steps = int(base_train_cfg.get("steps", 10_000))
