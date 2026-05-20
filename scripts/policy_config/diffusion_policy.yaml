@@ -1,0 +1,6 @@
+# Reserved Diffusion Policy configuration file.
+# run_record.py can resolve and read this path when policy.type is one of:
+# diffusion, dp, diffusion_policy.
+#
+# Full DiffusionConfig exposure is intentionally not implemented here yet.
+{}

@@ -13,7 +13,7 @@ dagger_rounds:
   round_schedule:
     # If max_rounds is omitted, the controller falls back to legacy num_rounds.
     # Keep this equal to num_rounds while validating fixed-round behavior.
-    max_rounds: 3
+    max_rounds: 1
 
     early_stop:
       enabled: true
@@ -91,7 +91,7 @@ dagger_rounds:
       on_missing_source: disable_sampler
 
       replacement: true
-  episodes_per_round: 5
+  episodes_per_round: 50
   # TODO: output_id
   output_root: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds\
                 /task3_step1/8mL_empty_left_v06"

@@ -1,5 +1,5 @@
 record:
-  repo_id: &repo_id "nero_task3_step1/8mL_empty_left"
+  repo_id: &repo_id "nero_task3_step1/2mL_empty_right"
   # Suggested format: <robot_task<num>_step<num>>/<description>, e.g. nero_task3_step1/2mL_empty
   # <description>: (https://github.com/wbcdcompetition/wbcd_tasks/tree/main/track-3-lab-experiments)
     ## step1
@@ -66,21 +66,28 @@ record:
     # 策略类型: act | diffusion
     # 轮次式 DAgger 的 run_mix 采集使用 ACT checkpoint 推理。
     type: "act"
-    device: "cuda"  # 运行设备 (cuda, cpu)
-    push_to_hub: False  # 禁用模型推送
-    temporal_ensemble_coeff: 0.03  # 关闭时序加权，降低启动迟滞
-    chunk_size: 30
-    n_action_steps: 1
-    pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds/task3_step1/8mL_empty_left_v02/round_002/train/checkpoints/last/pretrained_model"
+    config_path: scripts/policy_config/act_config.yaml
+
+    # Policy hyperparameters have been moved to scripts/policy_config/*.yaml.
+    # record_cfg.yaml should only keep recording/device/camera/path/runtime settings.
+    #
+    # Legacy ACT fields below are deprecated. If uncommented for an old run, run_record.py
+    # will warn and let these values override the policy yaml for backward compatibility.
+    # device: "cuda"  # 运行设备 (cuda, cpu)
+    # push_to_hub: False  # 禁用模型推送
+    # temporal_ensemble_coeff: 0.03  # 关闭时序加权，降低启动迟滞
+    # chunk_size: 30
+    # n_action_steps: 1
+    # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds/task3_step1/8mL_empty_left_v02/round_002/train/checkpoints/last/pretrained_model"
     # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/8mL_empty_left\
     #                   /act_20260509_E125_SW_V01/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
     # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty\
     #                   /fused_act_chunk30_fuser_gst_020000_pretrained_model"
   
   task:
-    description: "pick up big vials and place them in the empty rack" # task description
+    description: "pick up small vials and insert them in the empty rack" # task description
     # description: "pick up the red cube with the right hand and transfer it to the right hand" # task description
-    num_episodes: 1 # number of episodes to record
+    num_episodes: 50 # number of episodes to record
     display: True # Whether to display the data during recording
     resume: false # whether to resume from an existing dataset
     resume_dataset: roboticiq/pick_all_yellow_cube_to_brown_basket_20260208_v01 # dataset to resume from if resume is True
