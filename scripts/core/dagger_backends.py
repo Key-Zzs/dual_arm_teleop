@@ -54,6 +54,7 @@ def _act_chunk_size_from_train_cfg(train_cfg: dict[str, Any]) -> int:
         policy_cfg,
         scripts_dir=_default_scripts_dir(),
         project_root=_default_project_root(),
+        mode="train",
     )
     policy_yaml = load_policy_yaml(policy_config_path)
     if policy_yaml.get("chunk_size") is None:

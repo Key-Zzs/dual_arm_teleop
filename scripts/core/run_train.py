@@ -238,6 +238,7 @@ class TrainPipelineConfig(HubMixin):
             policy,
             scripts_dir=_default_scripts_dir(),
             project_root=_default_project_root(),
+            mode="train",
         )
         policy_yaml = load_policy_yaml(self.policy_config_path)
         self.policy = build_policy_config(
@@ -246,6 +247,7 @@ class TrainPipelineConfig(HubMixin):
             legacy_policy_dict=policy,
             legacy_source_name="train_cfg.yaml",
             config_path=self.policy_config_path,
+            mode="train",
         )
         if policy.get("pretrained_path") is None and self.policy.pretrained_path is not None:
             logging.warning(

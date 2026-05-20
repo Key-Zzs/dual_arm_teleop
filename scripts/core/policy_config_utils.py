@@ -9,18 +9,62 @@ import yaml
 
 ACT_POLICY_TYPES = {"act", "act_dagger"}
 DIFFUSION_POLICY_TYPES = {"diffusion", "dp", "diffusion_policy"}
-POLICY_CONFIG_META_KEYS = {"type", "config_path", "name"}
+POLICY_CONFIG_META_KEYS = {"type", "config_path", "reason_config_path", "train_config_path", "name"}
+POLICY_CONFIG_MODES = {"train", "reason"}
+DEPRECATED_POLICY_CONFIG_FILENAMES = {
+    "act_config.yaml": (
+        "scripts/policy_config/act_train_config.yaml",
+        "scripts/policy_config/act_reason_config.yaml",
+    ),
+    "diffusion_policy.yaml": (
+        "scripts/policy_config/diffusion_train_config.yaml",
+        "scripts/policy_config/diffusion_reason_config.yaml",
+    ),
+}
 
 
-def default_policy_config_path(policy_type: str) -> str:
+def normalize_policy_type(policy_type: str) -> str:
     policy_type = str(policy_type).strip().lower()
     if policy_type in ACT_POLICY_TYPES:
-        return "scripts/policy_config/act_config.yaml"
+        return "act"
     if policy_type in DIFFUSION_POLICY_TYPES:
-        return "scripts/policy_config/diffusion_policy.yaml"
+        return "diffusion"
     raise ValueError(
         f"No config for policy type: {policy_type}. "
         "Supported policy types: act | diffusion | dp | diffusion_policy"
+    )
+
+
+def _validate_policy_config_mode(mode: str) -> str:
+    mode = str(mode).strip().lower()
+    if mode not in POLICY_CONFIG_MODES:
+        raise ValueError(f"Policy config mode must be one of {sorted(POLICY_CONFIG_MODES)}. Got: {mode!r}")
+    return mode
+
+
+def get_default_policy_config_path(policy_type: str, mode: str) -> str:
+    policy_type = normalize_policy_type(policy_type)
+    mode = _validate_policy_config_mode(mode)
+    if policy_type == "act":
+        return f"scripts/policy_config/act_{mode}_config.yaml"
+    return f"scripts/policy_config/diffusion_{mode}_config.yaml"
+
+
+def default_policy_config_path(policy_type: str, mode: str = "reason") -> str:
+    """Backward-compatible alias for callers that have not been mode-aware yet."""
+    return get_default_policy_config_path(policy_type, mode)
+
+
+def warn_if_deprecated_policy_config_path(path: Path) -> None:
+    replacements = DEPRECATED_POLICY_CONFIG_FILENAMES.get(path.name)
+    if replacements is None:
+        return
+    logging.warning(
+        "[DEPRECATED] Policy config file %s has been split. Use %s for training "
+        "and %s for record/reason/deploy configs.",
+        path,
+        replacements[0],
+        replacements[1],
     )
 
 
@@ -28,27 +72,42 @@ def resolve_policy_config_path(
     policy_cfg: Dict[str, Any],
     scripts_dir: Path,
     project_root: Path,
+    *,
+    mode: str = "reason",
+    config_path_key: str | None = None,
 ) -> Path:
     """Resolve policy config paths without depending on the process cwd.
 
     Relative paths are checked in this order:
-    1. Project root, so `scripts/policy_config/act_config.yaml` works from the
-       lerobot_dual_arm_teleop project root.
-    2. The scripts directory, so `policy_config/act_config.yaml` also works.
+    1. Project root, so `scripts/policy_config/act_reason_config.yaml` works
+       from the lerobot_dual_arm_teleop project root.
+    2. The scripts directory, so `policy_config/act_reason_config.yaml` also works.
     """
-    policy_type = str(policy_cfg.get("type", "")).strip().lower()
-    raw_path = policy_cfg.get("config_path") or default_policy_config_path(policy_type)
+    mode = _validate_policy_config_mode(mode)
+    policy_type = normalize_policy_type(policy_cfg.get("type", ""))
+
+    if config_path_key is not None:
+        raw_path = policy_cfg.get(config_path_key)
+    elif mode == "train":
+        raw_path = policy_cfg.get("train_config_path") or policy_cfg.get("config_path")
+    else:
+        raw_path = policy_cfg.get("reason_config_path") or policy_cfg.get("config_path")
+    raw_path = raw_path or get_default_policy_config_path(policy_type, mode)
 
     path = Path(str(raw_path)).expanduser()
     if path.is_absolute():
         if path.is_file():
-            return path
+            resolved = path.resolve()
+            warn_if_deprecated_policy_config_path(resolved)
+            return resolved
         raise FileNotFoundError(f"Policy config file does not exist: {path}")
 
     candidates = [project_root / path, scripts_dir / path]
     for candidate in candidates:
         if candidate.is_file():
-            return candidate.resolve()
+            resolved = candidate.resolve()
+            warn_if_deprecated_policy_config_path(resolved)
+            return resolved
 
     candidate_text = "\n".join(f"  - {candidate}" for candidate in candidates)
     raise FileNotFoundError(
@@ -459,6 +518,7 @@ def build_diffusion_config(
     legacy_source_name: str = "config",
     runtime_overrides: Dict[str, Any] | None = None,
     config_path: Path | None = None,
+    mode: str | None = None,
 ) -> PreTrainedConfig:
     from lerobot.policies import DiffusionConfig
 
@@ -535,6 +595,17 @@ def build_diffusion_config(
     if "tags" in diffusion_kwargs:
         _validate_tags(diffusion_kwargs["tags"])
 
+    if (
+        mode is not None
+        and _validate_policy_config_mode(mode) == "reason"
+        and bool(diffusion_kwargs.get("crop_is_random", False))
+    ):
+        logging.warning(
+            "Diffusion reason config should set crop_is_random=false to avoid stochastic deployment. "
+            "Current config_path=%s still has crop_is_random=true.",
+            config_path,
+        )
+
     validate_diffusion_config(diffusion_kwargs)
     init_device, indexed_device = _act_init_device_and_restore_device(diffusion_kwargs.get("device"))
     diffusion_kwargs["device"] = init_device
@@ -551,9 +622,10 @@ def build_policy_config(
     legacy_source_name: str = "config",
     runtime_overrides: Dict[str, Any] | None = None,
     config_path: Path | None = None,
+    mode: str | None = None,
 ) -> PreTrainedConfig:
-    policy_type = str(policy_type).strip().lower()
-    if policy_type in ACT_POLICY_TYPES:
+    policy_type = normalize_policy_type(policy_type)
+    if policy_type == "act":
         return build_act_config(
             policy_yaml_dict,
             legacy_policy_dict=legacy_policy_dict,
@@ -561,13 +633,14 @@ def build_policy_config(
             runtime_overrides=runtime_overrides,
             config_path=config_path,
         )
-    if policy_type in DIFFUSION_POLICY_TYPES:
+    if policy_type == "diffusion":
         return build_diffusion_config(
             policy_yaml_dict,
             legacy_policy_dict=legacy_policy_dict,
             legacy_source_name=legacy_source_name,
             runtime_overrides=runtime_overrides,
             config_path=config_path,
+            mode=mode,
         )
     raise ValueError(
         f"No config for policy type: {policy_type}. "

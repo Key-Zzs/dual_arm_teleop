@@ -1,14 +1,6 @@
-# LeRobot Diffusion Policy configuration.
-# Used by run_record.py and run_train.py when policy.type is one of:
-# diffusion, dp, diffusion_policy.
-# Defaults are aligned with src/lerobot/policies/diffusion/configuration_diffusion.py.
-#
-# Notes:
-# - Model-architecture fields must match the checkpoint used for inference.
-# - input_features/output_features are usually inferred from the dataset metadata
-#   and should stay empty unless you intentionally want to override them.
-# - This project defaults to local training, so push_to_hub is disabled here.
-#   Set push_to_hub: true together with repo_id when you want Hub upload.
+# LeRobot Diffusion Policy training configuration.
+# Used by run_train.py when policy.type is one of: diffusion, dp, diffusion_policy.
+# Model-architecture fields must match checkpoints used for finetune/resume.
 
 # -------------------------
 # Runtime / framework
@@ -77,7 +69,7 @@ prediction_type: epsilon
 clip_sample: true
 clip_sample_range: 1.0
 
-# null means use the same value as num_train_timesteps at inference time.
+# null means use the same value as num_train_timesteps when inference is needed.
 num_inference_steps: null
 
 # -------------------------

@@ -66,12 +66,12 @@ record:
     # 策略类型: act | diffusion | dp | diffusion_policy
     # 轮次式 DAgger 的 run_mix 采集目前只实现 ACT checkpoint 推理。
     type: "act"
-    config_path: scripts/policy_config/act_config.yaml
+    config_path: scripts/policy_config/act_reason_config.yaml
     # For diffusion:
     # type: "diffusion"
-    # config_path: scripts/policy_config/diffusion_policy.yaml
+    # config_path: scripts/policy_config/diffusion_reason_config.yaml
 
-    # Policy hyperparameters have been moved to scripts/policy_config/*.yaml.
+    # Policy hyperparameters have been moved to scripts/policy_config/*_reason_config.yaml.
     # record_cfg.yaml should only keep recording/device/camera/path/runtime settings.
     #
     # Legacy ACT fields below are deprecated. If uncommented for an old run, run_record.py

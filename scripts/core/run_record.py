@@ -236,6 +236,7 @@ class RecordConfig:
             policy,
             scripts_dir=self.scripts_dir,
             project_root=self.project_root,
+            mode="reason",
         )
         policy_yaml = load_policy_yaml(self.policy_config_path)
         self.policy = build_policy_config(
@@ -244,6 +245,7 @@ class RecordConfig:
             legacy_policy_dict=policy,
             legacy_source_name="record_cfg.yaml",
             config_path=self.policy_config_path,
+            mode="reason",
         )
     
     def create_teleop_config(self):

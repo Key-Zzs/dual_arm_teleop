@@ -1,12 +1,6 @@
-# LeRobot ACT policy configuration.
-# Used by run_record.py when policy.type == "act".
-# Defaults are aligned with LeRobot ACTConfig unless explicitly changed.
-#
-# Notes:
-# - Runtime/inference parameters can be changed for deployment.
-# - Model-architecture parameters must match the checkpoint used for inference.
-# - Training parameters are exposed for config completeness, but may not affect record-time inference.
-# - input_features/output_features are usually inferred by dataset/runtime and should stay empty unless needed.
+# LeRobot ACT reason/deploy policy configuration.
+# Used by run_record.py and DAgger rollout when policy.type == "act".
+# Keep model-architecture fields aligned with the training checkpoint.
 
 # -------------------------
 # Runtime / framework
@@ -26,7 +20,7 @@ tags: null
 license: null
 # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds/task3_step1/8mL_empty_left_v02/round_002/train/checkpoints/last/pretrained_model"
 # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/8mL_empty_left\
-#                   /act_20260509_E125_SW_V01/checkpoints/last/pretrained_model"  # 预训练模型路径下要包括config.json
+#                   /act_20260509_E125_SW_V01/checkpoints/last/pretrained_model"
 pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1\
                   /2mL_empty_right/act_20260520_E249_V01/checkpoints/015000/pretrained_model"
 
@@ -73,7 +67,7 @@ kl_weight: 10
 
 # -------------------------
 # Regularization / optimization
-# Mostly relevant for training, not record-time inference.
+# Present for ACTConfig completeness; mostly training-side.
 # -------------------------
 dropout: 0.1
 optimizer_lr: 0.00001

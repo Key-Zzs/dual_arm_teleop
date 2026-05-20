@@ -110,40 +110,75 @@ def _require_checkpoint_exists(path: Path | None, label: str) -> Path:
 
 def _validate_round_policy_descriptor(policy_cfg: dict[str, Any] | None) -> dict[str, Any]:
     from scripts.core.policy_config_utils import (
-        ACT_POLICY_TYPES,
         DIFFUSION_POLICY_TYPES,
+        get_default_policy_config_path,
         load_policy_yaml,
+        normalize_policy_type,
         resolve_policy_config_path,
     )
 
     descriptor = copy.deepcopy(policy_cfg or {"type": "act"})
-    policy_type = str(descriptor.get("type", "act")).strip().lower()
-    if policy_type in DIFFUSION_POLICY_TYPES:
-        policy_path = resolve_policy_config_path(
-            descriptor,
-            scripts_dir=_default_scripts_dir(),
-            project_root=_default_project_root(),
+    raw_policy_type = str(descriptor.get("type", "act")).strip().lower()
+    policy_type = normalize_policy_type(raw_policy_type)
+    descriptor["type"] = policy_type
+
+    if descriptor.get("reason_config_path") is None and descriptor.get("config_path") is not None:
+        logging.warning(
+            "[DEPRECATED] dagger_rounds.policy.config_path is treated as a legacy alias "
+            "for dagger_rounds.policy.reason_config_path. Add train_config_path explicitly "
+            "so DAgger rollout and training cannot share one yaml by accident."
         )
-        load_policy_yaml(policy_path)
+        descriptor["reason_config_path"] = descriptor["config_path"]
+
+    descriptor.setdefault("reason_config_path", get_default_policy_config_path(policy_type, "reason"))
+    descriptor.setdefault("train_config_path", get_default_policy_config_path(policy_type, "train"))
+
+    reason_path = resolve_policy_config_path(
+        descriptor,
+        scripts_dir=_default_scripts_dir(),
+        project_root=_default_project_root(),
+        mode="reason",
+    )
+    train_path = resolve_policy_config_path(
+        descriptor,
+        scripts_dir=_default_scripts_dir(),
+        project_root=_default_project_root(),
+        mode="train",
+    )
+    load_policy_yaml(reason_path)
+    load_policy_yaml(train_path)
+
+    if raw_policy_type in DIFFUSION_POLICY_TYPES:
         raise NotImplementedError(
             "Diffusion policy is configured, but DAgger diffusion backend is not implemented yet. "
-            f"Resolved diffusion policy config: {policy_path}"
+            f"Resolved diffusion reason config: {reason_path}; train config: {train_path}"
         )
-    if policy_type not in ACT_POLICY_TYPES:
+    if policy_type != "act":
         raise ValueError(
             "dagger_rounds.policy.type must be one of: act | diffusion | dp | diffusion_policy. "
-            f"Got: {policy_type!r}"
+            f"Got: {raw_policy_type!r}"
         )
     return descriptor
 
 
-def _apply_round_policy_descriptor(base_cfg: dict[str, Any], descriptor: dict[str, Any]) -> dict[str, Any]:
+def _apply_round_policy_descriptor(
+    base_cfg: dict[str, Any],
+    descriptor: dict[str, Any],
+    *,
+    mode: str,
+) -> dict[str, Any]:
     if not descriptor:
         return base_cfg
+    if mode not in {"train", "reason"}:
+        raise ValueError(f"mode must be 'train' or 'reason'. Got: {mode!r}")
+
     policy = base_cfg.setdefault("policy", {})
-    for key in ("type", "config_path"):
-        if descriptor.get(key) is not None:
-            policy[key] = descriptor[key]
+    policy["type"] = descriptor["type"]
+    config_key = "train_config_path" if mode == "train" else "reason_config_path"
+    policy["config_path"] = descriptor[config_key]
+
+    for stale_key in ("reason_config_path", "train_config_path"):
+        policy.pop(stale_key, None)
     return base_cfg
 
 
@@ -838,8 +873,8 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
     if train_cfg_path is None:
         raise ValueError("dagger_rounds.train_cfg_path or policy_backend.trainer.train_cfg_path is required.")
     base_train_cfg = _load_yaml(train_cfg_path)["train"]
-    _apply_round_policy_descriptor(base_record_cfg, round_policy_descriptor)
-    _apply_round_policy_descriptor(base_train_cfg, round_policy_descriptor)
+    _apply_round_policy_descriptor(base_record_cfg, round_policy_descriptor, mode="reason")
+    _apply_round_policy_descriptor(base_train_cfg, round_policy_descriptor, mode="train")
     round_schedule_cfg = _round_schedule_cfg(config)
     max_rounds = _resolve_max_rounds(config, round_schedule_cfg)
     base_train_steps = int(base_train_cfg.get("steps", 10_000))

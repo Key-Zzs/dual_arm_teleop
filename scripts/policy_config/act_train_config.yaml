@@ -1,0 +1,70 @@
+# LeRobot ACT training policy configuration.
+# Used by run_train.py when policy.type == "act".
+# Model-architecture fields must match checkpoints used for finetune/resume.
+
+# -------------------------
+# Runtime / framework
+# -------------------------
+n_obs_steps: 1
+
+input_features: {}
+output_features: {}
+
+device: cuda
+use_amp: false
+
+push_to_hub: false
+repo_id: shenzhaolong/act_policy
+private: null
+tags: null
+license: null
+pretrained_path: null
+
+# -------------------------
+# Action chunking
+# -------------------------
+chunk_size: 30
+n_action_steps: 1
+temporal_ensemble_coeff: null
+
+# -------------------------
+# Normalization
+# -------------------------
+normalization_mapping:
+  VISUAL: MEAN_STD
+  STATE: MEAN_STD
+  ACTION: MEAN_STD
+
+# -------------------------
+# Vision encoder
+# -------------------------
+vision_backbone: resnet18
+pretrained_backbone_weights: ResNet18_Weights.IMAGENET1K_V1
+replace_final_stride_with_dilation: false
+
+# -------------------------
+# Transformer
+# -------------------------
+pre_norm: false
+dim_model: 512
+n_heads: 8
+dim_feedforward: 3200
+feedforward_activation: relu
+n_encoder_layers: 4
+n_decoder_layers: 1
+
+# -------------------------
+# VAE latent action modeling
+# -------------------------
+use_vae: true
+latent_dim: 32
+n_vae_encoder_layers: 4
+kl_weight: 10
+
+# -------------------------
+# Regularization / optimization
+# -------------------------
+dropout: 0.1
+optimizer_lr: 0.00001
+optimizer_weight_decay: 0.0001
+optimizer_lr_backbone: 0.00001
