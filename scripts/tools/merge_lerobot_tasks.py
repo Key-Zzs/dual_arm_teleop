@@ -70,8 +70,16 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Override LeRobot dataset home. Defaults like LeRobot: HF_LEROBOT_HOME or HF_HOME/lerobot.",
     )
-    parser.add_argument("--source-task", required=True, help="Task prompt to merge/remove.")
+    parser.add_argument("--source-task", help="Task prompt to merge/remove.")
     parser.add_argument("--target-task", required=True, help="Task prompt to keep.")
+    parser.add_argument(
+        "--repair-single-task",
+        action="store_true",
+        help=(
+            "Recover an already partially merged dataset by forcing the task table, "
+            "data task_index, episode tasks, info.json, and task_index stats to one target task."
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true", help="Print planned changes without writing.")
     parser.set_defaults(backup=True)
     parser.add_argument("--backup", dest="backup", action="store_true", help="Back up changed files.")
@@ -156,7 +164,22 @@ def build_task_mapping(tasks, source_task: str, target_task: str) -> tuple[Any, 
     return updated_tasks, old_to_new_idx, source_idx, target_idx
 
 
-def normalize_tasks_value(value: Any, source_task: str, target_task: str) -> tuple[list[str], bool]:
+def build_single_task_mapping(tasks, target_task: str) -> tuple[Any, dict[int, int]]:
+    if target_task not in tasks.index:
+        raise SystemExit(f'Target task not found in tasks.parquet: "{target_task}"')
+
+    updated_tasks = tasks.loc[[target_task]].copy()
+    updated_tasks["task_index"] = [0]
+    old_to_new_idx = {int(row.task_index): 0 for _, row in tasks.iterrows()}
+    return updated_tasks, old_to_new_idx
+
+
+def normalize_tasks_value(
+    value: Any,
+    source_task: str | None,
+    target_task: str,
+    force_target_task: bool = False,
+) -> tuple[list[str], bool]:
     original = value
     if hasattr(value, "tolist"):
         value = value.tolist()
@@ -169,7 +192,10 @@ def normalize_tasks_value(value: Any, source_task: str, target_task: str) -> tup
     elif not isinstance(value, list):
         value = [str(value)]
 
-    replaced = [target_task if item == source_task else item for item in value]
+    if force_target_task:
+        replaced = [target_task]
+    else:
+        replaced = [target_task if item == source_task else item for item in value]
     deduped = []
     seen = set()
     for item in replaced:
@@ -179,7 +205,7 @@ def normalize_tasks_value(value: Any, source_task: str, target_task: str) -> tup
         deduped.append(item)
 
     comparable_original = original.tolist() if hasattr(original, "tolist") else original
-    return deduped, deduped != comparable_original
+    return deduped, force_target_task or deduped != comparable_original
 
 
 def list_parquets(dataset_root: Path, relative_dir: Path) -> list[Path]:
@@ -231,19 +257,27 @@ def update_task_index_stats_columns(row: Any, task_idx: int) -> Any:
 
 def plan_changes(
     dataset_root: Path,
-    source_task: str,
+    source_task: str | None,
     target_task: str,
     pd: Any,
+    repair_single_task: bool,
 ) -> tuple[list[PlannedChange], Any, dict[int, int], list[Path], list[Path]]:
     tasks = load_tasks(dataset_root, pd)
-    updated_tasks, old_to_new_idx, source_idx, target_idx = build_task_mapping(
-        tasks, source_task, target_task
-    )
+    if repair_single_task:
+        updated_tasks, old_to_new_idx = build_single_task_mapping(tasks, target_task)
+        task_table_description = f'force a single target task "{target_task}" with task_index 0'
+    else:
+        if source_task is None:
+            raise SystemExit("--source-task is required unless --repair-single-task is used.")
+        updated_tasks, old_to_new_idx, source_idx, target_idx = build_task_mapping(
+            tasks, source_task, target_task
+        )
+        task_table_description = f"remove source task index {source_idx} and keep target task index {target_idx}"
 
     changes = [
         PlannedChange(
             dataset_root / DEFAULT_TASKS_PATH,
-            f"remove source task index {source_idx} and keep target task index {target_idx}",
+            task_table_description,
         )
     ]
 
@@ -253,7 +287,10 @@ def plan_changes(
     for path in data_files:
         changes.append(PlannedChange(path, f"remap task_index with {old_to_new_idx}"))
     for path in episode_files:
-        changes.append(PlannedChange(path, f'replace task "{source_task}" with "{target_task}"'))
+        if repair_single_task:
+            changes.append(PlannedChange(path, f'force all episode tasks to "{target_task}"'))
+        else:
+            changes.append(PlannedChange(path, f'replace task "{source_task}" with "{target_task}"'))
 
     info_path = dataset_root / DEFAULT_INFO_PATH
     if info_path.exists():
@@ -284,6 +321,7 @@ def apply_data_files(
     timestamp: str,
     dry_run: bool,
     backup: bool,
+    map_unmapped_to: int | None = None,
 ) -> np.ndarray:
     all_task_indices = []
     total_changed = 0
@@ -293,7 +331,12 @@ def apply_data_files(
         if "task_index" not in df.columns:
             continue
         old_series = df["task_index"].copy()
-        df["task_index"] = df["task_index"].map(lambda value: old_to_new_idx.get(int(value), int(value)))
+        df["task_index"] = df["task_index"].map(
+            lambda value: old_to_new_idx.get(
+                int(value),
+                map_unmapped_to if map_unmapped_to is not None else int(value),
+            )
+        )
         changed = int((old_series != df["task_index"]).sum())
         total_changed += changed
         all_task_indices.append(df["task_index"].to_numpy())
@@ -317,12 +360,13 @@ def apply_data_files(
 def apply_episode_files(
     episode_files: list[Path],
     task_to_idx: dict[str, int],
-    source_task: str,
+    source_task: str | None,
     target_task: str,
     pd: Any,
     timestamp: str,
     dry_run: bool,
     backup: bool,
+    force_target_task: bool = False,
 ) -> None:
     changed_files = 0
     changed_rows = 0
@@ -335,7 +379,12 @@ def apply_episode_files(
         changed = False
         updated_tasks = []
         for value in df["tasks"].tolist():
-            new_tasks, value_changed = normalize_tasks_value(value, source_task, target_task)
+            new_tasks, value_changed = normalize_tasks_value(
+                value,
+                source_task,
+                target_task,
+                force_target_task=force_target_task,
+            )
             updated_tasks.append(new_tasks)
             changed = changed or value_changed
 
@@ -432,20 +481,32 @@ def main() -> None:
         source_task=args.source_task,
         target_task=args.target_task,
         pd=pd,
+        repair_single_task=args.repair_single_task,
     )
 
     task_to_idx = {task: int(row.task_index) for task, row in updated_tasks.iterrows()}
 
     print(f"Dataset root: {dataset_root}")
-    print(f'Source task: "{args.source_task}"')
+    if args.source_task is not None:
+        print(f'Source task: "{args.source_task}"')
     print(f'Target task: "{args.target_task}"')
+    if args.repair_single_task:
+        print("Mode: repair single task")
     print(f"Task index mapping: {old_to_new_idx}")
     print("Planned changes:")
     for change in changes:
         print(f"  - {change.path}: {change.description}")
 
     apply_tasks_table(dataset_root, updated_tasks, timestamp, args.dry_run, args.backup)
-    task_index_values = apply_data_files(data_files, old_to_new_idx, pd, timestamp, args.dry_run, args.backup)
+    task_index_values = apply_data_files(
+        data_files,
+        old_to_new_idx,
+        pd,
+        timestamp,
+        args.dry_run,
+        args.backup,
+        map_unmapped_to=0 if args.repair_single_task else None,
+    )
     apply_episode_files(
         episode_files,
         task_to_idx,
@@ -455,6 +516,7 @@ def main() -> None:
         timestamp,
         args.dry_run,
         args.backup,
+        force_target_task=args.repair_single_task,
     )
     apply_info_json(dataset_root, len(updated_tasks), timestamp, args.dry_run, args.backup)
     apply_stats_json(dataset_root, task_index_values, timestamp, args.dry_run, args.backup)
