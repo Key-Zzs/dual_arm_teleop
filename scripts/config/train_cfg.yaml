@@ -23,14 +23,26 @@ train:
   policy:
     # 推荐保持为普通 ACT；轮次式 DAgger 会由 run_dagger_rounds.py 在内存中注入训练参数。
     type: "act"
-    device: "cuda"
-    repo_id: "shenzhaolong/act_policy"
-    push_to_hub: false  # 禁用模型推送
-    temporal_ensemble_coeff: 0.01 # 关闭时序加权，减少动作启动迟滞
-    chunk_size: 30
-    n_action_steps: 1
+    config_path: scripts/policy_config/act_config.yaml
+
+    # Policy hyperparameters have been moved to scripts/policy_config/*.yaml.
+    # train_cfg.yaml should only keep dataset/output/checkpoint/runtime/training-loop settings.
+    #
+    # Legacy ACT fields below are deprecated. If uncommented for an old run, run_train.py
+    # will warn and let these values override the policy yaml for backward compatibility.
+    # device: "cuda"
+    # repo_id: "shenzhaolong/act_policy"
+    # push_to_hub: false  # 禁用模型推送
+    # temporal_ensemble_coeff: 0.01 # 关闭时序加权，减少动作启动迟滞
+    # chunk_size: 30
+    # n_action_steps: 1
     # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
     #                   /task3_step1/8mL_empty_left/[worked]act_20260508_E125/checkpoints/010000/pretrained_model"  # 从 ACT checkpoint 继续训练
+    #
+    # TODO: The shared act_config.yaml currently keeps record-time values for
+    # pretrained_path and temporal_ensemble_coeff. For scratch training or a
+    # different training-time temporal ensemble setting, point config_path to a
+    # train-specific ACT yaml.
 
   output_dir: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
               /task3_step1/2mL_empty_right/act_20260520_E249_V01" # 模型和日志的输出目录

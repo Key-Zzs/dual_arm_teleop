@@ -20,7 +20,7 @@ device: cuda
 use_amp: false
 
 push_to_hub: false
-repo_id: null
+repo_id: shenzhaolong/act_policy
 private: null
 tags: null
 license: null

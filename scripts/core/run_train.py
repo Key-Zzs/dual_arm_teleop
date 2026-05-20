@@ -23,7 +23,6 @@ try:
         apply_cuda_visible_devices_from_config_path,
         apply_cuda_visible_devices_from_train_cfg,
         log_training_device_state,
-        resolve_policy_device_for_config,
         setup_training_device,
     )
 except ModuleNotFoundError:
@@ -33,13 +32,27 @@ except ModuleNotFoundError:
         apply_cuda_visible_devices_from_config_path,
         apply_cuda_visible_devices_from_train_cfg,
         log_training_device_state,
-        resolve_policy_device_for_config,
         setup_training_device,
     )
+
+from scripts.core.policy_config_utils import (
+    build_policy_config,
+    load_policy_yaml,
+    resolve_policy_config_path,
+    self_test_policy_config_loader,
+)
 
 
 def _default_train_cfg_path() -> Path:
     return Path(__file__).resolve().parent.parent / "config" / "train_cfg.yaml"
+
+
+def _default_scripts_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_project_root() -> Path:
+    return _default_scripts_dir().parent
 
 
 def _extract_config_path_from_argv(argv: list[str] | None = None) -> Path:
@@ -207,7 +220,6 @@ class TrainPipelineConfig(HubMixin):
         self.requested_policy_device: str | None = (
             str(policy["device"]) if policy.get("device") is not None else None
         )
-        policy_device_for_config = resolve_policy_device_for_config(cfg, self.training)
     
         self.dataset: DatasetConfig = DatasetConfig(
             repo_id = dataset["repo_id"],
@@ -221,74 +233,35 @@ class TrainPipelineConfig(HubMixin):
         # )
         self.env = None
 
-        def normalize_temporal_ensemble_coeff(value: Any) -> float | None:
-            """Treat non-positive and None-like values as disabled temporal ensembling."""
-            if value is None:
-                return None
-
-            if isinstance(value, str):
-                text = value.strip().lower()
-                if text in {"", "none", "null", "~"}:
-                    return None
-                try:
-                    value = float(text)
-                except ValueError as exc:
-                    raise ValueError(
-                        "`policy.temporal_ensemble_coeff` must be a number, null, or None-like string. "
-                        f"Got: {value!r}"
-                    ) from exc
-
-            if isinstance(value, (int, float)):
-                return float(value) if value > 0 else None
-
-            raise ValueError(
-                "`policy.temporal_ensemble_coeff` must be numeric or null-like. "
-                f"Got type: {type(value).__name__}"
+        self.policy_type = str(policy["type"]).strip().lower()
+        self.policy_config_path = resolve_policy_config_path(
+            policy,
+            scripts_dir=_default_scripts_dir(),
+            project_root=_default_project_root(),
+        )
+        policy_yaml = load_policy_yaml(self.policy_config_path)
+        self.policy = build_policy_config(
+            self.policy_type,
+            policy_yaml,
+            legacy_policy_dict=policy,
+            legacy_source_name="train_cfg.yaml",
+            config_path=self.policy_config_path,
+        )
+        if policy.get("pretrained_path") is None and self.policy.pretrained_path is not None:
+            logging.warning(
+                "train policy yaml sets pretrained_path=%s. Training will initialize from this "
+                "checkpoint unless you set pretrained_path: null in a training-specific policy yaml.",
+                self.policy.pretrained_path,
             )
-
-        policy_type = policy["type"]
-        if policy_type == "act":
-            from lerobot.policies import ACTConfig
-            temporal_ensemble_coeff = normalize_temporal_ensemble_coeff(
-                policy.get("temporal_ensemble_coeff")
+        if (
+            "temporal_ensemble_coeff" not in policy
+            and getattr(self.policy, "temporal_ensemble_coeff", None) is not None
+        ):
+            logging.warning(
+                "train policy yaml sets temporal_ensemble_coeff=%s. This is usually a record-time "
+                "inference setting; use a training-specific policy yaml if training should differ.",
+                self.policy.temporal_ensemble_coeff,
             )
-            self.policy = ACTConfig(
-                device = policy_device_for_config,
-                use_amp = policy.get("use_amp", False),
-                repo_id = policy["repo_id"],
-                push_to_hub = policy["push_to_hub"],
-                pretrained_path = policy.get("pretrained_path"),
-                temporal_ensemble_coeff = temporal_ensemble_coeff,
-                chunk_size = policy.get("chunk_size", 100),
-                n_action_steps = policy.get("n_action_steps", 1),
-            )
-        elif policy_type == "act_dagger":
-            # NOTE: `act_dagger` is an internal round-Dagger training sentinel.
-            # This branch keeps compatibility for in-memory config construction.
-            from lerobot.policies import ACTConfig
-            temporal_ensemble_coeff = normalize_temporal_ensemble_coeff(
-                policy.get("temporal_ensemble_coeff")
-            )
-            self.policy = ACTConfig(
-                device = policy_device_for_config,
-                use_amp = policy.get("use_amp", False),
-                repo_id = policy["repo_id"],
-                push_to_hub = policy["push_to_hub"],
-                pretrained_path = policy.get("pretrained_path"),
-                temporal_ensemble_coeff = temporal_ensemble_coeff,
-                chunk_size = policy.get("chunk_size", 100),
-                n_action_steps = policy.get("n_action_steps", 1),
-            )
-        elif policy_type == "diffusion":
-            from lerobot.policies import DiffusionConfig
-            self.policy = DiffusionConfig(
-                device = policy_device_for_config,
-                use_amp = policy.get("use_amp", False),
-                repo_id = policy["repo_id"],
-                push_to_hub = policy["push_to_hub"],
-            )
-        else:
-            raise ValueError(f"no config for policy type: {policy_type}")
 
         # Set `dir` to where you would like to save all of the run outputs. If you run another training session
         # with the same value for `dir` its contents will be overwritten unless you set `resume` to true.
@@ -951,15 +924,51 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=_default_train_cfg_path(),
         help="Path to train_cfg.yaml.",
     )
+    arg_parser.add_argument(
+        "--dry-run-policy-config",
+        action="store_true",
+        help="Load train_cfg.yaml and the referenced policy yaml, build the policy config, then exit.",
+    )
+    arg_parser.add_argument(
+        "--self-test-policy-config",
+        action="store_true",
+        help="Run minimal in-process checks for the shared policy config loader, then exit.",
+    )
     return arg_parser
+
+
+def _load_train_cfg_yaml(cfg_path: Path) -> Dict[str, Any]:
+    with open(cfg_path, "r") as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict) or "train" not in cfg:
+        raise ValueError(f"Train config must contain a top-level `train` mapping: {cfg_path}")
+    return cfg
+
+
+def dry_run_policy_config(cfg_path: Path) -> TrainPipelineConfig:
+    cfg = _load_train_cfg_yaml(cfg_path)
+    train_cfg = TrainPipelineConfig(cfg["train"])
+    logging.info("====== [TRAIN POLICY CONFIG DRY-RUN] OK ======")
+    logging.info("policy.type: %s", train_cfg.policy_type)
+    logging.info("policy.config_path: %s", train_cfg.policy_config_path)
+    logging.info("policy.config_class: %s", type(train_cfg.policy).__name__)
+    logging.info("policy.device: %s", train_cfg.policy.device)
+    logging.info("policy.pretrained_path: %s", train_cfg.policy.pretrained_path)
+    return train_cfg
 
 
 def main():
     args = _build_arg_parser().parse_args()
-    cfg_path = args.config_path
-    with open(cfg_path, 'r') as f:
-        cfg = yaml.safe_load(f)
+    if args.self_test_policy_config:
+        self_test_policy_config_loader()
+        return
 
+    cfg_path = args.config_path
+    if args.dry_run_policy_config:
+        dry_run_policy_config(cfg_path)
+        return
+
+    cfg = _load_train_cfg_yaml(cfg_path)
     train_section = cfg["train"]
     apply_cuda_visible_devices_from_train_cfg(train_section)
     policy_type = train_section.get("policy", {}).get("type")

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from scripts.core.policy_config_utils import load_policy_yaml, resolve_policy_config_path
+
 
 ONLY_ACT_BACKEND_MESSAGE = "Only ACT backend is implemented currently."
 EXPORT_DAGGER_DATASET_KEYS = (
@@ -31,6 +33,32 @@ EXPORT_DAGGER_DATASET_KEYS = (
     "image_writer_processes",
     "image_writer_threads",
 )
+
+
+def _default_scripts_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_project_root() -> Path:
+    return _default_scripts_dir().parent
+
+
+def _act_chunk_size_from_train_cfg(train_cfg: dict[str, Any]) -> int:
+    policy_cfg = train_cfg.get("policy", {})
+    if not isinstance(policy_cfg, dict):
+        raise ValueError("train.policy must be a mapping when resolving ACT chunk_size.")
+    if policy_cfg.get("chunk_size") is not None:
+        return int(policy_cfg["chunk_size"])
+
+    policy_config_path = resolve_policy_config_path(
+        policy_cfg,
+        scripts_dir=_default_scripts_dir(),
+        project_root=_default_project_root(),
+    )
+    policy_yaml = load_policy_yaml(policy_config_path)
+    if policy_yaml.get("chunk_size") is None:
+        return 1
+    return int(policy_yaml["chunk_size"])
 
 
 class PolicyRunner:
@@ -136,7 +164,7 @@ class ACTChunkExportProfile(DAggerExportProfile):
         if min_episode_len is None:
             min_episode_len = round_cfg.get("min_episode_len_for_act")
         if min_episode_len is None:
-            min_episode_len = int(train_cfg.get("policy", {}).get("chunk_size", 1))
+            min_episode_len = _act_chunk_size_from_train_cfg(train_cfg)
 
         pre_takeover_context = (
             self.cfg["pre_takeover_context"]
