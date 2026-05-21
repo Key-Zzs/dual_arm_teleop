@@ -7,17 +7,9 @@
 # -------------------------
 n_obs_steps: 1
 
-input_features: {}
-output_features: {}
-
 device: cuda
 use_amp: false
 
-push_to_hub: false
-repo_id: shenzhaolong/act_policy
-private: null
-tags: null
-license: null
 # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds/task3_step1/8mL_empty_left_v05/round_001/train/checkpoints/last/pretrained_model"
 # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/8mL_empty_left\
 #                   /act_20260509_E125_SW_V01/checkpoints/last/pretrained_model"
@@ -60,16 +52,15 @@ n_decoder_layers: 1
 # -------------------------
 # VAE latent action modeling
 # -------------------------
-use_vae: true
 latent_dim: 32
-n_vae_encoder_layers: 4
-kl_weight: 10
 
 # -------------------------
-# Regularization / optimization
-# Present for ACTConfig completeness; mostly training-side.
+# Optional fields normally omitted for reason/deploy
 # -------------------------
-dropout: 0.1
-optimizer_lr: 0.00001
-optimizer_weight_decay: 0.0001
-optimizer_lr_backbone: 0.00001
+# input_features / output_features:
+#   Omit to infer policy features from the dataset metadata.
+# Hub upload metadata is not used by run_record.py:
+#   push_to_hub, repo_id, private, tags, license.
+# Training-only ACT fields:
+#   use_vae, n_vae_encoder_layers, kl_weight, dropout,
+#   optimizer_lr, optimizer_weight_decay, optimizer_lr_backbone.

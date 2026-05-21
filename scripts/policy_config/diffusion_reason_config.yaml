@@ -8,17 +8,9 @@
 # -------------------------
 n_obs_steps: 2
 
-input_features: {}
-output_features: {}
-
 device: cuda
 use_amp: false
 
-push_to_hub: false
-repo_id: shenzhaolong/act_policy
-private: null
-tags: null
-license: null
 pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right/dp_20260521_E249_V01/checkpoints/last/pretrained_model"
 
 # -------------------------
@@ -26,9 +18,6 @@ pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobo
 # -------------------------
 horizon: 16
 n_action_steps: 2
-
-# DiffusionConfig default: horizon - n_action_steps - n_obs_steps + 1.
-drop_n_last_frames: 7
 
 # -------------------------
 # Normalization
@@ -75,17 +64,13 @@ clip_sample_range: 1.0
 num_inference_steps: 20
 
 # -------------------------
-# Loss computation
+# Optional fields normally omitted for reason/deploy
 # -------------------------
-do_mask_loss_for_padding: false
-
-# -------------------------
-# Optimizer / training preset
-# Present for DiffusionConfig completeness; mostly training-side.
-# -------------------------
-optimizer_lr: 0.0001
-optimizer_betas: [0.95, 0.999]
-optimizer_eps: 0.00000001
-optimizer_weight_decay: 0.000001
-scheduler_name: cosine
-scheduler_warmup_steps: 500
+# input_features / output_features:
+#   Omit to infer policy features from the dataset metadata.
+# Hub upload metadata is not used by run_record.py:
+#   push_to_hub, repo_id, private, tags, license.
+# Training-only diffusion fields:
+#   drop_n_last_frames, do_mask_loss_for_padding,
+#   optimizer_lr, optimizer_betas, optimizer_eps, optimizer_weight_decay,
+#   scheduler_name, scheduler_warmup_steps.

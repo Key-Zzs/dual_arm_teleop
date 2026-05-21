@@ -2,18 +2,10 @@
 # Runtime / framework
 # -------------------------
 n_obs_steps: 2
-input_features: {}
-output_features: {}
 
 device: cuda
-use_amp: false
 
 push_to_hub: false
-repo_id: shenzhaolong/act_policy
-private: null
-tags: null
-license: null
-pretrained_path: null
 
 # -------------------------
 # Horizon / action sequence
@@ -60,10 +52,6 @@ beta_schedule: squaredcos_cap_v2
 beta_start: 0.0001
 beta_end: 0.02
 prediction_type: epsilon
-clip_sample: true
-clip_sample_range: 1.0
-# null means use the same value as num_train_timesteps when inference is needed.
-num_inference_steps: null
 
 # -------------------------
 # Loss computation
@@ -79,3 +67,17 @@ optimizer_eps: 0.00000001
 optimizer_weight_decay: 0.000001
 scheduler_name: cosine
 scheduler_warmup_steps: 500
+
+# -------------------------
+# Optional fields normally omitted for training
+# -------------------------
+# input_features / output_features:
+#   Omit to infer policy features from the dataset metadata.
+# use_amp:
+#   Not consumed by the custom run_train.py path; mixed precision is owned by Accelerator.
+# Fine-tune / resume from an existing pretrained model:
+#   pretrained_path: /path/to/checkpoints/.../pretrained_model
+# Hub upload metadata, only needed when push_to_hub: true:
+#   repo_id, private, tags, license.
+# Inference-only diffusion fields:
+#   num_inference_steps, clip_sample, clip_sample_range.
