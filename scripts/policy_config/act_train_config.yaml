@@ -23,8 +23,8 @@ pretrained_path: null
 # -------------------------
 # Action chunking
 # -------------------------
-chunk_size: 30
-n_action_steps: 1
+chunk_size: 20
+n_action_steps: 5
 temporal_ensemble_coeff: null
 
 # -------------------------

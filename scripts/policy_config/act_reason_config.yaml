@@ -18,18 +18,18 @@ repo_id: shenzhaolong/act_policy
 private: null
 tags: null
 license: null
-# pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds/task3_step1/8mL_empty_left_v02/round_002/train/checkpoints/last/pretrained_model"
+# pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/dagger_rounds/task3_step1/8mL_empty_left_v05/round_001/train/checkpoints/last/pretrained_model"
 # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/8mL_empty_left\
 #                   /act_20260509_E125_SW_V01/checkpoints/last/pretrained_model"
 pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1\
-                  /2mL_empty_right/act_20260520_E249_V01/checkpoints/015000/pretrained_model"
+                  /2mL_empty_right/act_20260521_E249_V01/checkpoints/014000/pretrained_model"
 
 # -------------------------
 # Action chunking / inference
 # -------------------------
-chunk_size: 30
+chunk_size: 20
 n_action_steps: 1
-temporal_ensemble_coeff: 0.03
+temporal_ensemble_coeff: 0.05
 
 # -------------------------
 # Normalization

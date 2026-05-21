@@ -19,13 +19,13 @@ repo_id: shenzhaolong/act_policy
 private: null
 tags: null
 license: null
-pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right/dp_20260520_E249_V01/checkpoints/021000/pretrained_model"
+pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right/dp_20260521_E249_V01/checkpoints/last/pretrained_model"
 
 # -------------------------
 # Horizon / action sequence
 # -------------------------
 horizon: 16
-n_action_steps: 4
+n_action_steps: 3
 
 # DiffusionConfig default: horizon - n_action_steps - n_obs_steps + 1.
 drop_n_last_frames: 7
@@ -42,7 +42,7 @@ normalization_mapping:
 # Vision encoder
 # -------------------------
 vision_backbone: resnet18
-crop_shape: [84, 84]
+crop_shape: [128, 128]
 crop_is_random: false
 pretrained_backbone_weights: null
 use_group_norm: true
@@ -72,7 +72,7 @@ clip_sample_range: 1.0
 
 # Reason-side tuning knob. Recommended sweep: 5 / 10 / 20.
 # null preserves the current behavior of using num_train_timesteps.
-num_inference_steps: null
+num_inference_steps: 20
 
 # -------------------------
 # Loss computation
