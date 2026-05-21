@@ -34,7 +34,7 @@ class NeroDualArm(Robot):
     def __init__(self, config: NeroDualArmConfig):
         super().__init__(config)
         self.cameras = make_cameras_from_configs(config.cameras)
-        
+
         self.config = config
         self._is_connected = False
         self._robot: Optional[NeroDualArmClient] = None
@@ -45,6 +45,9 @@ class NeroDualArm(Robot):
         self._gripper_force = config.gripper_force
         self._left_gripper_cmd = 1.0
         self._right_gripper_cmd = 1.0
+        self._gripper_debounce_counts = {"left": 0, "right": 0}
+        self._gripper_debug_closed = {"left": False, "right": False}
+        self._last_debug_action_info: dict[str, Any] = {}
         # self._last_left_gripper_cmd = 1.0
         # self._last_right_gripper_cmd = 1.0
 
@@ -236,6 +239,36 @@ class NeroDualArm(Robot):
     def _clip_gripper_cmd(value: float) -> float:
         return min(1.0, max(0.0, float(value)))
 
+    def _resolve_gripper_command(self, arm_side: str, gripper_value: float, is_binary: bool) -> tuple[float, str]:
+        mode = getattr(self.config, "gripper_debug_mode", "default_continuous")
+
+        if mode == "force_open":
+            return 1.0, mode
+
+        if mode in {"binary_threshold", "binary_debounce"}:
+            close_signal = float(gripper_value) < float(self.config.gripper_close_threshold)
+            if mode == "binary_threshold":
+                return (0.0 if close_signal else 1.0), mode
+
+            if close_signal and not self._gripper_debug_closed[arm_side]:
+                self._gripper_debounce_counts[arm_side] += 1
+            elif not close_signal and not (
+                self._gripper_debug_closed[arm_side] and self.config.gripper_hold_after_close
+            ):
+                self._gripper_debounce_counts[arm_side] = 0
+                self._gripper_debug_closed[arm_side] = False
+
+            if self._gripper_debounce_counts[arm_side] >= int(self.config.gripper_debounce_frames):
+                self._gripper_debug_closed[arm_side] = True
+
+            if self._gripper_debug_closed[arm_side] and self.config.gripper_hold_after_close:
+                return 0.0, mode
+            return (0.0 if self._gripper_debug_closed[arm_side] else 1.0), mode
+
+        if is_binary:
+            return (0.0 if gripper_value < self.config.close_threshold else 1.0), "default_binary"
+        return self._clip_gripper_cmd(gripper_value), "default_continuous"
+
     def handle_gripper(self, arm_side: str, gripper_value: float, is_binary: bool = False) -> None:
         t_handle_start = time.perf_counter()
         
@@ -244,21 +277,24 @@ class NeroDualArm(Robot):
         
         gripper_cmd_attr = f"_{arm_side}_gripper_cmd"
         last_cmd = getattr(self, gripper_cmd_attr)
-        
-        if is_binary:
-            if gripper_value < self.config.close_threshold:
-                gripper_cmd = 0.0
-            else:
-                gripper_cmd = 1.0
-        else:
-            gripper_cmd = self._clip_gripper_cmd(gripper_value)
-            # print(f"gripper_value: {gripper_value}")
+        gripper_cmd, mode = self._resolve_gripper_command(arm_side, gripper_value, is_binary)
         
         if self.config.gripper_reverse:
             gripper_cmd = 1.0 - gripper_cmd
 
+        debug_key = f"{arm_side}_gripper"
+        self._last_debug_action_info[debug_key] = {
+            "input": float(gripper_value),
+            "command": float(gripper_cmd),
+            "width_command": float(gripper_cmd * self.config.gripper_max_open),
+            "mode": mode,
+            "sent": False,
+            "skipped_redundant": False,
+        }
+
         # Skip redundant command writes to reduce RPC blocking and gripper bus load.
         if last_cmd is not None and abs(gripper_cmd - last_cmd) < 1e-3:
+            self._last_debug_action_info[debug_key]["skipped_redundant"] = True
             return
         
         try:
@@ -274,6 +310,7 @@ class NeroDualArm(Robot):
                 )
             # print(f"width: {gripper_cmd * self.config.gripper_max_open}")
             setattr(self, gripper_cmd_attr, gripper_cmd)
+            self._last_debug_action_info[debug_key]["sent"] = True
         except Exception as e:
             logger.warning(f"[{arm_side.upper()} GRIPPER] zerorpc error: {e}")
         
@@ -282,6 +319,7 @@ class NeroDualArm(Robot):
     
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         t_send_start = time.perf_counter()
+        self._last_debug_action_info = {}
         
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
@@ -324,28 +362,42 @@ class NeroDualArm(Robot):
     def send_action_cartesian(self, action: dict[str, Any]) -> None:
         t_cart_start = time.perf_counter()
         
-        # 频率限制
-        if not self._should_send_action():
-            return
-        
         left_delta = np.array([
             action[f"left_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ])
         right_delta = np.array([
             action[f"right_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ])
+        left_norm = float(np.linalg.norm(left_delta))
+        right_norm = float(np.linalg.norm(right_delta))
+        self._last_debug_action_info["left_delta"] = {
+            "norm": left_norm,
+            "skipped_small": left_norm < 0.001,
+            "rate_limited": False,
+        }
+        self._last_debug_action_info["right_delta"] = {
+            "norm": right_norm,
+            "skipped_small": right_norm < 0.001,
+            "rate_limited": False,
+        }
+
+        # 频率限制
+        if not self._should_send_action():
+            self._last_debug_action_info["left_delta"]["rate_limited"] = True
+            self._last_debug_action_info["right_delta"]["rate_limited"] = True
+            return
 
         if not self.config.debug:
             try:
                 # 左臂：直接传入增量
-                if np.linalg.norm(left_delta) >= 0.001:
+                if left_norm >= 0.001:
                     # t_servo_start = time.perf_counter()
                     self._robot.servo_p_OL("left_robot", left_delta, delta=True)
                     # t_servo_end = time.perf_counter()
                     # logger.info(f"[TIMING] left servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
                 
                 # 右臂：直接传入增量
-                if np.linalg.norm(right_delta) >= 0.001:
+                if right_norm >= 0.001:
                     # t_servo_start = time.perf_counter()
                     self._robot.servo_p_OL("right_robot", right_delta, delta=True)
                     # t_servo_end = time.perf_counter()

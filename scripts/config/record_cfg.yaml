@@ -17,6 +17,12 @@ record:
       ### insert_tubing: Insert the tubing into the target bottle
       ### replace_cap: Replace the cap on the source bottle
   debug: 0 # if True, robot will not execute any actions, but gripper can still be controlled
+  debug_policy_timing: false
+  debug_action_state: false
+  gripper_debug_mode: "default_continuous" # default_continuous | force_open | binary_threshold | binary_debounce
+  gripper_close_threshold: 0.2
+  gripper_debounce_frames: 3
+  gripper_hold_after_close: true
   user_notes:  # any additional notes about the dataset
   fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
@@ -65,11 +71,11 @@ record:
   policy:
     # 策略类型: act | diffusion | dp | diffusion_policy
     # 轮次式 DAgger 的 run_mix 采集目前只实现 ACT checkpoint 推理。
-    type: "act"
-    config_path: scripts/policy_config/act_reason_config.yaml
+    # type: "act"
+    # config_path: scripts/policy_config/act_reason_config.yaml
     # For diffusion:
-    # type: "diffusion"
-    # config_path: scripts/policy_config/diffusion_reason_config.yaml
+    type: "diffusion"
+    config_path: scripts/policy_config/diffusion_reason_config.yaml
 
     # Policy hyperparameters have been moved to scripts/policy_config/*_reason_config.yaml.
     # record_cfg.yaml should only keep recording/device/camera/path/runtime settings.

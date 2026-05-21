@@ -30,6 +30,10 @@ class NeroDualArmConfig(RobotConfig):
     gripper_speed: float = 0.1  # Speed in m/s
     gripper_reverse: bool = False  # Whether to reverse gripper command
     close_threshold: float = 0.05  # Threshold for binary gripper control
+    gripper_debug_mode: str = "default_continuous"
+    gripper_close_threshold: float = 0.2
+    gripper_debounce_frames: int = 3
+    gripper_hold_after_close: bool = True
     
     # Control configuration
     control_mode: str = "oculus"
@@ -45,4 +49,3 @@ class NeroDualArmConfig(RobotConfig):
     max_joint_velocity: float = 2.0  # rad/s
     max_ee_velocity: float = 0.5  # m/s
     max_joint_delta: float = 0.3  # rad - max joint change per step
-

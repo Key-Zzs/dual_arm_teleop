@@ -1,8 +1,13 @@
 import argparse
+import csv
 import yaml
+from contextlib import nullcontext
+from copy import copy
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 import numpy as np
+import torch
 from scripts.utils.dataset_utils import generate_dataset_name, update_dataset_info
 from robots import (
     SUPPORTED_ROBOTS,
@@ -28,7 +33,7 @@ from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import hw_to_dataset_features, build_dataset_frame
 from lerobot.utils.control_utils import sanity_check_dataset_robot_compatibility
 from lerobot.policies.factory import make_policy, make_pre_post_processors
-from lerobot.policies.utils import make_robot_action
+from lerobot.policies.utils import make_robot_action, prepare_observation_for_inference
 from lerobot.processor.rename_processor import rename_stats
 from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.control_utils import predict_action
@@ -82,6 +87,118 @@ VALID_RECORD_SUCCESS_POLICIES = {
     SUCCESS_POLICY_RECORDED_IS_SUCCESS,
     SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE,
 }
+VALID_GRIPPER_DEBUG_MODES = {
+    "default_continuous",
+    "force_open",
+    "binary_threshold",
+    "binary_debounce",
+}
+
+
+class CsvDebugLogger:
+    def __init__(self, path: Path, fieldnames: list[str]):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = path.open("w", newline="", encoding="utf-8")
+        self.writer = csv.DictWriter(self.file, fieldnames=fieldnames, extrasaction="ignore")
+        self.writer.writeheader()
+
+    def write(self, row: dict[str, Any]) -> None:
+        self.writer.writerow(row)
+        self.file.flush()
+
+    def close(self) -> None:
+        self.file.close()
+
+
+class DebugLogBundle:
+    def __init__(self, record_cfg: "RecordConfig", action_names: list[str]):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        logs_dir = record_cfg.project_root / "logs"
+        self.timing = None
+        self.action_state = None
+        if record_cfg.debug_policy_timing:
+            self.timing = CsvDebugLogger(
+                logs_dir / f"debug_policy_timing_{timestamp}.csv",
+                [
+                    "loop_idx",
+                    "timestamp",
+                    "select_action_ms",
+                    "whether_full_diffusion_denoising_triggered",
+                    "action_queue_len_before",
+                    "action_queue_len_after",
+                    "executed_chunk_step_idx",
+                    "n_action_steps",
+                    "num_inference_steps",
+                    "send_action_ms",
+                    "robot_state_read_ms",
+                    "total_loop_dt",
+                    "actual_loop_hz",
+                ],
+            )
+            logging.info("[debug] policy timing CSV: %s", self.timing.path)
+
+        if record_cfg.debug_action_state:
+            self.action_state = CsvDebugLogger(
+                logs_dir / f"debug_action_state_{timestamp}.csv",
+                _action_state_fieldnames(action_names),
+            )
+            logging.info("[debug] action/state CSV: %s", self.action_state.path)
+
+    def close(self) -> None:
+        if self.timing is not None:
+            self.timing.close()
+        if self.action_state is not None:
+            self.action_state.close()
+
+
+class SmallDeltaStats:
+    def __init__(self) -> None:
+        self.counts = {
+            phase: {
+                "frames": 0,
+                "left_skipped": 0,
+                "right_skipped": 0,
+                "both_skipped": 0,
+            }
+            for phase in ("early", "middle", "late")
+        }
+
+    @staticmethod
+    def phase(timestamp_s: float, control_time_s: int | float) -> str:
+        ratio = timestamp_s / max(float(control_time_s), 1e-9)
+        if ratio < 1.0 / 3.0:
+            return "early"
+        if ratio < 2.0 / 3.0:
+            return "middle"
+        return "late"
+
+    def update(self, timestamp_s: float, control_time_s: int | float, robot_debug: dict[str, Any]) -> None:
+        phase = self.phase(timestamp_s, control_time_s)
+        left_skipped = bool(robot_debug.get("left_delta_skipped_small", False))
+        right_skipped = bool(robot_debug.get("right_delta_skipped_small", False))
+        self.counts[phase]["frames"] += 1
+        self.counts[phase]["left_skipped"] += int(left_skipped)
+        self.counts[phase]["right_skipped"] += int(right_skipped)
+        self.counts[phase]["both_skipped"] += int(left_skipped and right_skipped)
+
+    def log_summary(self, label: str) -> None:
+        for phase, counts in self.counts.items():
+            frames = max(1, counts["frames"])
+            logging.info(
+                "[debug_action_state] %s small-delta phase=%s frames=%d "
+                "left_skip=%d(%.3f) right_skip=%d(%.3f) both_skip=%d(%.3f)",
+                label,
+                phase,
+                counts["frames"],
+                counts["left_skipped"],
+                counts["left_skipped"] / frames,
+                counts["right_skipped"],
+                counts["right_skipped"] / frames,
+                counts["both_skipped"],
+                counts["both_skipped"] / frames,
+            )
+
 def _default_scripts_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -145,6 +262,17 @@ class RecordConfig:
         self.user_info: str = cfg.get("user_notes", None)
         self.run_mode: str = cfg.get("run_mode", "run_record")
         self.rename_map: dict[str, str] = field(default_factory=dict)
+        self.debug_policy_timing: bool = bool(cfg.get("debug_policy_timing", False))
+        self.debug_action_state: bool = bool(cfg.get("debug_action_state", False))
+        self.gripper_debug_mode: str = str(cfg.get("gripper_debug_mode", "default_continuous")).strip()
+        if self.gripper_debug_mode not in VALID_GRIPPER_DEBUG_MODES:
+            raise ValueError(
+                f"`record.gripper_debug_mode` must be one of {sorted(VALID_GRIPPER_DEBUG_MODES)}. "
+                f"Got: {self.gripper_debug_mode!r}"
+            )
+        self.gripper_close_threshold: float = float(cfg.get("gripper_close_threshold", 0.2))
+        self.gripper_debounce_frames: int = int(cfg.get("gripper_debounce_frames", 3))
+        self.gripper_hold_after_close: bool = bool(cfg.get("gripper_hold_after_close", True))
         # Finish behavior: by default reset to home and keep connection to avoid server stop on close.
         self.reset_on_finish: bool = cfg.get("reset_on_finish", True)
         self.disconnect_on_finish: bool = cfg.get("disconnect_on_finish", False)
@@ -347,6 +475,213 @@ def _missing_or_invalid_action_names(
         if not np.isfinite(value):
             missing.append(name)
     return missing
+
+
+def _action_queue_len(policy) -> int | None:
+    queues = getattr(policy, "_queues", None)
+    if not isinstance(queues, dict) or ACTION not in queues:
+        return None
+    return len(queues[ACTION])
+
+
+def _policy_n_action_steps(policy) -> int | None:
+    value = getattr(getattr(policy, "config", None), "n_action_steps", None)
+    return int(value) if value is not None else None
+
+
+def _policy_num_inference_steps(policy) -> int | None:
+    diffusion = getattr(policy, "diffusion", None)
+    value = getattr(diffusion, "num_inference_steps", None)
+    if value is None:
+        value = getattr(getattr(policy, "config", None), "num_inference_steps", None)
+    return int(value) if value is not None else None
+
+
+def _predict_action_timed(
+    observation: dict[str, np.ndarray],
+    policy,
+    device,
+    preprocessor,
+    postprocessor,
+    use_amp: bool,
+    task: str | None = None,
+    robot_type: str | None = None,
+) -> tuple[Any, dict[str, Any]]:
+    observation = copy(observation)
+    timing: dict[str, Any] = {
+        "select_action_ms": "",
+        "whether_full_diffusion_denoising_triggered": "",
+        "action_queue_len_before": "",
+        "action_queue_len_after": "",
+        "executed_chunk_step_idx": "",
+        "n_action_steps": _policy_n_action_steps(policy) or "",
+        "num_inference_steps": _policy_num_inference_steps(policy) or "",
+    }
+
+    with (
+        torch.inference_mode(),
+        torch.autocast(device_type=device.type) if device.type == "cuda" and use_amp else nullcontext(),
+    ):
+        observation = prepare_observation_for_inference(observation, device, task, robot_type)
+        observation = preprocessor(observation)
+
+        queue_before = _action_queue_len(policy)
+        n_action_steps = _policy_n_action_steps(policy)
+        if queue_before is not None:
+            timing["action_queue_len_before"] = queue_before
+            timing["whether_full_diffusion_denoising_triggered"] = queue_before == 0
+            if n_action_steps is not None:
+                timing["executed_chunk_step_idx"] = 0 if queue_before == 0 else n_action_steps - queue_before
+
+        select_t0 = time.perf_counter()
+        action = policy.select_action(observation)
+        timing["select_action_ms"] = (time.perf_counter() - select_t0) * 1000.0
+
+        queue_after = _action_queue_len(policy)
+        if queue_after is not None:
+            timing["action_queue_len_after"] = queue_after
+
+        action = postprocessor(action)
+
+    return action, timing
+
+
+def _action_state_fieldnames(action_names: list[str]) -> list[str]:
+    base = [
+        "timestamp",
+        "left_ee_pose.x",
+        "left_ee_pose.y",
+        "left_ee_pose.z",
+        "left_ee_pose.rx",
+        "left_ee_pose.ry",
+        "left_ee_pose.rz",
+        "right_ee_pose.x",
+        "right_ee_pose.y",
+        "right_ee_pose.z",
+        "right_ee_pose.rx",
+        "right_ee_pose.ry",
+        "right_ee_pose.rz",
+        "left_delta_norm",
+        "right_delta_norm",
+        "left_delta_skipped_small",
+        "right_delta_skipped_small",
+        "left_delta_rate_limited",
+        "right_delta_rate_limited",
+        "left_gripper_predicted",
+        "right_gripper_predicted",
+        "left_gripper_sent",
+        "right_gripper_sent",
+        "left_gripper_command",
+        "right_gripper_command",
+        "left_gripper_width_command",
+        "right_gripper_width_command",
+        "left_gripper_actual_width",
+        "right_gripper_actual_width",
+        "left_gripper_debug_mode",
+        "right_gripper_debug_mode",
+    ]
+    return base + [f"policy.{name}" for name in action_names] + [f"sent.{name}" for name in action_names]
+
+
+def _get_nested_debug(robot_debug: dict[str, Any], key: str, field: str) -> Any:
+    value = robot_debug.get(key, {})
+    if isinstance(value, dict):
+        return value.get(field, "")
+    return ""
+
+
+def _build_action_state_row(
+    timestamp_s: float,
+    raw_obs: dict[str, Any],
+    policy_action: dict[str, Any],
+    sent_action: dict[str, Any],
+    robot_debug: dict[str, Any],
+    action_names: list[str],
+) -> dict[str, Any]:
+    row: dict[str, Any] = {"timestamp": timestamp_s}
+    for arm in ("left", "right"):
+        for axis in ("x", "y", "z", "rx", "ry", "rz"):
+            row[f"{arm}_ee_pose.{axis}"] = raw_obs.get(f"{arm}_ee_pose.{axis}", "")
+        row[f"{arm}_delta_norm"] = _get_nested_debug(robot_debug, f"{arm}_delta", "norm")
+        row[f"{arm}_delta_skipped_small"] = _get_nested_debug(
+            robot_debug, f"{arm}_delta", "skipped_small"
+        )
+        row[f"{arm}_delta_rate_limited"] = _get_nested_debug(
+            robot_debug, f"{arm}_delta", "rate_limited"
+        )
+        row[f"{arm}_gripper_predicted"] = policy_action.get(f"{arm}_gripper_cmd", "")
+        row[f"{arm}_gripper_sent"] = sent_action.get(f"{arm}_gripper_cmd", "")
+        row[f"{arm}_gripper_command"] = _get_nested_debug(robot_debug, f"{arm}_gripper", "command")
+        row[f"{arm}_gripper_width_command"] = _get_nested_debug(
+            robot_debug, f"{arm}_gripper", "width_command"
+        )
+        row[f"{arm}_gripper_actual_width"] = _get_nested_debug(
+            robot_debug, f"{arm}_gripper", "actual_width"
+        )
+        row[f"{arm}_gripper_debug_mode"] = _get_nested_debug(robot_debug, f"{arm}_gripper", "mode")
+
+    for name in action_names:
+        row[f"policy.{name}"] = policy_action.get(name, "")
+        row[f"sent.{name}"] = sent_action.get(name, "")
+    return row
+
+
+def _write_timing_row(
+    debug_logs: DebugLogBundle | None,
+    loop_idx: int,
+    timestamp_s: float,
+    policy_timing: dict[str, Any],
+    robot_state_read_ms: float,
+    send_action_ms: float,
+    total_loop_dt: float,
+) -> None:
+    if debug_logs is None or debug_logs.timing is None:
+        return
+    row = {
+        "loop_idx": loop_idx,
+        "timestamp": timestamp_s,
+        "send_action_ms": send_action_ms,
+        "robot_state_read_ms": robot_state_read_ms,
+        "total_loop_dt": total_loop_dt,
+        "actual_loop_hz": 1.0 / total_loop_dt if total_loop_dt > 0 else "",
+    }
+    row.update(policy_timing)
+    debug_logs.timing.write(row)
+
+
+def _write_action_state_row(
+    debug_logs: DebugLogBundle | None,
+    timestamp_s: float,
+    raw_obs: dict[str, Any],
+    policy_action: dict[str, Any],
+    sent_action: dict[str, Any],
+    robot_debug: dict[str, Any],
+    action_names: list[str],
+) -> None:
+    if debug_logs is None or debug_logs.action_state is None:
+        return
+    debug_logs.action_state.write(
+        _build_action_state_row(timestamp_s, raw_obs, policy_action, sent_action, robot_debug, action_names)
+    )
+
+
+def _attach_actual_gripper_widths(robot, robot_debug: dict[str, Any]) -> dict[str, Any]:
+    client = getattr(robot, "_robot", None)
+    if client is None:
+        return robot_debug
+
+    for arm in ("left", "right"):
+        method = getattr(client, f"{arm}_gripper_get_state", None)
+        if method is None:
+            continue
+        try:
+            state = method()
+        except Exception as exc:
+            robot_debug.setdefault(f"{arm}_gripper", {})["actual_width_error"] = str(exc)
+            continue
+        if isinstance(state, dict):
+            robot_debug.setdefault(f"{arm}_gripper", {})["actual_width"] = state.get("width", "")
+    return robot_debug
 
 
 def _is_arm_override_active(
@@ -584,6 +919,108 @@ def _apply_gripper_channel_control(
     return True, gripper_request_reason or f"{arm}_gripper_active"
 
 
+def run_policy_debug_record_loop(
+    robot,
+    policy,
+    preprocessor,
+    postprocessor,
+    dataset: LeRobotDataset | None,
+    robot_action_processor,
+    robot_observation_processor,
+    events: dict,
+    fps: int,
+    control_time_s: int | float,
+    single_task: str,
+    display_data: bool,
+    debug_logs: DebugLogBundle,
+) -> None:
+    policy.reset()
+    preprocessor.reset()
+    postprocessor.reset()
+
+    start_episode_t = time.perf_counter()
+    timestamp_s = 0.0
+    loop_idx = 0
+    action_names = _action_names_from_dataset(dataset)
+    small_delta_stats = SmallDeltaStats()
+
+    while timestamp_s < control_time_s:
+        loop_start_t = time.perf_counter()
+
+        if events["exit_early"]:
+            events["exit_early"] = False
+            break
+
+        state_t0 = time.perf_counter()
+        raw_obs = robot.get_observation()
+        robot_state_read_ms = (time.perf_counter() - state_t0) * 1000.0
+        obs_processed = robot_observation_processor(raw_obs)
+        observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
+
+        policy_action, policy_timing = _predict_action_timed(
+            observation=observation_frame,
+            policy=policy,
+            device=get_safe_torch_device(policy.config.device),
+            preprocessor=preprocessor,
+            postprocessor=postprocessor,
+            use_amp=policy.config.use_amp,
+            task=single_task,
+            robot_type=robot.robot_type,
+        )
+        policy_action_processed = make_robot_action(policy_action, dataset.features)
+        policy_action_processed = _complete_action_dict(policy_action_processed, action_names)
+
+        robot_action_to_send = robot_action_processor((policy_action_processed, raw_obs))
+        send_t0 = time.perf_counter()
+        sent_action_raw = robot.send_action(robot_action_to_send)
+        send_action_ms = (time.perf_counter() - send_t0) * 1000.0
+        sent_action = _complete_action_dict(
+            dict(sent_action_raw or robot_action_to_send),
+            action_names,
+            fallback_action=policy_action_processed,
+        )
+        robot_debug = dict(getattr(robot, "_last_debug_action_info", {}) or {})
+        if debug_logs.action_state is not None:
+            robot_debug = _attach_actual_gripper_widths(robot, robot_debug)
+        small_delta_stats.update(timestamp_s, control_time_s, robot_debug)
+
+        if dataset is not None:
+            action_frame = build_dataset_frame(dataset.features, policy_action_processed, prefix=ACTION)
+            frame = {**observation_frame, **action_frame, "task": single_task}
+            dataset.add_frame(frame)
+
+        if display_data:
+            log_rerun_data(observation=obs_processed, action=sent_action)
+
+        dt_s = time.perf_counter() - loop_start_t
+        busy_wait(1 / fps - dt_s)
+        total_loop_dt = time.perf_counter() - loop_start_t
+        _write_timing_row(
+            debug_logs,
+            loop_idx,
+            timestamp_s,
+            policy_timing,
+            robot_state_read_ms,
+            send_action_ms,
+            total_loop_dt,
+        )
+        _write_action_state_row(
+            debug_logs,
+            timestamp_s,
+            raw_obs,
+            policy_action_processed,
+            sent_action,
+            robot_debug,
+            action_names,
+        )
+
+        timestamp_s = time.perf_counter() - start_episode_t
+        loop_idx += 1
+
+    if debug_logs.action_state is not None:
+        small_delta_stats.log_summary("run_policy")
+
+
 def run_mix_record_loop(
     robot,
     teleop,
@@ -600,6 +1037,7 @@ def run_mix_record_loop(
     single_task: str,
     display_data: bool,
     success_policy: str = SUCCESS_POLICY_NONE,
+    debug_logs: DebugLogBundle | None = None,
 ) -> dict[str, Any]:
     policy.reset()
     preprocessor.reset()
@@ -607,6 +1045,7 @@ def run_mix_record_loop(
 
     start_episode_t = time.perf_counter()
     timestamp_s = 0.0
+    loop_idx = 0
     last_teleop_raw_action: dict[str, Any] | None = None
 
     expert_exec_steps = 0
@@ -618,6 +1057,7 @@ def run_mix_record_loop(
     last_action_source = "policy"
     last_exec_action: dict[str, Any] | None = None
     action_names = _action_names_from_dataset(dataset)
+    small_delta_stats = SmallDeltaStats()
     intervention_segment_id = -1
     intervention_active = False
     gripper_soft_takeover = {
@@ -645,21 +1085,36 @@ def run_mix_record_loop(
             events["exit_early"] = False
             break
 
+        state_t0 = time.perf_counter()
         raw_obs = robot.get_observation()
+        robot_state_read_ms = (time.perf_counter() - state_t0) * 1000.0
         obs_processed = robot_observation_processor(raw_obs)
         observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
 
         # (1) Policy inference.
-        policy_action = predict_action(
-            observation=observation_frame,
-            policy=policy,
-            device=get_safe_torch_device(policy.config.device),
-            preprocessor=preprocessor,
-            postprocessor=postprocessor,
-            use_amp=policy.config.use_amp,
-            task=single_task,
-            robot_type=robot.robot_type,
-        )
+        if debug_logs is not None and (debug_logs.timing is not None or debug_logs.action_state is not None):
+            policy_action, policy_timing = _predict_action_timed(
+                observation=observation_frame,
+                policy=policy,
+                device=get_safe_torch_device(policy.config.device),
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+                use_amp=policy.config.use_amp,
+                task=single_task,
+                robot_type=robot.robot_type,
+            )
+        else:
+            policy_action = predict_action(
+                observation=observation_frame,
+                policy=policy,
+                device=get_safe_torch_device(policy.config.device),
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+                use_amp=policy.config.use_amp,
+                task=single_task,
+                robot_type=robot.robot_type,
+            )
+            policy_timing = {}
         policy_action_processed = make_robot_action(policy_action, dataset.features)
         policy_action_processed = _complete_action_dict(policy_action_processed, action_names)
 
@@ -799,7 +1254,18 @@ def run_mix_record_loop(
         # (4) Execute action.
         robot_action_to_send = robot_action_processor((exec_action, raw_obs))
         sent_action = _complete_action_dict(dict(robot_action_to_send), action_names, fallback_action=exec_action)
-        _ = robot.send_action(sent_action)
+        send_t0 = time.perf_counter()
+        sent_action_raw = robot.send_action(sent_action)
+        send_action_ms = (time.perf_counter() - send_t0) * 1000.0
+        sent_action = _complete_action_dict(
+            dict(sent_action_raw or sent_action),
+            action_names,
+            fallback_action=exec_action,
+        )
+        robot_debug = dict(getattr(robot, "_last_debug_action_info", {}) or {})
+        if debug_logs is not None and debug_logs.action_state is not None:
+            robot_debug = _attach_actual_gripper_widths(robot, robot_debug)
+        small_delta_stats.update(timestamp_s, control_time_s, robot_debug)
         last_exec_action = dict(sent_action)
 
         if action_source in {"expert", "mixed"}:
@@ -853,8 +1319,30 @@ def run_mix_record_loop(
 
         dt_s = time.perf_counter() - loop_start_t
         busy_wait(1 / fps - dt_s)
+        total_loop_dt = time.perf_counter() - loop_start_t
+        _write_timing_row(
+            debug_logs,
+            loop_idx,
+            timestamp_s,
+            policy_timing,
+            robot_state_read_ms,
+            send_action_ms,
+            total_loop_dt,
+        )
+        _write_action_state_row(
+            debug_logs,
+            timestamp_s,
+            raw_obs,
+            policy_action_processed,
+            sent_action,
+            robot_debug,
+            action_names,
+        )
         timestamp_s = time.perf_counter() - start_episode_t
+        loop_idx += 1
 
+    if debug_logs is not None and debug_logs.action_state is not None:
+        small_delta_stats.log_summary("run_mix")
     return {
         "expert_exec_steps": expert_exec_steps,
         "policy_exec_steps": policy_exec_steps,
@@ -982,6 +1470,10 @@ def run_record(record_cfg: RecordConfig):
             close_threshold=record_cfg.close_threshold,
             gripper_reverse=record_cfg.gripper_reverse,
             control_mode=record_cfg.control_mode,
+            gripper_debug_mode=record_cfg.gripper_debug_mode,
+            gripper_close_threshold=record_cfg.gripper_close_threshold,
+            gripper_debounce_frames=record_cfg.gripper_debounce_frames,
+            gripper_hold_after_close=record_cfg.gripper_hold_after_close,
         )
         
         # Initialize the robot dynamically based on robot_type
@@ -1137,6 +1629,13 @@ def run_record(record_cfg: RecordConfig):
                 },
             )
 
+        debug_logs = None
+        if record_cfg.debug_policy_timing or record_cfg.debug_action_state:
+            if policy is None:
+                logging.warning("[debug] timing/action_state logs require a policy; no CSV will be written.")
+            else:
+                debug_logs = DebugLogBundle(record_cfg, _action_names_from_dataset(dataset))
+
         robot.connect()
         if teleop is not None:
             teleop.connect()
@@ -1163,6 +1662,7 @@ def run_record(record_cfg: RecordConfig):
                     single_task=record_cfg.task_description,
                     display_data=record_cfg.display,
                     success_policy=record_cfg.success_policy,
+                    debug_logs=debug_logs,
                 )
                 mix_stats["episode_index"] = episode_idx
                 run_mix_episode_stats.append(mix_stats)
@@ -1175,6 +1675,22 @@ def run_record(record_cfg: RecordConfig):
                     mix_stats["expert_frame_ratio"],
                     mix_stats["intervention_count"],
                     mix_stats["complete_expert_label_steps"],
+                )
+            elif record_cfg.run_mode == "run_policy" and debug_logs is not None:
+                run_policy_debug_record_loop(
+                    robot=robot,
+                    policy=policy,
+                    preprocessor=preprocessor,
+                    postprocessor=postprocessor,
+                    dataset=dataset,
+                    robot_action_processor=robot_action_processor,
+                    robot_observation_processor=robot_observation_processor,
+                    events=events,
+                    fps=record_cfg.fps,
+                    control_time_s=record_cfg.episode_time_sec,
+                    single_task=record_cfg.task_description,
+                    display_data=record_cfg.display,
+                    debug_logs=debug_logs,
                 )
             else:
                 record_loop(
@@ -1303,6 +1819,8 @@ def run_record(record_cfg: RecordConfig):
 
         if teleop is not None:
             teleop.disconnect()
+        if debug_logs is not None:
+            debug_logs.close()
         dataset.finalize()
 
         update_dataset_info(record_cfg, dataset_name, data_version)

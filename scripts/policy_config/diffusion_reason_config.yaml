@@ -25,7 +25,7 @@ pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobo
 # Horizon / action sequence
 # -------------------------
 horizon: 16
-n_action_steps: 3
+n_action_steps: 2
 
 # DiffusionConfig default: horizon - n_action_steps - n_obs_steps + 1.
 drop_n_last_frames: 7
