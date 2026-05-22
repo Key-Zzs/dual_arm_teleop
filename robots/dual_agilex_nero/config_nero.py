@@ -3,7 +3,6 @@ Configuration for Nero dual-arm robot system.
 Each arm has 7 DOF
 """
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 from lerobot.cameras import CameraConfig
 from lerobot.robots.config import RobotConfig
@@ -30,13 +29,6 @@ class NeroDualArmConfig(RobotConfig):
     gripper_speed: float = 0.1  # Speed in m/s
     gripper_reverse: bool = False  # Whether to reverse gripper command
     close_threshold: float = 0.05  # Threshold for binary gripper control
-    gripper_debug_mode: str = "default_continuous"
-    gripper_close_threshold: float = 0.2
-    gripper_debounce_frames: int = 3
-    gripper_hold_after_close: bool = True
-    gripper_pose_gate_enabled: bool = False
-    gripper_pose_gate_ref_xyz: list[float] | None = None
-    gripper_pose_gate_radius_m: float = 0.05
     
     # Control configuration
     control_mode: str = "oculus"

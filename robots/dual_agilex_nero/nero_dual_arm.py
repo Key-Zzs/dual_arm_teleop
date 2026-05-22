@@ -6,9 +6,7 @@ Uses Oculus Quest for teleoperation control.
 
 import logging
 import time
-import threading
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 import numpy as np
 
 from lerobot.cameras import make_cameras_from_configs
@@ -45,9 +43,6 @@ class NeroDualArm(Robot):
         self._gripper_force = config.gripper_force
         self._left_gripper_cmd = 1.0
         self._right_gripper_cmd = 1.0
-        self._gripper_debounce_counts = {"left": 0, "right": 0}
-        self._gripper_debug_closed = {"left": False, "right": False}
-        self._last_debug_action_info: dict[str, Any] = {}
         # self._last_left_gripper_cmd = 1.0
         # self._last_right_gripper_cmd = 1.0
 
@@ -60,11 +55,6 @@ class NeroDualArm(Robot):
         self.action_send_freq = 100.0  # 50Hz
         self.action_send_dt = 1.0 / self.action_send_freq
         self.last_action_send_time = 0.0
-
-    def reset_gripper_debug_state(self) -> None:
-        """Reset per-episode debug-only gripper latch/debounce state."""
-        self._gripper_debounce_counts = {"left": 0, "right": 0}
-        self._gripper_debug_closed = {"left": False, "right": False}
 
     def _should_send_action(self) -> bool:
         """检查是否应该发送action（频率限制）"""
@@ -184,7 +174,6 @@ class NeroDualArm(Robot):
             )
             self._left_gripper_cmd = 1.0
             self._right_gripper_cmd = 1.0
-            self.reset_gripper_debug_state()
         
         logger.info("===== [ROBOT] Dual-arm system reset successfully =====\n")
     
@@ -245,122 +234,22 @@ class NeroDualArm(Robot):
     def _clip_gripper_cmd(value: float) -> float:
         return min(1.0, max(0.0, float(value)))
 
-    def _right_pose_gate_status(self) -> dict[str, Any]:
-        gate_enabled = bool(getattr(self.config, "gripper_pose_gate_enabled", False))
-        status: dict[str, Any] = {
-            "pose_gate_enabled": gate_enabled,
-            "pose_gate_distance_m": "",
-            "pose_gate_passed": False,
-        }
-        if not gate_enabled:
-            return status
-
-        ref_xyz = getattr(self.config, "gripper_pose_gate_ref_xyz", None)
-        if ref_xyz is None or len(ref_xyz) != 3:
-            logger.warning("[GRIPPER DEBUG] pose gate enabled but gripper_pose_gate_ref_xyz is invalid; disabling gate for this command.")
-            status["pose_gate_enabled"] = False
-            return status
-
-        obs = self._prev_observation or {}
-        try:
-            current_xyz = np.array(
-                [float(obs[f"right_ee_pose.{axis}"]) for axis in ("x", "y", "z")],
-                dtype=float,
-            )
-        except (KeyError, TypeError, ValueError):
-            logger.warning("[GRIPPER DEBUG] pose gate enabled but current right EE pose is unavailable; disabling gate for this command.")
-            status["pose_gate_enabled"] = False
-            return status
-
-        ref = np.array([float(v) for v in ref_xyz], dtype=float)
-        distance = float(np.linalg.norm(current_xyz - ref))
-        status["pose_gate_distance_m"] = distance
-        status["pose_gate_passed"] = distance < float(self.config.gripper_pose_gate_radius_m)
-        return status
-
-    def _resolve_gripper_command(
-        self,
-        arm_side: str,
-        gripper_value: float,
-        is_binary: bool,
-    ) -> tuple[float, str, dict[str, Any]]:
-        mode = getattr(self.config, "gripper_debug_mode", "default_continuous")
-        threshold_passed = float(gripper_value) < float(getattr(self.config, "gripper_close_threshold", 0.2))
-        debug_info: dict[str, Any] = {
-            "threshold_passed": threshold_passed,
-            "close_counter": int(self._gripper_debounce_counts.get(arm_side, 0)),
-            "latched_closed": bool(self._gripper_debug_closed.get(arm_side, False)),
-            "pose_gate_enabled": False,
-            "pose_gate_distance_m": "",
-            "pose_gate_passed": False,
-        }
-
-        if mode == "force_open":
-            return 1.0, mode, debug_info
-
-        if mode in {"binary_threshold", "binary_debounce"}:
-            close_signal = threshold_passed
-            if arm_side == "right":
-                gate_status = self._right_pose_gate_status()
-                debug_info.update(gate_status)
-                if gate_status.get("pose_gate_enabled", False) and not gate_status.get("pose_gate_passed", False):
-                    close_signal = False
-
-            if mode == "binary_threshold":
-                debug_info["threshold_passed"] = threshold_passed
-                debug_info["close_counter"] = int(close_signal)
-                return (0.0 if close_signal else 1.0), mode, debug_info
-
-            if close_signal and not self._gripper_debug_closed[arm_side]:
-                self._gripper_debounce_counts[arm_side] += 1
-            elif not close_signal and not (
-                self._gripper_debug_closed[arm_side] and self.config.gripper_hold_after_close
-            ):
-                self._gripper_debounce_counts[arm_side] = 0
-                self._gripper_debug_closed[arm_side] = False
-
-            if self._gripper_debounce_counts[arm_side] >= int(self.config.gripper_debounce_frames):
-                self._gripper_debug_closed[arm_side] = True
-
-            if self._gripper_debug_closed[arm_side] and self.config.gripper_hold_after_close:
-                debug_info["close_counter"] = int(self._gripper_debounce_counts[arm_side])
-                debug_info["latched_closed"] = bool(self._gripper_debug_closed[arm_side])
-                return 0.0, mode, debug_info
-            debug_info["close_counter"] = int(self._gripper_debounce_counts[arm_side])
-            debug_info["latched_closed"] = bool(self._gripper_debug_closed[arm_side])
-            return (0.0 if self._gripper_debug_closed[arm_side] else 1.0), mode, debug_info
-
-        if is_binary:
-            return (0.0 if gripper_value < self.config.close_threshold else 1.0), "default_binary", debug_info
-        return self._clip_gripper_cmd(gripper_value), "default_continuous", debug_info
-
     def handle_gripper(self, arm_side: str, gripper_value: float, is_binary: bool = False) -> None:
-        t_handle_start = time.perf_counter()
-        
         if not self.config.use_gripper:
             return
         
         gripper_cmd_attr = f"_{arm_side}_gripper_cmd"
         last_cmd = getattr(self, gripper_cmd_attr)
-        gripper_cmd, mode, debug_info = self._resolve_gripper_command(arm_side, gripper_value, is_binary)
+        if is_binary:
+            gripper_cmd = 0.0 if gripper_value < self.config.close_threshold else 1.0
+        else:
+            gripper_cmd = self._clip_gripper_cmd(gripper_value)
         
         if self.config.gripper_reverse:
             gripper_cmd = 1.0 - gripper_cmd
 
-        debug_key = f"{arm_side}_gripper"
-        self._last_debug_action_info[debug_key] = {
-            "input": float(gripper_value),
-            "command": float(gripper_cmd),
-            "width_command": float(gripper_cmd * self.config.gripper_max_open),
-            "mode": mode,
-            "sent": False,
-            "skipped_redundant": False,
-        }
-        self._last_debug_action_info[debug_key].update(debug_info)
-
         # Skip redundant command writes to reduce RPC blocking and gripper bus load.
         if last_cmd is not None and abs(gripper_cmd - last_cmd) < 1e-3:
-            self._last_debug_action_info[debug_key]["skipped_redundant"] = True
             return
         
         try:
@@ -376,7 +265,6 @@ class NeroDualArm(Robot):
                 )
             # print(f"width: {gripper_cmd * self.config.gripper_max_open}")
             setattr(self, gripper_cmd_attr, gripper_cmd)
-            self._last_debug_action_info[debug_key]["sent"] = True
         except Exception as e:
             logger.warning(f"[{arm_side.upper()} GRIPPER] zerorpc error: {e}")
         
@@ -384,9 +272,6 @@ class NeroDualArm(Robot):
         # logger.info(f"[TIMING] handle_gripper {arm_side}: {(t_handle_end-t_handle_start)*1000:.2f}ms")
     
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
-        t_send_start = time.perf_counter()
-        self._last_debug_action_info = {}
-        
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
@@ -426,8 +311,6 @@ class NeroDualArm(Robot):
         return action
 
     def send_action_cartesian(self, action: dict[str, Any]) -> None:
-        t_cart_start = time.perf_counter()
-        
         left_delta = np.array([
             action[f"left_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ])
@@ -436,21 +319,9 @@ class NeroDualArm(Robot):
         ])
         left_norm = float(np.linalg.norm(left_delta))
         right_norm = float(np.linalg.norm(right_delta))
-        self._last_debug_action_info["left_delta"] = {
-            "norm": left_norm,
-            "skipped_small": left_norm < 0.001,
-            "rate_limited": False,
-        }
-        self._last_debug_action_info["right_delta"] = {
-            "norm": right_norm,
-            "skipped_small": right_norm < 0.001,
-            "rate_limited": False,
-        }
 
         # 频率限制
         if not self._should_send_action():
-            self._last_debug_action_info["left_delta"]["rate_limited"] = True
-            self._last_debug_action_info["right_delta"]["rate_limited"] = True
             return
 
         if not self.config.debug:
