@@ -8,6 +8,7 @@ Action input format (from teleop):
 """
 
 from typing import Dict, Any, Type
+from dataclasses import fields, is_dataclass
 
 # Import robot configurations
 from .franka.config_franka import FrankaConfig
@@ -56,6 +57,9 @@ def get_robot_class(robot_type: str) -> Type:
 def create_robot_config(robot_type: str, **kwargs) -> Any:
     """Create a robot configuration instance."""
     config_class = get_robot_config_class(robot_type)
+    if is_dataclass(config_class):
+        allowed = {field.name for field in fields(config_class)}
+        kwargs = {key: value for key, value in kwargs.items() if key in allowed}
     return config_class(**kwargs)
 
 

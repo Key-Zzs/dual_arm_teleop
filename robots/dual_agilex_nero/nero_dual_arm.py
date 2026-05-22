@@ -6,9 +6,7 @@ Uses Oculus Quest for teleoperation control.
 
 import logging
 import time
-import threading
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 import numpy as np
 
 from lerobot.cameras import make_cameras_from_configs
@@ -34,7 +32,7 @@ class NeroDualArm(Robot):
     def __init__(self, config: NeroDualArmConfig):
         super().__init__(config)
         self.cameras = make_cameras_from_configs(config.cameras)
-        
+
         self.config = config
         self._is_connected = False
         self._robot: Optional[NeroDualArmClient] = None
@@ -237,22 +235,15 @@ class NeroDualArm(Robot):
         return min(1.0, max(0.0, float(value)))
 
     def handle_gripper(self, arm_side: str, gripper_value: float, is_binary: bool = False) -> None:
-        t_handle_start = time.perf_counter()
-        
         if not self.config.use_gripper:
             return
         
         gripper_cmd_attr = f"_{arm_side}_gripper_cmd"
         last_cmd = getattr(self, gripper_cmd_attr)
-        
         if is_binary:
-            if gripper_value < self.config.close_threshold:
-                gripper_cmd = 0.0
-            else:
-                gripper_cmd = 1.0
+            gripper_cmd = 0.0 if gripper_value < self.config.close_threshold else 1.0
         else:
             gripper_cmd = self._clip_gripper_cmd(gripper_value)
-            # print(f"gripper_value: {gripper_value}")
         
         if self.config.gripper_reverse:
             gripper_cmd = 1.0 - gripper_cmd
@@ -281,8 +272,6 @@ class NeroDualArm(Robot):
         # logger.info(f"[TIMING] handle_gripper {arm_side}: {(t_handle_end-t_handle_start)*1000:.2f}ms")
     
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
-        t_send_start = time.perf_counter()
-        
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
@@ -322,30 +311,30 @@ class NeroDualArm(Robot):
         return action
 
     def send_action_cartesian(self, action: dict[str, Any]) -> None:
-        t_cart_start = time.perf_counter()
-        
-        # 频率限制
-        if not self._should_send_action():
-            return
-        
         left_delta = np.array([
             action[f"left_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ])
         right_delta = np.array([
             action[f"right_delta_ee_pose.{axis}"] for axis in ["x", "y", "z", "rx", "ry", "rz"]
         ])
+        left_norm = float(np.linalg.norm(left_delta))
+        right_norm = float(np.linalg.norm(right_delta))
+
+        # 频率限制
+        if not self._should_send_action():
+            return
 
         if not self.config.debug:
             try:
                 # 左臂：直接传入增量
-                if np.linalg.norm(left_delta) >= 0.001:
+                if left_norm >= 0.001:
                     # t_servo_start = time.perf_counter()
                     self._robot.servo_p_OL("left_robot", left_delta, delta=True)
                     # t_servo_end = time.perf_counter()
                     # logger.info(f"[TIMING] left servo_p_OL: {(t_servo_end-t_servo_start)*1000:.2f}ms")
                 
                 # 右臂：直接传入增量
-                if np.linalg.norm(right_delta) >= 0.001:
+                if right_norm >= 0.001:
                     # t_servo_start = time.perf_counter()
                     self._robot.servo_p_OL("right_robot", right_delta, delta=True)
                     # t_servo_end = time.perf_counter()

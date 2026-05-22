@@ -1,3 +1,4 @@
+import argparse
 import yaml
 from pathlib import Path
 from typing import Dict, Any
@@ -26,7 +27,6 @@ from lerobot.utils.constants import HF_LEROBOT_HOME
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import hw_to_dataset_features, build_dataset_frame
 from lerobot.utils.control_utils import sanity_check_dataset_robot_compatibility
-from lerobot.configs.policies import PreTrainedConfig
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.utils import make_robot_action
 from lerobot.processor.rename_processor import rename_stats
@@ -36,6 +36,12 @@ from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import get_safe_torch_device
 from lerobot.utils.visualization_utils import log_rerun_data
 from dataclasses import field
+from scripts.core.policy_config_utils import (
+    build_policy_config,
+    load_policy_yaml,
+    resolve_policy_config_path,
+    self_test_policy_config_loader,
+)
 
 import logging
 
@@ -77,6 +83,17 @@ VALID_RECORD_SUCCESS_POLICIES = {
     SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE,
 }
 
+def _default_scripts_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_project_root() -> Path:
+    return _default_scripts_dir().parent
+
+
+def _default_record_cfg_path() -> Path:
+    return _default_scripts_dir() / "config" / "record_cfg.yaml"
+
 
 def _normalize_record_success_policy(task_cfg: Dict[str, Any]) -> str:
     success_policy = task_cfg.get("success_policy")
@@ -99,7 +116,16 @@ def _normalize_record_success_policy(task_cfg: Dict[str, Any]) -> str:
 class RecordConfig:
     """Configuration class for recording sessions."""
     
-    def __init__(self, cfg: Dict[str, Any]):
+    def __init__(
+        self,
+        cfg: Dict[str, Any],
+        scripts_dir: Path | None = None,
+        project_root: Path | None = None,
+    ):
+        self.scripts_dir = Path(scripts_dir) if scripts_dir is not None else _default_scripts_dir()
+        self.project_root = (
+            Path(project_root) if project_root is not None else self.scripts_dir.parent
+        )
         storage = cfg["storage"]
         task = cfg["task"]
         time = cfg["time"]
@@ -107,10 +133,16 @@ class RecordConfig:
         robot = cfg["robot"]
         policy = cfg["policy"]
         teleop = cfg["teleop"]
+        debug_cfg = cfg.get("debug", {})
+        debug_options = debug_cfg if isinstance(debug_cfg, dict) else {}
         
         # Global config
         self.repo_id: str = cfg["repo_id"]
-        self.debug: bool = cfg.get("debug", True)
+        self.debug: bool = bool(
+            debug_options.get("robot_debug", cfg.get("robot_debug", False))
+            if isinstance(debug_cfg, dict)
+            else cfg.get("debug", True)
+        )
         self.fps: str = cfg.get("fps", 15)
         self.dataset_path: Path = Path(cfg.get("dataset_path", HF_LEROBOT_HOME / self.repo_id))
         self.dataset_name: str | None = cfg.get("dataset_name")
@@ -206,59 +238,22 @@ class RecordConfig:
     
     def _parse_policy_config(self, policy: Dict[str, Any]) -> None:
         """Parse policy configuration."""
-        def normalize_temporal_ensemble_coeff(value: Any) -> float | None:
-            """Treat non-positive and None-like values as disabled temporal ensembling."""
-            if value is None:
-                return None
-
-            if isinstance(value, str):
-                text = value.strip().lower()
-                if text in {"", "none", "null", "~"}:
-                    return None
-                try:
-                    value = float(text)
-                except ValueError as exc:
-                    raise ValueError(
-                        "`policy.temporal_ensemble_coeff` must be a number, null, or None-like string. "
-                        f"Got: {value!r}"
-                    ) from exc
-
-            if isinstance(value, (int, float)):
-                return float(value) if value > 0 else None
-
-            raise ValueError(
-                "`policy.temporal_ensemble_coeff` must be numeric or null-like. "
-                f"Got type: {type(value).__name__}"
-            )
-
-        policy_type = policy["type"]
-        # NOTE:
-        # - New round-Dagger configs should use "act" for deployment/collection.
-        # - "act_dagger" remains accepted only for older local configs; it maps to ACT here.
-        if policy_type in {"act", "act_dagger"}:
-            from lerobot.policies import ACTConfig
-
-            temporal_ensemble_coeff = normalize_temporal_ensemble_coeff(
-                policy.get("temporal_ensemble_coeff")
-            )
-            self.policy = ACTConfig(
-                device=policy["device"],
-                push_to_hub=policy["push_to_hub"],
-                temporal_ensemble_coeff=temporal_ensemble_coeff,
-                chunk_size=policy.get("chunk_size", 100),
-                n_action_steps=policy.get("n_action_steps", 100),
-            )
-        elif policy_type == "diffusion":
-            from lerobot.policies import DiffusionConfig
-            self.policy = DiffusionConfig(
-                device=policy["device"],
-                push_to_hub=policy["push_to_hub"],
-            )
-        else:
-            raise ValueError(f"No config for policy type: {policy_type}")
-        
-        if policy.get("pretrained_path"):
-            self.policy.pretrained_path = policy["pretrained_path"]
+        self.policy_type = str(policy["type"]).strip().lower()
+        self.policy_config_path = resolve_policy_config_path(
+            policy,
+            scripts_dir=self.scripts_dir,
+            project_root=self.project_root,
+            mode="reason",
+        )
+        policy_yaml = load_policy_yaml(self.policy_config_path)
+        self.policy = build_policy_config(
+            self.policy_type,
+            policy_yaml,
+            legacy_policy_dict=policy,
+            legacy_source_name="record_cfg.yaml",
+            config_path=self.policy_config_path,
+            mode="reason",
+        )
     
     def create_teleop_config(self):
         """Create teleoperation configuration object."""
@@ -811,7 +806,12 @@ def run_mix_record_loop(
         # (4) Execute action.
         robot_action_to_send = robot_action_processor((exec_action, raw_obs))
         sent_action = _complete_action_dict(dict(robot_action_to_send), action_names, fallback_action=exec_action)
-        _ = robot.send_action(sent_action)
+        sent_action_raw = robot.send_action(sent_action)
+        sent_action = _complete_action_dict(
+            dict(sent_action_raw or sent_action),
+            action_names,
+            fallback_action=exec_action,
+        )
         last_exec_action = dict(sent_action)
 
         if action_source in {"expert", "mixed"}:
@@ -1356,13 +1356,70 @@ def run_record(record_cfg: RecordConfig):
         sys.exit(1)
 
 
-def main():
-    parent_path = Path(__file__).resolve().parent
-    cfg_path = parent_path.parent / "config" / "record_cfg.yaml"
-    with open(cfg_path, 'r') as f:
+def _load_record_cfg_yaml(cfg_path: Path) -> Dict[str, Any]:
+    with open(cfg_path, "r") as f:
         cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict) or "record" not in cfg:
+        raise ValueError(f"Record config must contain a top-level `record` mapping: {cfg_path}")
+    return cfg
 
-    record_cfg = RecordConfig(cfg["record"])
+
+def dry_run_policy_config(cfg_path: Path) -> RecordConfig:
+    scripts_dir = _default_scripts_dir()
+    project_root = _default_project_root()
+    cfg = _load_record_cfg_yaml(cfg_path)
+    record_cfg = RecordConfig(
+        cfg["record"],
+        scripts_dir=scripts_dir,
+        project_root=project_root,
+    )
+    logging.info("====== [POLICY CONFIG DRY-RUN] OK ======")
+    logging.info("policy.type: %s", record_cfg.policy_type)
+    logging.info("policy.config_path: %s", record_cfg.policy_config_path)
+    logging.info("policy.config_class: %s", type(record_cfg.policy).__name__)
+    logging.info("policy.device: %s", record_cfg.policy.device)
+    logging.info("policy.pretrained_path: %s", record_cfg.policy.pretrained_path)
+    return record_cfg
+
+
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description="Record LeRobot dual-arm data.")
+    parser.add_argument(
+        "--config",
+        "--config-path",
+        dest="config_path",
+        type=Path,
+        default=_default_record_cfg_path(),
+        help="Path to record_cfg.yaml.",
+    )
+    parser.add_argument(
+        "--dry-run-policy-config",
+        action="store_true",
+        help="Load record_cfg.yaml and the referenced policy yaml, build the policy config, then exit.",
+    )
+    parser.add_argument(
+        "--self-test-policy-config",
+        action="store_true",
+        help="Run minimal in-process checks for the policy config loader, then exit.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.self_test_policy_config:
+        self_test_policy_config_loader()
+        return
+
+    if args.dry_run_policy_config:
+        dry_run_policy_config(args.config_path)
+        return
+
+    scripts_dir = _default_scripts_dir()
+    project_root = _default_project_root()
+    cfg = _load_record_cfg_yaml(args.config_path)
+    record_cfg = RecordConfig(
+        cfg["record"],
+        scripts_dir=scripts_dir,
+        project_root=project_root,
+    )
     run_record(record_cfg)
 
 if __name__ == "__main__":
