@@ -16,7 +16,7 @@ train:
     repo_id: "nero_task3_step1/2mL_empty_right_merged_20260521_E249" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
   # 指向包含数据集 repo 的本地目录（要包含 repo_id 子目录），
   # 例如本地缓存路径下的 physbrain3/pick_and_place_merged
-    root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_right_merged_20260521_E249"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_right_merged_20260521_E249"
 
   env:
 

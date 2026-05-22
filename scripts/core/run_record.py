@@ -249,10 +249,16 @@ class RecordConfig:
         robot = cfg["robot"]
         policy = cfg["policy"]
         teleop = cfg["teleop"]
+        debug_cfg = cfg.get("debug", {})
+        debug_options = debug_cfg if isinstance(debug_cfg, dict) else {}
         
         # Global config
         self.repo_id: str = cfg["repo_id"]
-        self.debug: bool = cfg.get("debug", True)
+        self.debug: bool = bool(
+            debug_options.get("robot_debug", cfg.get("robot_debug", False))
+            if isinstance(debug_cfg, dict)
+            else cfg.get("debug", True)
+        )
         self.fps: str = cfg.get("fps", 15)
         self.dataset_path: Path = Path(cfg.get("dataset_path", HF_LEROBOT_HOME / self.repo_id))
         self.dataset_name: str | None = cfg.get("dataset_name")
@@ -262,17 +268,41 @@ class RecordConfig:
         self.user_info: str = cfg.get("user_notes", None)
         self.run_mode: str = cfg.get("run_mode", "run_record")
         self.rename_map: dict[str, str] = field(default_factory=dict)
-        self.debug_policy_timing: bool = bool(cfg.get("debug_policy_timing", False))
-        self.debug_action_state: bool = bool(cfg.get("debug_action_state", False))
-        self.gripper_debug_mode: str = str(cfg.get("gripper_debug_mode", "default_continuous")).strip()
+        self.debug_policy_timing: bool = bool(
+            debug_options.get("debug_policy_timing", cfg.get("debug_policy_timing", False))
+        )
+        self.debug_action_state: bool = bool(
+            debug_options.get("debug_action_state", cfg.get("debug_action_state", False))
+        )
+        self.gripper_debug_mode: str = str(
+            debug_options.get("gripper_debug_mode", cfg.get("gripper_debug_mode", "default_continuous"))
+        ).strip()
         if self.gripper_debug_mode not in VALID_GRIPPER_DEBUG_MODES:
             raise ValueError(
                 f"`record.gripper_debug_mode` must be one of {sorted(VALID_GRIPPER_DEBUG_MODES)}. "
                 f"Got: {self.gripper_debug_mode!r}"
             )
-        self.gripper_close_threshold: float = float(cfg.get("gripper_close_threshold", 0.2))
-        self.gripper_debounce_frames: int = int(cfg.get("gripper_debounce_frames", 3))
-        self.gripper_hold_after_close: bool = bool(cfg.get("gripper_hold_after_close", True))
+        self.gripper_close_threshold: float = float(
+            debug_options.get("gripper_close_threshold", cfg.get("gripper_close_threshold", 0.2))
+        )
+        self.gripper_debounce_frames: int = int(
+            debug_options.get("gripper_debounce_frames", cfg.get("gripper_debounce_frames", 3))
+        )
+        self.gripper_hold_after_close: bool = bool(
+            debug_options.get("gripper_hold_after_close", cfg.get("gripper_hold_after_close", True))
+        )
+        self.gripper_pose_gate_enabled: bool = bool(
+            debug_options.get("gripper_pose_gate_enabled", cfg.get("gripper_pose_gate_enabled", False))
+        )
+        pose_gate_ref = debug_options.get("gripper_pose_gate_ref_xyz", cfg.get("gripper_pose_gate_ref_xyz"))
+        if isinstance(pose_gate_ref, str):
+            pose_gate_ref = [part.strip() for part in pose_gate_ref.split(",") if part.strip()]
+        self.gripper_pose_gate_ref_xyz: list[float] | None = (
+            [float(v) for v in pose_gate_ref] if pose_gate_ref is not None else None
+        )
+        self.gripper_pose_gate_radius_m: float = float(
+            debug_options.get("gripper_pose_gate_radius_m", cfg.get("gripper_pose_gate_radius_m", 0.05))
+        )
         # Finish behavior: by default reset to home and keep connection to avoid server stop on close.
         self.reset_on_finish: bool = cfg.get("reset_on_finish", True)
         self.disconnect_on_finish: bool = cfg.get("disconnect_on_finish", False)
@@ -549,6 +579,7 @@ def _predict_action_timed(
 def _action_state_fieldnames(action_names: list[str]) -> list[str]:
     base = [
         "timestamp",
+        "gripper_debug_mode",
         "left_ee_pose.x",
         "left_ee_pose.y",
         "left_ee_pose.z",
@@ -571,6 +602,8 @@ def _action_state_fieldnames(action_names: list[str]) -> list[str]:
         "right_gripper_predicted",
         "left_gripper_sent",
         "right_gripper_sent",
+        "left_gripper_policy_raw",
+        "right_gripper_policy_raw",
         "left_gripper_command",
         "right_gripper_command",
         "left_gripper_width_command",
@@ -579,6 +612,15 @@ def _action_state_fieldnames(action_names: list[str]) -> list[str]:
         "right_gripper_actual_width",
         "left_gripper_debug_mode",
         "right_gripper_debug_mode",
+        "left_gripper_close_counter",
+        "right_gripper_close_counter",
+        "left_gripper_latched_closed",
+        "right_gripper_latched_closed",
+        "left_gripper_threshold_passed",
+        "right_gripper_threshold_passed",
+        "gripper_pose_gate_enabled",
+        "right_gripper_pose_gate_distance_m",
+        "right_gripper_pose_gate_passed",
     ]
     return base + [f"policy.{name}" for name in action_names] + [f"sent.{name}" for name in action_names]
 
@@ -599,6 +641,18 @@ def _build_action_state_row(
     action_names: list[str],
 ) -> dict[str, Any]:
     row: dict[str, Any] = {"timestamp": timestamp_s}
+    left_mode = _get_nested_debug(robot_debug, "left_gripper", "mode")
+    right_mode = _get_nested_debug(robot_debug, "right_gripper", "mode")
+    row["gripper_debug_mode"] = right_mode or left_mode
+    row["gripper_pose_gate_enabled"] = _get_nested_debug(
+        robot_debug, "right_gripper", "pose_gate_enabled"
+    )
+    row["right_gripper_pose_gate_distance_m"] = _get_nested_debug(
+        robot_debug, "right_gripper", "pose_gate_distance_m"
+    )
+    row["right_gripper_pose_gate_passed"] = _get_nested_debug(
+        robot_debug, "right_gripper", "pose_gate_passed"
+    )
     for arm in ("left", "right"):
         for axis in ("x", "y", "z", "rx", "ry", "rz"):
             row[f"{arm}_ee_pose.{axis}"] = raw_obs.get(f"{arm}_ee_pose.{axis}", "")
@@ -609,8 +663,11 @@ def _build_action_state_row(
         row[f"{arm}_delta_rate_limited"] = _get_nested_debug(
             robot_debug, f"{arm}_delta", "rate_limited"
         )
-        row[f"{arm}_gripper_predicted"] = policy_action.get(f"{arm}_gripper_cmd", "")
-        row[f"{arm}_gripper_sent"] = sent_action.get(f"{arm}_gripper_cmd", "")
+        policy_gripper = policy_action.get(f"{arm}_gripper_cmd", "")
+        actual_gripper = _get_nested_debug(robot_debug, f"{arm}_gripper", "command")
+        row[f"{arm}_gripper_predicted"] = policy_gripper
+        row[f"{arm}_gripper_sent"] = actual_gripper if actual_gripper != "" else sent_action.get(f"{arm}_gripper_cmd", "")
+        row[f"{arm}_gripper_policy_raw"] = policy_gripper
         row[f"{arm}_gripper_command"] = _get_nested_debug(robot_debug, f"{arm}_gripper", "command")
         row[f"{arm}_gripper_width_command"] = _get_nested_debug(
             robot_debug, f"{arm}_gripper", "width_command"
@@ -619,6 +676,15 @@ def _build_action_state_row(
             robot_debug, f"{arm}_gripper", "actual_width"
         )
         row[f"{arm}_gripper_debug_mode"] = _get_nested_debug(robot_debug, f"{arm}_gripper", "mode")
+        row[f"{arm}_gripper_close_counter"] = _get_nested_debug(
+            robot_debug, f"{arm}_gripper", "close_counter"
+        )
+        row[f"{arm}_gripper_latched_closed"] = _get_nested_debug(
+            robot_debug, f"{arm}_gripper", "latched_closed"
+        )
+        row[f"{arm}_gripper_threshold_passed"] = _get_nested_debug(
+            robot_debug, f"{arm}_gripper", "threshold_passed"
+        )
 
     for name in action_names:
         row[f"policy.{name}"] = policy_action.get(name, "")
@@ -937,6 +1003,8 @@ def run_policy_debug_record_loop(
     policy.reset()
     preprocessor.reset()
     postprocessor.reset()
+    if hasattr(robot, "reset_gripper_debug_state"):
+        robot.reset_gripper_debug_state()
 
     start_episode_t = time.perf_counter()
     timestamp_s = 0.0
@@ -1042,6 +1110,8 @@ def run_mix_record_loop(
     policy.reset()
     preprocessor.reset()
     postprocessor.reset()
+    if hasattr(robot, "reset_gripper_debug_state"):
+        robot.reset_gripper_debug_state()
 
     start_episode_t = time.perf_counter()
     timestamp_s = 0.0
@@ -1474,6 +1544,9 @@ def run_record(record_cfg: RecordConfig):
             gripper_close_threshold=record_cfg.gripper_close_threshold,
             gripper_debounce_frames=record_cfg.gripper_debounce_frames,
             gripper_hold_after_close=record_cfg.gripper_hold_after_close,
+            gripper_pose_gate_enabled=record_cfg.gripper_pose_gate_enabled,
+            gripper_pose_gate_ref_xyz=record_cfg.gripper_pose_gate_ref_xyz,
+            gripper_pose_gate_radius_m=record_cfg.gripper_pose_gate_radius_m,
         )
         
         # Initialize the robot dynamically based on robot_type
@@ -1645,6 +1718,8 @@ def run_record(record_cfg: RecordConfig):
 
         while episode_idx < record_cfg.num_episodes and not events["stop_recording"]:
             logging.info(f"====== [RECORD] Recording episode {episode_idx + 1} of {record_cfg.num_episodes} ======")
+            if hasattr(robot, "reset_gripper_debug_state"):
+                robot.reset_gripper_debug_state()
             if record_cfg.run_mode == "run_mix":
                 mix_stats = run_mix_record_loop(
                     robot=robot,

@@ -5,12 +5,12 @@
 # =========================
 # Required / frequently edited
 # =========================
-pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right/dp_20260521_E249_V01/checkpoints/last/pretrained_model"  # reason/deploy checkpoint directory containing config.json and model.safetensors.
+pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right/dp_20260521_E249_V01/checkpoints/014000/pretrained_model"  # reason/deploy checkpoint directory containing config.json and model.safetensors.
 device: cuda  # common: cuda | cpu. Validated by PreTrainedConfig/torch availability; cuda:N is normalized by policy_config_utils.
 use_amp: false  # inference autocast flag used by run_record/predict_action on CUDA.
 n_obs_steps: 2  # int > 0. Number of observation frames cached before diffusion sampling.
 horizon: 16  # int > 0. Diffusion action trajectory length; must be divisible by 2 ** len(down_dims).
-n_action_steps: 2  # int > 0 and <= horizon - n_obs_steps + 1. Number of sampled actions queued/executed per denoising call.
+n_action_steps: 1  # int > 0 and <= horizon - n_obs_steps + 1. Number of sampled actions queued/executed per denoising call.
 
 # =========================
 # Model / policy architecture
@@ -52,7 +52,7 @@ clip_sample_range: 1.0  # float. Scheduler clip magnitude used when clip_sample 
 # =========================
 # Inference-only parameters
 # =========================
-num_inference_steps: 20  # int > 0 or null. Reverse diffusion denoising steps; null uses num_train_timesteps.
+num_inference_steps: 5  # int > 0 or null. Reverse diffusion denoising steps; null uses num_train_timesteps.
 
 # =========================
 # Default semantic overrides / 默认语义补充

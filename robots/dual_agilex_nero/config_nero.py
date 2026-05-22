@@ -34,6 +34,9 @@ class NeroDualArmConfig(RobotConfig):
     gripper_close_threshold: float = 0.2
     gripper_debounce_frames: int = 3
     gripper_hold_after_close: bool = True
+    gripper_pose_gate_enabled: bool = False
+    gripper_pose_gate_ref_xyz: list[float] | None = None
+    gripper_pose_gate_radius_m: float = 0.05
     
     # Control configuration
     control_mode: str = "oculus"

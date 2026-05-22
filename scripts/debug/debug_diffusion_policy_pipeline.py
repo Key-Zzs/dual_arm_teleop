@@ -11,9 +11,11 @@ This script is intentionally read-only. It checks:
 from __future__ import annotations
 
 import argparse
+import csv
 import copy
 import math
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -586,6 +588,369 @@ def print_dataset_diagnostics(
             print(f"| {name} | {same:.5f} | {prev:.5f} |")
 
 
+def parse_float_xyz(raw: str | None) -> np.ndarray | None:
+    if raw is None or raw.strip() == "":
+        return None
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    if len(parts) != 3:
+        raise ValueError(f"Expected --tube-pick-point as 'x,y,z', got {raw!r}.")
+    return np.asarray([float(part) for part in parts], dtype=float)
+
+
+def parse_name_list(raw: str | None) -> list[str] | None:
+    if raw is None or raw.strip() == "":
+        return None
+    names = [part.strip() for part in raw.split(",") if part.strip()]
+    if len(names) != 3:
+        raise ValueError(f"Expected three comma-separated names, got {raw!r}.")
+    return names
+
+
+def resolve_output_path(raw: str | None) -> Path | None:
+    if raw is None or raw.strip() == "":
+        return None
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
+def select_episode_records(
+    dataset: Any,
+    max_episodes: int,
+    episode_indices: list[int] | None,
+) -> list[tuple[int, int, int]]:
+    records = dataset_episode_records(dataset)
+    if episode_indices is not None:
+        wanted = set(episode_indices)
+        records = [record for record in records if record[0] in wanted]
+    return records[:max_episodes]
+
+
+def find_right_gripper_dim(action_names: list[str], user_dim: int | None) -> int | None:
+    if user_dim is not None:
+        dim = user_dim
+        if dim < 0:
+            dim += len(action_names)
+        if dim < 0 or dim >= len(action_names):
+            raise ValueError(f"Invalid --gripper-dim {user_dim} for action_dim={len(action_names)}.")
+        return dim
+
+    exact = ["right_gripper_cmd", "action.right_gripper_cmd"]
+    for target in exact:
+        for idx, name in enumerate(action_names):
+            if name == target:
+                return idx
+
+    for idx, name in enumerate(action_names):
+        lowered = name.lower()
+        if "right" in lowered and "gripper" in lowered:
+            return idx
+    return None
+
+
+def _axis_from_name(name: str) -> str | None:
+    lowered = name.lower()
+    for axis in ("x", "y", "z"):
+        if lowered.endswith(f".{axis}") or lowered.endswith(f"_{axis}") or lowered.endswith(f"/{axis}"):
+            return axis
+    return None
+
+
+def find_right_ee_xyz_indices(state_names: list[str], user_names: list[str] | None) -> dict[str, int] | None:
+    if user_names is not None:
+        indices = {}
+        for axis, name in zip(("x", "y", "z"), user_names, strict=True):
+            if name not in state_names:
+                print(f"WARNING: --ee-position-names entry {name!r} was not found in state names.")
+                return None
+            indices[axis] = state_names.index(name)
+        return indices
+
+    candidate_stems = [
+        "right_ee_pose",
+        "observation.state.right_ee_pose",
+        "right_current_ee_pose",
+        "right_tcp_pose",
+        "right_end_effector_pose",
+    ]
+    for stem in candidate_stems:
+        names = [f"{stem}.{axis}" for axis in ("x", "y", "z")]
+        if all(name in state_names for name in names):
+            return {axis: state_names.index(name) for axis, name in zip(("x", "y", "z"), names, strict=True)}
+
+    fuzzy: dict[str, int] = {}
+    for idx, name in enumerate(state_names):
+        lowered = name.lower()
+        axis = _axis_from_name(name)
+        if axis is None or axis in fuzzy:
+            continue
+        if "right" in lowered and (
+            "ee" in lowered or "tcp" in lowered or "end_effector" in lowered or "end effector" in lowered
+        ):
+            fuzzy[axis] = idx
+    if all(axis in fuzzy for axis in ("x", "y", "z")):
+        return fuzzy
+    return None
+
+
+def sample_at_offset(values: np.ndarray, close_idx: int | None, offset: int) -> float | str:
+    if close_idx is None:
+        return ""
+    idx = close_idx + offset
+    if idx < 0 or idx >= len(values):
+        return ""
+    return float(values[idx])
+
+
+def xyz_at_offset(
+    states: np.ndarray | None,
+    xyz_indices: dict[str, int] | None,
+    close_idx: int | None,
+    offset: int,
+) -> tuple[float | str, float | str, float | str]:
+    if states is None or xyz_indices is None or close_idx is None:
+        return "", "", ""
+    idx = close_idx + offset
+    if idx < 0 or idx >= len(states):
+        return "", "", ""
+    return (
+        float(states[idx, xyz_indices["x"]]),
+        float(states[idx, xyz_indices["y"]]),
+        float(states[idx, xyz_indices["z"]]),
+    )
+
+
+def dist_at_offset(
+    states: np.ndarray | None,
+    xyz_indices: dict[str, int] | None,
+    pick_point: np.ndarray | None,
+    close_idx: int | None,
+    offset: int,
+) -> float | str:
+    x, y, z = xyz_at_offset(states, xyz_indices, close_idx, offset)
+    if pick_point is None or x == "" or y == "" or z == "":
+        return ""
+    return float(np.linalg.norm(np.asarray([x, y, z], dtype=float) - pick_point))
+
+
+def close_context_image_keys(dataset: Any) -> list[str]:
+    return [
+        key
+        for key in dataset.features
+        if key.startswith("observation.") and "image" in key.lower()
+    ]
+
+
+def save_image_array(array: Any, path: Path) -> bool:
+    try:
+        from PIL import Image
+    except ModuleNotFoundError:
+        print("WARNING: Pillow is not installed; close context images cannot be saved.")
+        return False
+
+    img = tensor_to_np(array)
+    if img.ndim == 4 and img.shape[0] == 1:
+        img = img[0]
+    if img.ndim == 3 and img.shape[0] in {1, 3, 4}:
+        img = np.moveaxis(img, 0, -1)
+    if img.dtype != np.uint8:
+        max_value = float(np.nanmax(img)) if img.size else 0.0
+        if max_value <= 1.0:
+            img = img * 255.0
+        img = np.clip(img, 0, 255).astype(np.uint8)
+    if img.ndim == 3 and img.shape[-1] == 1:
+        img = img[..., 0]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(img).save(path)
+    return True
+
+
+def save_close_context_images(
+    dataset: Any,
+    ep_idx: int,
+    ep_start: int,
+    ep_end: int,
+    close_idx: int | None,
+    offsets: list[int],
+) -> None:
+    if close_idx is None:
+        return
+    image_keys = close_context_image_keys(dataset)
+    if not image_keys:
+        print("WARNING: dataset has no image keys; close context images skipped.")
+        return
+
+    out_dir = PROJECT_ROOT / "logs" / "close_context_images" / f"episode_{ep_idx:03d}"
+    saved_any = False
+    for offset in offsets:
+        rel_idx = close_idx + offset
+        if rel_idx < 0 or ep_start + rel_idx >= ep_end:
+            continue
+        item = dataset[ep_start + rel_idx]
+        for key in image_keys:
+            if key not in item:
+                continue
+            safe_key = key.replace("/", "_").replace(".", "_")
+            path = out_dir / f"frame_{rel_idx:05d}_offset_{offset:+04d}_{safe_key}.png"
+            try:
+                saved_any = save_image_array(item[key], path) or saved_any
+            except Exception as exc:
+                print(f"WARNING: failed to save image {key} at episode {ep_idx} frame {rel_idx}: {exc}")
+    if saved_any:
+        print(f"Saved close context images to: {out_dir}")
+
+
+def run_dataset_close_spatial_stats(
+    dataset: Any,
+    max_episodes: int,
+    episode_indices: list[int] | None,
+    gripper_dim: int | None,
+    gripper_threshold: float,
+    ee_position_names: list[str] | None,
+    tube_pick_point: np.ndarray | None,
+    save_images: bool,
+    output_csv: Path | None,
+) -> None:
+    print("\n== Dataset close spatial/context diagnostics ==")
+    action_names = action_names_from_dataset(dataset)
+    state_names = state_names_from_dataset(dataset)
+    selected_gripper_dim = find_right_gripper_dim(action_names, gripper_dim)
+
+    print(f"action_names: {action_names}")
+    if selected_gripper_dim is None:
+        print("WARNING: Could not find right_gripper_cmd in action names; spatial close stats skipped.")
+        return
+    print(f"selected gripper dim: {selected_gripper_dim} ({action_names[selected_gripper_dim]})")
+
+    xyz_indices = find_right_ee_xyz_indices(state_names, ee_position_names)
+    if xyz_indices is None:
+        print("WARNING: No absolute right EE pose found; distance-to-pick-point cannot be computed.")
+        print(f"Available state names: {state_names}")
+    else:
+        print(
+            "right EE xyz state names: "
+            + ", ".join(f"{axis}={state_names[idx]}" for axis, idx in xyz_indices.items())
+        )
+
+    if tube_pick_point is not None and xyz_indices is None:
+        print("WARNING: --tube-pick-point was provided but right EE pose was not found; distances skipped.")
+
+    records = select_episode_records(dataset, max_episodes, episode_indices)
+    offsets = [-60, -30, -10, 0, 10, 30, 60]
+    offset_labels = {
+        -60: "60_before",
+        -30: "30_before",
+        -10: "10_before",
+        0: "close",
+        10: "10_after",
+        30: "30_after",
+        60: "60_after",
+    }
+    rows: list[dict[str, Any]] = []
+    close_ratios: list[float] = []
+    dist_at_close_values: list[float] = []
+    delta_sum_30_values: list[float] = []
+    delta_sum_60_values: list[float] = []
+
+    for ep_idx, start, end in records:
+        actions = load_key_range(dataset, "action", start, end)
+        values = actions[:, selected_gripper_dim].astype(float)
+        close_idx = int(np.argmax(values < gripper_threshold)) if np.any(values < gripper_threshold) else None
+        gripper_like_indices = {
+            i for i, name in enumerate(action_names) if "gripper" in name.lower()
+        }
+        gripper_like_indices.add(selected_gripper_dim)
+        arm_indices = [i for i in range(actions.shape[1]) if i not in gripper_like_indices]
+        delta_norms = np.linalg.norm(actions[:, arm_indices], axis=1) if arm_indices else np.zeros(len(values))
+
+        states = None
+        if "observation.state" in dataset.features and xyz_indices is not None:
+            states = load_key_range(dataset, "observation.state", start, end)
+
+        row: dict[str, Any] = {
+            "episode_index": ep_idx,
+            "episode_length": len(values),
+            "first_close_frame": "" if close_idx is None else close_idx,
+            "first_close_ratio": "" if close_idx is None else close_idx / max(1, len(values)),
+            "gripper_threshold": gripper_threshold,
+            "gripper_value_at_close": "" if close_idx is None else float(values[close_idx]),
+            "action_delta_norm_sum_30_after_close": "",
+            "action_delta_norm_sum_60_after_close": "",
+        }
+
+        if close_idx is not None:
+            ratio = close_idx / max(1, len(values))
+            close_ratios.append(ratio)
+            sum_30 = float(np.sum(delta_norms[close_idx + 1 : min(len(delta_norms), close_idx + 31)]))
+            sum_60 = float(np.sum(delta_norms[close_idx + 1 : min(len(delta_norms), close_idx + 61)]))
+            row["action_delta_norm_sum_30_after_close"] = sum_30
+            row["action_delta_norm_sum_60_after_close"] = sum_60
+            delta_sum_30_values.append(sum_30)
+            delta_sum_60_values.append(sum_60)
+
+        for offset in offsets:
+            label = offset_labels[offset]
+            row[f"gripper_value_{label}"] = sample_at_offset(values, close_idx, offset)
+            row[f"action_delta_norm_{label}"] = sample_at_offset(delta_norms, close_idx, offset)
+            x, y, z = xyz_at_offset(states, xyz_indices, close_idx, offset)
+            row[f"right_ee_x_{label}"] = x
+            row[f"right_ee_y_{label}"] = y
+            row[f"right_ee_z_{label}"] = z
+            distance = dist_at_offset(states, xyz_indices, tube_pick_point, close_idx, offset)
+            row[f"dist_{label}"] = distance
+            if offset == 0:
+                row["dist_at_close"] = distance
+                if distance != "":
+                    dist_at_close_values.append(float(distance))
+
+        if save_images:
+            save_close_context_images(dataset, ep_idx, start, end, close_idx, offsets)
+
+        rows.append(row)
+
+    if output_csv is None:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_csv = PROJECT_ROOT / "logs" / f"debug_dataset_close_spatial_stats_{timestamp}.csv"
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = sorted({key for row in rows for key in row})
+    with output_csv.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"Saved dataset close spatial CSV: {output_csv}")
+
+    print("\nClose spatial summary:")
+    print(f"  valid_episode_count={len(rows)}")
+    if close_ratios:
+        values_np = np.asarray(close_ratios, dtype=float)
+        print(
+            "  first_close_ratio "
+            f"mean={np.mean(values_np):.4f} std={np.std(values_np):.4f} "
+            f"min={np.min(values_np):.4f} max={np.max(values_np):.4f}"
+        )
+        print(f"  ratio < 0.3 count={int(np.sum(values_np < 0.3))}")
+    else:
+        print("  first_close_ratio: no close frames found")
+
+    if dist_at_close_values:
+        dist_np = np.asarray(dist_at_close_values, dtype=float)
+        print(
+            "  dist_at_close "
+            f"mean={np.mean(dist_np):.4f} std={np.std(dist_np):.4f} "
+            f"min={np.min(dist_np):.4f} max={np.max(dist_np):.4f}"
+        )
+        for threshold in (0.03, 0.05, 0.08):
+            print(f"  dist_at_close > {threshold:.2f} count={int(np.sum(dist_np > threshold))}")
+    else:
+        print("  dist_at_close: unavailable")
+
+    if delta_sum_30_values:
+        print(f"  close_after action_delta_norm_sum_30 mean={np.mean(delta_sum_30_values):.6f}")
+    if delta_sum_60_values:
+        print(f"  close_after action_delta_norm_sum_60 mean={np.mean(delta_sum_60_values):.6f}")
+
+
 def maybe_load_dataset(args: argparse.Namespace, train_section: dict[str, Any]):
     if torch is None:
         print("\nSKIP dataset diagnostics: torch is not installed in this Python environment.")
@@ -829,6 +1194,37 @@ def parse_args() -> argparse.Namespace:
         default=0.2,
     )
     parser.add_argument("--gripper-dims", default=None, help="Comma-separated gripper action dims.")
+    parser.add_argument(
+        "--episode-indices",
+        default=None,
+        help="Comma-separated episode indices for dataset close spatial stats.",
+    )
+    parser.add_argument(
+        "--gripper-dim",
+        type=int,
+        default=None,
+        help="Right gripper action dim for dataset close spatial stats.",
+    )
+    parser.add_argument(
+        "--ee-position-names",
+        default=None,
+        help="Comma-separated state feature names for right EE x,y,z.",
+    )
+    parser.add_argument(
+        "--tube-pick-point",
+        default=None,
+        help="Optional pick point as 'x,y,z' in the same frame as right EE state.",
+    )
+    parser.add_argument(
+        "--save-close-context-images",
+        action="store_true",
+        help="Save images around first close frames if dataset image keys are available.",
+    )
+    parser.add_argument(
+        "--output-csv",
+        default=None,
+        help="Output CSV path for dataset close spatial stats.",
+    )
     parser.add_argument("--static-eps", type=float, default=1e-4)
     parser.add_argument("--context", type=int, default=10)
     parser.add_argument("--offline-inference", action="store_true")
@@ -866,6 +1262,12 @@ def main() -> None:
     train_section = train_main[0]
     dataset = maybe_load_dataset(args, train_section)
     gripper_dims = parse_int_list(args.gripper_dims)
+    episode_indices = parse_int_list(args.episode_indices)
+    ee_position_names = parse_name_list(args.ee_position_names)
+    tube_pick_point = parse_float_xyz(args.tube_pick_point)
+    spatial_gripper_dim = args.gripper_dim if args.gripper_dim is not None else (
+        gripper_dims[0] if gripper_dims else None
+    )
     if dataset is not None:
         print_dataset_diagnostics(
             dataset,
@@ -874,6 +1276,17 @@ def main() -> None:
             static_eps=args.static_eps,
             context=args.context,
             gripper_dims=gripper_dims,
+        )
+        run_dataset_close_spatial_stats(
+            dataset=dataset,
+            max_episodes=args.max_episodes,
+            episode_indices=episode_indices,
+            gripper_dim=spatial_gripper_dim,
+            gripper_threshold=args.close_threshold,
+            ee_position_names=ee_position_names,
+            tube_pick_point=tube_pick_point,
+            save_images=args.save_close_context_images,
+            output_csv=resolve_output_path(args.output_csv),
         )
         if args.offline_inference:
             run_offline_inference(dataset, reason_diff_cfg, args.device, args.inference_frame)

@@ -16,13 +16,25 @@ record:
       ### remove_tubing: Remove the tubing from the source bottle
       ### insert_tubing: Insert the tubing into the target bottle
       ### replace_cap: Replace the cap on the source bottle
-  debug: 0 # if True, robot will not execute any actions, but gripper can still be controlled
-  debug_policy_timing: false
-  debug_action_state: false
-  gripper_debug_mode: "default_continuous" # default_continuous | force_open | binary_threshold | binary_debounce
-  gripper_close_threshold: 0.2
-  gripper_debounce_frames: 3
-  gripper_hold_after_close: true
+  debug:
+    robot_debug: false # if true, robot will not execute arm actions, but gripper can still be controlled
+    debug_policy_timing: false
+    debug_action_state: false
+
+    # Gripper debug modes:
+    # - default_continuous: original behavior
+    # - force_open: keep gripper open, test arm approach only
+    # - binary_threshold: close only when predicted gripper < threshold
+    # - binary_debounce: close only after threshold condition holds for N frames
+    gripper_debug_mode: default_continuous
+    gripper_close_threshold: 0.2
+    gripper_debounce_frames: 3
+    gripper_hold_after_close: true
+
+    # Optional pose gate for debug only.
+    gripper_pose_gate_enabled: false
+    gripper_pose_gate_ref_xyz: null
+    gripper_pose_gate_radius_m: 0.05
   user_notes:  # any additional notes about the dataset
   fps: 30  # dataset and camera frame rate
   control_mode: &control_mode "oculus"  # teleoperation control mode (only "oculus" supported)
