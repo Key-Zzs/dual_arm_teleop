@@ -18,7 +18,7 @@ normalization_mapping:  # supported modes: MIN_MAX | MEAN_STD | IDENTITY | QUANT
   ACTION: MIN_MAX  # Used by training targets and action unnormalization.
 
 vision_backbone: resnet18  # must start with "resnet"; passed to torchvision.models.<vision_backbone>.
-crop_shape: [160, 160]  # null or [H, W] with positive dims; must fit image features inferred from dataset metadata.
+crop_shape: [224, 224]  # null or [H, W] with positive dims; must fit image features inferred from dataset metadata.
 crop_is_random: false  # train-time random crop when true; eval/inference always center crops.
 pretrained_backbone_weights: null  # options not enumerated in LeRobot; passed to torchvision backbone weights.
 use_group_norm: true  # Diffusion RGB encoder option; cannot be true with pretrained_backbone_weights set.
@@ -66,7 +66,7 @@ scheduler_warmup_steps: 500  # int >= 0. Warmup steps for DiffuserSchedulerConfi
 push_to_hub: false  # PreTrainedConfig default is true; keep explicit to avoid accidental model upload validation/push.
 use_amp: false  # AMP flag on policy config. Custom run_train uses Accelerator, but keep explicit for saved config semantics.
 pretrained_path: null  # null means train from scratch; set to a pretrained_model directory only for finetune.
-n_action_steps: 4  # int > 0 and <= horizon - n_obs_steps + 1. Not diffusion loss target length, but saved for rollout caching.
+n_action_steps: 7  # int > 0 and <= horizon - n_obs_steps + 1. Not diffusion loss target length, but saved for rollout caching.
 clip_sample: true  # inference scheduler behavior saved in config; clips denoised samples to +/- clip_sample_range.
 clip_sample_range: 1.0  # float. Scheduler clip magnitude used when clip_sample is true.
 
