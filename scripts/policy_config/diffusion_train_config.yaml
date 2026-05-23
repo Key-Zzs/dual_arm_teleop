@@ -41,7 +41,7 @@ prediction_type: epsilon  # options: epsilon | sample. Selects diffusion loss ta
 # =========================
 # Training-only parameters
 # =========================
-drop_n_last_frames: 3  # int >= 0. Used by EpisodeAwareSampler; original default is horizon - n_action_steps - n_obs_steps + 1.
+drop_n_last_frames: 0  # int >= 0. Used by EpisodeAwareSampler; original default is horizon - n_action_steps - n_obs_steps + 1.
 do_mask_loss_for_padding: false  # training loss only. false matches original Diffusion Policy behavior.
 optimizer_lr: 0.0001  # Adam preset lr when use_policy_training_preset is true.
 optimizer_betas: [0.95, 0.999]  # Adam preset betas; two floats in [0, 1).
