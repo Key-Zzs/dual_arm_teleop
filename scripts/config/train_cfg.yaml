@@ -16,7 +16,7 @@ train:
     repo_id: "nero_task3_step1/2mL_empty_right_merged_20260521_E249" # HuggingFace 数据集 repo_id，格式为 "username/dataset_name"
   # 指向包含数据集 repo 的本地目录（要包含 repo_id 子目录），
   # 例如本地缓存路径下的 physbrain3/pick_and_place_merged
-    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_right_merged_20260521_E249"
+    root: "/home/geist/.cache/huggingface/lerobot/nero_task3_step1/2mL_empty_right_merged_20260521_E249"
 
   env:
 
@@ -48,20 +48,20 @@ train:
     # referenced diffusion policy yaml for this run only.
 
   output_dir: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train\
-              /task3_step1/2mL_empty_right/dp_20260521_E249_V01" # 模型和日志的输出目录
-  job_name: "2mL_empty_right_dp_20260521_E249_V01"
+              /task3_step1/2mL_empty_right/dp_20260523_E249_V01" # 模型和日志的输出目录
+  job_name: "2mL_empty_right_dp_20260523_E249_V01"
 
   resume: false
   seed: 1000
   # Number of workers for the dataloader.
   num_workers: 4
   batch_size: 32
-  steps: 40_000
+  steps: 50_000
   eval_freq: 2_000
   log_freq: 500
   save_checkpoint: True
   # Checkpoint is saved every `save_freq` training iterations and after the last training step.
-  save_freq: 2_000
+  save_freq: 2_500
   use_policy_training_preset: True
 
   eval: 

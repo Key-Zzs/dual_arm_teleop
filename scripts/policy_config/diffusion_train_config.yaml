@@ -7,7 +7,7 @@
 # =========================
 device: cuda  # common: cuda | cpu. Validated by PreTrainedConfig/torch availability; cuda:N is normalized by policy_config_utils.
 n_obs_steps: 2  # int > 0. Number of observation frames used as diffusion conditioning and dataset delta timestamps.
-horizon: 16  # int > 0. Diffusion action trajectory length; must be divisible by 2 ** len(down_dims).
+horizon: 8  # int > 0. Diffusion action trajectory length; must be divisible by 2 ** len(down_dims).
 
 # =========================
 # Model / policy architecture
@@ -18,8 +18,8 @@ normalization_mapping:  # supported modes: MIN_MAX | MEAN_STD | IDENTITY | QUANT
   ACTION: MIN_MAX  # Used by training targets and action unnormalization.
 
 vision_backbone: resnet18  # must start with "resnet"; passed to torchvision.models.<vision_backbone>.
-crop_shape: [128, 128]  # null or [H, W] with positive dims; must fit image features inferred from dataset metadata.
-crop_is_random: true  # train-time random crop when true; eval/inference always center crops.
+crop_shape: [160, 160]  # null or [H, W] with positive dims; must fit image features inferred from dataset metadata.
+crop_is_random: false  # train-time random crop when true; eval/inference always center crops.
 pretrained_backbone_weights: null  # options not enumerated in LeRobot; passed to torchvision backbone weights.
 use_group_norm: true  # Diffusion RGB encoder option; cannot be true with pretrained_backbone_weights set.
 spatial_softmax_num_keypoints: 32  # int > 0. Number of spatial-softmax keypoints.
@@ -41,7 +41,7 @@ prediction_type: epsilon  # options: epsilon | sample. Selects diffusion loss ta
 # =========================
 # Training-only parameters
 # =========================
-drop_n_last_frames: 7  # int >= 0. Used by EpisodeAwareSampler; original default is horizon - n_action_steps - n_obs_steps + 1.
+drop_n_last_frames: 3  # int >= 0. Used by EpisodeAwareSampler; original default is horizon - n_action_steps - n_obs_steps + 1.
 do_mask_loss_for_padding: false  # training loss only. false matches original Diffusion Policy behavior.
 optimizer_lr: 0.0001  # Adam preset lr when use_policy_training_preset is true.
 optimizer_betas: [0.95, 0.999]  # Adam preset betas; two floats in [0, 1).
