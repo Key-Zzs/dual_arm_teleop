@@ -66,12 +66,16 @@ record:
   policy:
     # 策略类型: act | diffusion | dp | diffusion_policy
     # 轮次式 DAgger 的 run_mix 采集目前只实现 ACT checkpoint 推理。
+
     # type: "act"
     # config_path: scripts/policy_config/act_reason_config.yaml
+    # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right/act_20260523_E249_kl5d005/checkpoints/last/pretrained_model"
+
     # For diffusion:
     type: "diffusion"
     config_path: scripts/policy_config/diffusion_reason_config.yaml
-
+    pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right/dp_20260523_E249_LastFrames0/checkpoints/last/pretrained_model"  # reason/deploy checkpoint directory containing config.json and model.safetensors.
+    
     # Policy hyperparameters have been moved to scripts/policy_config/*_reason_config.yaml.
   
   task:

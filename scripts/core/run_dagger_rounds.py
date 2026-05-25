@@ -66,7 +66,7 @@ def _default_project_root() -> Path:
 
 
 def _default_dagger_rounds_cfg_path() -> Path:
-    return _default_scripts_dir() / "config" / "dagger_rounds_cfg.yaml"
+    return _default_scripts_dir() / "config" / "dagger_rounds_cfg_nero.yaml"
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:

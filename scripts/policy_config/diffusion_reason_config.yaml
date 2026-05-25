@@ -5,7 +5,7 @@
 # =========================
 # Required / frequently edited
 # =========================
-pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right/dp_20260523_E249_Crop224/checkpoints/last/pretrained_model"  # reason/deploy checkpoint directory containing config.json and model.safetensors.
+pretrained_path: null # move to record_cfg_*.yaml
 device: cuda  # common: cuda | cpu. Validated by PreTrainedConfig/torch availability; cuda:N is normalized by policy_config_utils.
 use_amp: false  # inference autocast flag used by run_record/predict_action on CUDA.
 n_obs_steps: 2  # int > 0. Number of observation frames cached before diffusion sampling.

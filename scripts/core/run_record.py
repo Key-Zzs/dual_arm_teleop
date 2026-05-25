@@ -107,7 +107,7 @@ def _default_project_root() -> Path:
 
 
 def _default_record_cfg_path() -> Path:
-    return _default_scripts_dir() / "config" / "record_cfg.yaml"
+    return _default_scripts_dir() / "config" / "record_cfg_nero.yaml"
 
 
 def _normalize_record_success_policy(task_cfg: Dict[str, Any]) -> str:

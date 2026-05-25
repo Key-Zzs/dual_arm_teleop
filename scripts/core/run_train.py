@@ -44,7 +44,7 @@ from scripts.core.policy_config_utils import (
 
 
 def _default_train_cfg_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "config" / "train_cfg.yaml"
+    return Path(__file__).resolve().parent.parent / "config" / "train_cfg_nero.yaml"
 
 
 def _default_scripts_dir() -> Path:

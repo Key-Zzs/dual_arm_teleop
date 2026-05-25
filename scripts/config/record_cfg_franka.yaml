@@ -45,11 +45,15 @@ record:
   policy:
     # 策略类型: act | diffusion | dp | diffusion_policy
     # 轮次式 DAgger 的 run_mix 采集目前只实现 ACT checkpoint 推理。
-    type: "act"
-    config_path: scripts/policy_config/act_reason_config.yaml
+    
+    # type: "act"
+    # config_path: scripts/policy_config/act_reason_config.yaml
+    # pretrained_path: "/home/deepcybo/Le-nero/outputs/train/franka_dual_arm/left_right_pick/act_20260520_E50_V01_2/checkpoints/005000/pretrained_model"
+    
     # For diffusion:
-    # type: "diffusion"
-    # config_path: scripts/policy_config/diffusion_reason_config.yaml
+    type: "diffusion"
+    config_path: scripts/policy_config/diffusion_reason_config.yaml
+    pretrained_path: "/home/deepcybo/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/franka_dual_arm/dp_left_right_pick_20260525_test/checkpoints/last/pretrained_model"  # reason/deploy checkpoint directory containing config.json and model.safetensors.
 
   task:
     description: "pick up small vials and insert them in the empty rack"
