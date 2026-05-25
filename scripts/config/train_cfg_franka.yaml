@@ -1,0 +1,48 @@
+train:
+  training:
+    device: cuda
+    gpu:
+      enabled: true
+      visible_devices: "0"
+      max_num_gpus: 1
+      memory_fraction: 0.70
+      allow_tf32: true
+      cudnn_benchmark: false
+      empty_cache_on_start: true
+      log_gpu_info: true
+      fail_if_cuda_unavailable: false
+
+  dataset:
+    repo_id: "franka_task3_step1/TODO_merged_dataset"
+    root: "./data/lerobot/franka_task3_step1/TODO_merged_dataset"
+
+  env:
+
+  policy:
+    type: "act"
+    config_path: scripts/policy_config/act_train_config.yaml
+    # Set only for finetuning from an existing Franka ACT checkpoint.
+    pretrained_path:
+
+  output_dir: "./outputs/train/franka_task3_step1/TODO_task/act_franka"
+  job_name: "franka_act_TODO_task"
+
+  resume: false
+  seed: 1000
+  num_workers: 4
+  batch_size: 16
+  steps: 40_000
+  eval_freq: 2_000
+  log_freq: 200
+  save_checkpoint: true
+  save_freq: 2_000
+  use_policy_training_preset: true
+
+  eval:
+    n_episodes: 10
+    batch_size: 8
+
+  wandb:
+    enable: true
+    project: "lerobot_franka"
+    mode: "online"

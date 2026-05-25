@@ -1,0 +1,88 @@
+record:
+  repo_id: &repo_id "franka_task3_step1/TODO_task_description"
+  debug:
+    robot_debug: false
+  user_notes: "Franka template; replace TODO values before real collection."
+  fps: 30
+  control_mode: &control_mode "oculus"
+  use_gripper: &use_gripper true
+  run_mode: "run_record"  # run_record | run_policy | run_mix
+
+  robot_type: &robot_type "franka_dual_arm"
+
+  teleop:
+    control_mode: *control_mode
+    dual_arm: true
+    oculus_config:
+      ip:
+      use_gripper: *use_gripper
+      left_pose_scaler: [0.8, 0.8]
+      left_channel_signs: [1, 1, 1, -1, -1, 1]
+      right_pose_scaler: [0.8, 0.8]
+      right_channel_signs: [1, 1, 1, -1, -1, 1]
+      mirror_teleop: true
+      visualize_placo: false
+
+  robot:
+    robot_ip: &ip "172.16.0.1"
+    robot_port: 4242
+    rpc_timeout_sec: 30.0
+    schema_mode: "nero_compatible"
+    use_gripper: *use_gripper
+    close_threshold: 0.7
+    gripper_reverse: false
+    gripper_max_open: 0.085
+    gripper_force: 10.0
+    gripper_speed: 0.1
+    open_grippers_on_connect: false
+    reset_opens_grippers: true
+    reset_go_home: true
+    go_home_duration_sec: 5.0
+    go_home_rate_hz: 50.0
+    max_cartesian_delta: 0.06
+    max_rotation_delta: 0.08
+
+  policy:
+    type: "act"
+    config_path: scripts/policy_config/act_reason_config.yaml
+    # Set a Franka ACT checkpoint before using run_policy or run_mix.
+    pretrained_path:
+
+  task:
+    description: "TODO Franka task description"
+    num_episodes: 10
+    display: true
+    resume: false
+    resume_dataset:
+    success_policy:
+    annotate_success: false
+
+  time:
+    episode_time_sec: 6000
+    reset_time_sec: 6000
+    save_meta_period: 1
+
+  cameras:
+    left_wrist_cam_serial: "347622074336"
+    right_wrist_cam_serial: "337322072568"
+    head_cam_serial: "348522072761"
+    width: 424
+    height: 240
+
+  storage:
+    push_to_hub: false
+
+replay:
+  dataset_name: *repo_id
+  episode_idx: 0
+  reset_on_finish: true
+  disconnect_on_finish: false
+  robot_type: *robot_type
+  robot:
+    ip: *ip
+    robot_port: 4242
+  control_mode: *control_mode
+
+visualize:
+  dataset_name: *repo_id
+  episode_index: 0
