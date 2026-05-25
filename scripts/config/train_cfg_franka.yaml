@@ -13,29 +13,32 @@ train:
       fail_if_cuda_unavailable: false
 
   dataset:
-    repo_id: "franka_task3_step1/TODO_merged_dataset"
-    root: "./data/lerobot/franka_task3_step1/TODO_merged_dataset"
+    repo_id: "franka_dual_arm/left_right_pick_20260520_v04"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/franka_dual_arm/left_right_pick_20260520_v04"
 
   env:
 
   policy:
-    type: "act"
-    config_path: scripts/policy_config/act_train_config.yaml
-    # Set only for finetuning from an existing Franka ACT checkpoint.
-    pretrained_path:
+    # Supported: act | diffusion | dp | diffusion_policy.
+    # 推荐保持为普通 ACT；轮次式 DAgger 会由 run_dagger_rounds.py 在内存中注入训练参数。
+    # type: "act"
+    # config_path: scripts/policy_config/act_train_config.yaml
+    # For diffusion:
+    type: "diffusion"
+    config_path: scripts/policy_config/diffusion_train_config.yaml
 
-  output_dir: "./outputs/train/franka_task3_step1/TODO_task/act_franka"
-  job_name: "franka_act_TODO_task"
+  output_dir: "/home/deepcybo/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/franka_dual_arm/dp_left_right_pick_20260525_test"
+  job_name: "dp_left_right_pick_20260525_test"
 
   resume: false
   seed: 1000
   num_workers: 4
   batch_size: 16
-  steps: 40_000
+  steps: 50_000
   eval_freq: 2_000
   log_freq: 200
   save_checkpoint: true
-  save_freq: 2_000
+  save_freq: 5_000
   use_policy_training_preset: true
 
   eval:

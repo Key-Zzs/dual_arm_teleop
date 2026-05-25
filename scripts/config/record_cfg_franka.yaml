@@ -6,7 +6,7 @@ record:
   fps: 30
   control_mode: &control_mode "oculus"
   use_gripper: &use_gripper true
-  run_mode: "run_record"  # run_record | run_policy | run_mix
+  run_mode: "run_policy"  # run_record | run_policy | run_mix
 
   robot_type: &robot_type "franka_dual_arm"
 
@@ -43,14 +43,17 @@ record:
     max_rotation_delta: 0.08
 
   policy:
+    # 策略类型: act | diffusion | dp | diffusion_policy
+    # 轮次式 DAgger 的 run_mix 采集目前只实现 ACT checkpoint 推理。
     type: "act"
     config_path: scripts/policy_config/act_reason_config.yaml
-    # Set a Franka ACT checkpoint before using run_policy or run_mix.
-    pretrained_path:
+    # For diffusion:
+    # type: "diffusion"
+    # config_path: scripts/policy_config/diffusion_reason_config.yaml
 
   task:
-    description: "TODO Franka task description"
-    num_episodes: 10
+    description: "pick up small vials and insert them in the empty rack"
+    num_episodes: 50
     display: true
     resume: false
     resume_dataset:

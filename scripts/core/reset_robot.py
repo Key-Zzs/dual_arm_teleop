@@ -1,3 +1,4 @@
+import argparse
 import yaml
 from pathlib import Path
 from typing import Dict, Any
@@ -10,23 +11,44 @@ import logging
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-def main():
-    parent_path = Path(__file__).resolve().parent
-    cfg_path = parent_path.parent / "config" / "record_cfg.yaml"
-    with open(cfg_path, 'r') as f:
+
+def _default_scripts_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_record_cfg_path() -> Path:
+    return _default_scripts_dir() / "config" / "record_cfg.yaml"
+
+
+def _load_record_cfg_yaml(cfg_path: Path) -> Dict[str, Any]:
+    with open(cfg_path, "r") as f:
         cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict) or "record" not in cfg:
+        raise ValueError(f"Reset config must contain a top-level `record` mapping: {cfg_path}")
+    return cfg
+
+
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description="Reset a configured robot to its home position.")
+    parser.add_argument(
+        "--config",
+        "--config-path",
+        dest="config_path",
+        type=Path,
+        default=_default_record_cfg_path(),
+        help="Path to record_cfg.yaml.",
+    )
+    args = parser.parse_args(argv)
+    cfg = _load_record_cfg_yaml(args.config_path)
 
     robot_type = cfg["record"].get("robot_type", "dobot_dual_arm")
+    robot_cfg = dict(cfg["record"]["robot"])
+    robot_cfg["debug"] = False
     
     # 创建机器人配置
     robot_config = create_robot_config(
         robot_type=robot_type,
-        robot_ip=cfg["record"]["robot"].get("robot_ip", "localhost"),
-        robot_port=cfg["record"]["robot"].get("robot_port", 4242),
-        use_gripper=cfg["record"]["robot"]["use_gripper"],
-        close_threshold=cfg["record"]["robot"].get("close_threshold", 0.5),
-        gripper_max_open=cfg["record"]["robot"].get("gripper_max_open", 0.085),
-        debug=False
+        **robot_cfg,
     )
     
     # 创建机器人实例并连接

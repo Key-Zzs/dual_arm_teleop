@@ -1,3 +1,4 @@
+import argparse
 import time
 import yaml
 import logging
@@ -8,6 +9,23 @@ from robots import SUPPORTED_ROBOTS, create_robot_config, create_robot
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import log_say
+
+
+def _default_scripts_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_record_cfg_path() -> Path:
+    return _default_scripts_dir() / "config" / "record_cfg.yaml"
+
+
+def _load_record_cfg_yaml(cfg_path: Path) -> Dict[str, Any]:
+    with open(cfg_path, "r") as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict) or "replay" not in cfg:
+        raise ValueError(f"Replay config must contain a top-level `replay` mapping: {cfg_path}")
+    return cfg
+
 
 class ReplayConfig:
     def __init__(self, cfg: Dict[str, Any]):
@@ -88,12 +106,23 @@ def run_replay(replay_cfg: ReplayConfig):
     else:
         logging.warning("[INFO] Skip robot.disconnect() to avoid stop/e-stop at session end.")
 
-def main():
-    parent_path = Path(__file__).resolve().parent
-    cfg_path = parent_path.parent / "config" / "record_cfg.yaml"
-    with open(cfg_path, 'r') as f:
-        cfg = yaml.safe_load(f)
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description="Replay a recorded LeRobot episode.")
+    parser.add_argument(
+        "--config",
+        "--config-path",
+        dest="config_path",
+        type=Path,
+        default=_default_record_cfg_path(),
+        help="Path to record_cfg.yaml.",
+    )
+    args = parser.parse_args(argv)
+    cfg = _load_record_cfg_yaml(args.config_path)
 
     replay_cfg = ReplayConfig(cfg["replay"])
 
     run_replay(replay_cfg)
+
+
+if __name__ == "__main__":
+    main()
