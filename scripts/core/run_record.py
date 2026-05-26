@@ -83,6 +83,11 @@ VALID_RECORD_SUCCESS_POLICIES = {
     SUCCESS_POLICY_RECORDED_IS_SUCCESS,
     SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE,
 }
+RUN_MODE_RECORD = "run_record"
+RUN_MODE_POLICY = "run_policy"
+RUN_MODE_MIX = "run_mix"
+POLICY_RUN_MODES = {RUN_MODE_POLICY, RUN_MODE_MIX}
+VALID_RUN_MODES = {RUN_MODE_RECORD, RUN_MODE_POLICY, RUN_MODE_MIX}
 GRIPPER_COMMAND_KEY_CANDIDATES = {
     "left": ("left_gripper_cmd", "left_gripper_cmd_bin"),
     "right": ("right_gripper_cmd", "right_gripper_cmd_bin"),
@@ -268,6 +273,7 @@ class RecordConfig:
         scripts_dir: Path | None = None,
         project_root: Path | None = None,
         config_source_name: str = "record_cfg.yaml",
+        force_policy_config: bool = False,
     ):
         self.scripts_dir = Path(scripts_dir) if scripts_dir is not None else _default_scripts_dir()
         self.project_root = (
@@ -284,7 +290,7 @@ class RecordConfig:
         time = cfg["time"]
         cam = cfg["cameras"]
         robot = cfg["robot"]
-        policy = cfg["policy"]
+        policy = cfg.get("policy")
         teleop = cfg["teleop"]
         debug_cfg = cfg.get("debug", {})
         debug_options = debug_cfg if isinstance(debug_cfg, dict) else {}
@@ -303,7 +309,12 @@ class RecordConfig:
             Path(cfg["dataset_root"]) if cfg.get("dataset_root") is not None else None
         )
         self.user_info: str = cfg.get("user_notes", None)
-        self.run_mode: str = cfg.get("run_mode", "run_record")
+        self.run_mode: str = str(cfg.get("run_mode", RUN_MODE_RECORD)).strip().lower()
+        if self.run_mode not in VALID_RUN_MODES:
+            raise ValueError(
+                f"Unsupported `record.run_mode`: {self.run_mode!r}. "
+                f"Supported: {sorted(VALID_RUN_MODES)}"
+            )
         self.rename_map: dict[str, str] = field(default_factory=dict)
         # Finish behavior: by default reset to home and keep connection to avoid server stop on close.
         self.reset_on_finish: bool = cfg.get("reset_on_finish", True)
@@ -325,8 +336,25 @@ class RecordConfig:
         self.dual_arm = teleop.get("dual_arm", True)
         self._parse_teleop_config(teleop)
         
-        # Policy config
-        self._parse_policy_config(policy)
+        # Policy config is only required when the run mode actually executes a policy.
+        self.policy_type: str | None = None
+        self.policy_config_path: Path | None = None
+        self.policy = None
+        needs_policy = force_policy_config or self.run_mode in POLICY_RUN_MODES
+        if needs_policy:
+            if policy is None:
+                raise ValueError(
+                    "`record.policy` must be a mapping with at least `type` and "
+                    "`config_path` when `record.run_mode` is run_policy/run_mix "
+                    "or when policy dry-run is requested. "
+                    f"Current run_mode: {self.run_mode!r}"
+                )
+            self._parse_policy_config(policy)
+        elif policy is None:
+            logging.info(
+                "`record.policy` is empty; skipping policy config for run_mode=%s",
+                self.run_mode,
+            )
         
         # Robot config
         self.robot_ip: str = robot.get("robot_ip", "localhost")
@@ -397,6 +425,13 @@ class RecordConfig:
     
     def _parse_policy_config(self, policy: Dict[str, Any]) -> None:
         """Parse policy configuration."""
+        if not isinstance(policy, dict):
+            raise ValueError(
+                "`record.policy` must be a mapping with at least `type` and "
+                f"`config_path`. Got: {type(policy).__name__}"
+            )
+        if not policy.get("type"):
+            raise ValueError("`record.policy.type` is required when policy config is enabled.")
         self.policy_type = str(policy["type"]).strip().lower()
         self.policy_config_path = resolve_policy_config_path(
             policy,
@@ -1306,7 +1341,7 @@ def run_record(record_cfg: RecordConfig):
         action_features = hw_to_dataset_features(robot.action_features, "action")
         obs_features = hw_to_dataset_features(robot.observation_features, "observation", use_video=True)
         dataset_features = {**action_features, **obs_features}
-        if record_cfg.run_mode == "run_mix":
+        if record_cfg.run_mode == RUN_MODE_MIX:
             # Extend dataset schema for DAgger mixed collection metadata.
             action_feature = dataset_features[ACTION]
             dataset_features["policy_action"] = _clone_action_feature(action_feature)
@@ -1347,7 +1382,7 @@ def run_record(record_cfg: RecordConfig):
                     "names": None,
                 }
 
-        if record_cfg.run_mode == "run_mix":
+        if record_cfg.run_mode == RUN_MODE_MIX:
             logging.info("====== [RUN_MIX] Mix mode config ======")
             logging.info(
                 "[run_mix] robot_type=%s control_mode=%s fps=%s episode_time=%s reset_time=%s",
@@ -1423,22 +1458,22 @@ def run_record(record_cfg: RecordConfig):
         postprocessor = None
 
         # configure the teleop and policy
-        if record_cfg.run_mode == "run_record":
+        if record_cfg.run_mode == RUN_MODE_RECORD:
             logging.info("====== [INFO] Running in teleoperation mode ======")
             teleop = OculusTeleop(teleop_config)
             policy = None
-        elif record_cfg.run_mode == "run_policy":
+        elif record_cfg.run_mode == RUN_MODE_POLICY:
             logging.info("====== [INFO] Running in policy mode ======")
             policy = make_policy(record_cfg.policy, ds_meta=dataset.meta)
             teleop = None
-        elif record_cfg.run_mode == "run_mix":
+        elif record_cfg.run_mode == RUN_MODE_MIX:
             logging.info("====== [INFO] Running in mixed mode ======")
             policy = make_policy(record_cfg.policy, ds_meta=dataset.meta)
             teleop = OculusTeleop(teleop_config)
         else:
             raise ValueError(
                 f"Unsupported run_mode: {record_cfg.run_mode}. "
-                "Supported: run_record | run_policy | run_mix"
+                f"Supported: {RUN_MODE_RECORD} | {RUN_MODE_POLICY} | {RUN_MODE_MIX}"
             )
         
         if policy is not None:
@@ -1461,7 +1496,7 @@ def run_record(record_cfg: RecordConfig):
 
         while episode_idx < record_cfg.num_episodes and not events["stop_recording"]:
             logging.info(f"====== [RECORD] Recording episode {episode_idx + 1} of {record_cfg.num_episodes} ======")
-            if record_cfg.run_mode == "run_mix":
+            if record_cfg.run_mode == RUN_MODE_MIX:
                 mix_stats = run_mix_record_loop(
                     robot=robot,
                     teleop=teleop,
@@ -1517,7 +1552,7 @@ def run_record(record_cfg: RecordConfig):
                 events["exit_early"] = False
                 if dataset.episode_buffer is not None:
                     dataset.clear_episode_buffer()
-            elif record_cfg.run_mode == "run_mix":
+            elif record_cfg.run_mode == RUN_MODE_MIX:
                 has_recorded_frames = (
                     dataset.episode_buffer is not None and dataset.episode_buffer.get("size", 0) > 0
                 )
@@ -1629,7 +1664,7 @@ def run_record(record_cfg: RecordConfig):
             "dataset_root": str(dataset_root),
             "data_version": data_version,
         }
-        if record_cfg.run_mode == "run_mix":
+        if record_cfg.run_mode == RUN_MODE_MIX:
             total_expert = sum(s["expert_exec_steps"] for s in run_mix_episode_stats)
             total_policy = sum(s["policy_exec_steps"] for s in run_mix_episode_stats)
             result["run_mix_stats"] = {
@@ -1676,6 +1711,7 @@ def dry_run_policy_config(cfg_path: Path) -> RecordConfig:
         scripts_dir=scripts_dir,
         project_root=project_root,
         config_source_name=str(cfg_path),
+        force_policy_config=True,
     )
     logging.info("====== [POLICY CONFIG DRY-RUN] OK ======")
     logging.info("policy.type: %s", record_cfg.policy_type)
