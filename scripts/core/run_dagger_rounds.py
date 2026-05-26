@@ -66,7 +66,7 @@ def _default_project_root() -> Path:
 
 
 def _default_dagger_rounds_cfg_path() -> Path:
-    return _default_scripts_dir() / "config" / "dagger_rounds_cfg_nero.yaml"
+    return _default_scripts_dir() / "config" / "dagger_rounds_cfg.yaml"
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
@@ -970,7 +970,12 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             policy_runner=policy_backend.runner,
             round_cfg=round_cfg,
         )
-        record_result = run_record(RecordConfig(record_section))
+        record_result = run_record(
+            RecordConfig(
+                record_section,
+                config_source_name=str(config.record_cfg_path),
+            )
+        )
         raw_repo_id = record_result["dataset_name"]
         raw_root = Path(record_result["dataset_root"])
         logging.info("[round %03d] raw run_mix logs: %s", round_idx, raw_root)

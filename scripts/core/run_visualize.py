@@ -21,7 +21,7 @@ def _default_scripts_dir() -> Path:
 
 
 def _default_record_cfg_path() -> Path:
-    return _default_scripts_dir() / "config" / "record_cfg_nero.yaml"
+    return _default_scripts_dir() / "config" / "record_cfg.yaml"
 
 
 def _load_record_cfg_yaml(cfg_path: Path) -> dict:

@@ -1,4 +1,5 @@
 import argparse
+import copy
 import yaml
 from pathlib import Path
 from typing import Dict, Any
@@ -107,7 +108,137 @@ def _default_project_root() -> Path:
 
 
 def _default_record_cfg_path() -> Path:
-    return _default_scripts_dir() / "config" / "record_cfg_nero.yaml"
+    return _default_scripts_dir() / "config" / "record_cfg.yaml"
+
+
+ROBOT_DETAIL_CONFIG_FILES = {
+    "franka": "franka_config.yaml",
+    "franka_dual_arm": "franka_config.yaml",
+    "nero_dual_arm": "nero_cofig.yaml",
+}
+
+ROBOT_DETAIL_CONFIG_KEYS = ("teleop", "robot", "cameras")
+
+
+def _deep_merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _resolve_das_config_path(
+    robot_type: str,
+    scripts_dir: Path,
+    project_root: Path,
+    explicit_path: str | Path | None = None,
+) -> Path:
+    if explicit_path:
+        path = Path(explicit_path).expanduser()
+        if path.is_absolute():
+            return path
+        candidates = (
+            project_root / path,
+            scripts_dir / path,
+            scripts_dir / "DAS_config" / path,
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return candidates[0]
+
+    config_name = ROBOT_DETAIL_CONFIG_FILES.get(robot_type)
+    if config_name is None:
+        raise ValueError(
+            "No DAS_config mapping is defined for robot_type="
+            f"{robot_type!r}. Add record.das_config_path or extend "
+            "ROBOT_DETAIL_CONFIG_FILES."
+        )
+    return scripts_dir / "DAS_config" / config_name
+
+
+def _load_robot_detail_cfg(
+    robot_type: str,
+    scripts_dir: Path,
+    project_root: Path,
+    explicit_path: str | Path | None = None,
+) -> Dict[str, Any]:
+    das_config_path = _resolve_das_config_path(
+        robot_type,
+        scripts_dir=scripts_dir,
+        project_root=project_root,
+        explicit_path=explicit_path,
+    )
+    with open(das_config_path, "r") as f:
+        loaded = yaml.safe_load(f)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"DAS config must be a mapping: {das_config_path}")
+    detail_cfg = loaded.get("record", loaded)
+    if not isinstance(detail_cfg, dict):
+        raise ValueError(f"DAS config `record` section must be a mapping: {das_config_path}")
+
+    missing = [key for key in ROBOT_DETAIL_CONFIG_KEYS if key not in detail_cfg]
+    if missing:
+        raise ValueError(
+            f"DAS config is missing required section(s) {missing}: {das_config_path}"
+        )
+    return {key: copy.deepcopy(detail_cfg[key]) for key in ROBOT_DETAIL_CONFIG_KEYS}
+
+
+def _hydrate_record_robot_details(
+    cfg: Dict[str, Any],
+    scripts_dir: Path,
+    project_root: Path,
+) -> Dict[str, Any]:
+    hydrated = copy.deepcopy(cfg)
+    robot_type = hydrated.get("robot_type", "dobot_dual_arm")
+    explicit_path = hydrated.get("das_config_path") or hydrated.get("robot_config_path")
+    needs_robot_details = any(key not in hydrated for key in ROBOT_DETAIL_CONFIG_KEYS)
+    if not needs_robot_details and explicit_path is None and robot_type not in ROBOT_DETAIL_CONFIG_FILES:
+        return hydrated
+
+    detail_cfg = _load_robot_detail_cfg(
+        robot_type,
+        scripts_dir=scripts_dir,
+        project_root=project_root,
+        explicit_path=explicit_path,
+    )
+    for key in ROBOT_DETAIL_CONFIG_KEYS:
+        if isinstance(hydrated.get(key), dict):
+            hydrated[key] = _deep_merge_dicts(detail_cfg[key], hydrated[key])
+        else:
+            hydrated[key] = detail_cfg[key]
+    return hydrated
+
+
+def _validate_local_pretrained_path(pretrained_path: str | Path | None) -> None:
+    """Fail early when an absolute/local checkpoint path is misspelled."""
+    if not pretrained_path:
+        return
+
+    raw_path = str(pretrained_path)
+    path = Path(raw_path).expanduser()
+    is_local_reference = path.is_absolute() or raw_path.startswith(("~", ".")) or path.exists()
+    if not is_local_reference:
+        return
+
+    if not path.is_dir():
+        raise FileNotFoundError(
+            "Local pretrained_path does not exist or is not a directory: "
+            f"{path}\n"
+            "Expected a checkpoint directory containing config.json and model.safetensors. "
+            "For example: .../checkpoints/010000/pretrained_model"
+        )
+
+    missing = [name for name in ("config.json", "model.safetensors") if not (path / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Local pretrained_path is missing required file(s): {missing}\n"
+            f"Path: {path}"
+        )
 
 
 def _normalize_record_success_policy(task_cfg: Dict[str, Any]) -> str:
@@ -136,10 +267,17 @@ class RecordConfig:
         cfg: Dict[str, Any],
         scripts_dir: Path | None = None,
         project_root: Path | None = None,
+        config_source_name: str = "record_cfg.yaml",
     ):
         self.scripts_dir = Path(scripts_dir) if scripts_dir is not None else _default_scripts_dir()
         self.project_root = (
             Path(project_root) if project_root is not None else self.scripts_dir.parent
+        )
+        self.config_source_name = config_source_name
+        cfg = _hydrate_record_robot_details(
+            cfg,
+            scripts_dir=self.scripts_dir,
+            project_root=self.project_root,
         )
         storage = cfg["storage"]
         task = cfg["task"]
@@ -271,10 +409,11 @@ class RecordConfig:
             self.policy_type,
             policy_yaml,
             legacy_policy_dict=policy,
-            legacy_source_name="record_cfg.yaml",
+            legacy_source_name=self.config_source_name,
             config_path=self.policy_config_path,
             mode="reason",
         )
+        _validate_local_pretrained_path(self.policy.pretrained_path)
     
     def create_teleop_config(self):
         """Create teleoperation configuration object."""
@@ -1536,6 +1675,7 @@ def dry_run_policy_config(cfg_path: Path) -> RecordConfig:
         cfg["record"],
         scripts_dir=scripts_dir,
         project_root=project_root,
+        config_source_name=str(cfg_path),
     )
     logging.info("====== [POLICY CONFIG DRY-RUN] OK ======")
     logging.info("policy.type: %s", record_cfg.policy_type)
@@ -1583,6 +1723,7 @@ def main(argv: list[str] | None = None):
         cfg["record"],
         scripts_dir=scripts_dir,
         project_root=project_root,
+        config_source_name=str(args.config_path),
     )
     run_record(record_cfg)
 

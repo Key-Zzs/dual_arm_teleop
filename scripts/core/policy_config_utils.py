@@ -10,6 +10,7 @@ import yaml
 ACT_POLICY_TYPES = {"act", "act_dagger"}
 DIFFUSION_POLICY_TYPES = {"diffusion", "dp", "diffusion_policy"}
 POLICY_CONFIG_META_KEYS = {"type", "config_path", "reason_config_path", "train_config_path", "name"}
+POLICY_CONFIG_RUNTIME_OVERRIDE_KEYS = {"pretrained_path"}
 POLICY_CONFIG_MODES = {"train", "reason"}
 DEPRECATED_POLICY_CONFIG_FILENAMES = {
     "act_config.yaml": (
@@ -286,15 +287,21 @@ def merge_legacy_policy_fields(
         for key, value in legacy_policy_dict.items()
         if key not in POLICY_CONFIG_META_KEYS and key in allowed_fields
     }
-    if legacy_overrides:
+    deprecated_overrides = {
+        key: value
+        for key, value in legacy_overrides.items()
+        if key not in POLICY_CONFIG_RUNTIME_OVERRIDE_KEYS
+    }
+    if deprecated_overrides:
         logging.warning(
             "[DEPRECATED] %s policy field(s) still defined in %s: %s. "
             "Please move them to scripts/policy_config/*.yaml. "
             "For backward compatibility, these values override the policy yaml for this run.",
             _policy_label(policy_type),
             source_name,
-            sorted(legacy_overrides),
+            sorted(deprecated_overrides),
         )
+    if legacy_overrides:
         merged.update(legacy_overrides)
     return merged
 

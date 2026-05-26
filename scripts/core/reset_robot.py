@@ -20,6 +20,31 @@ def _default_record_cfg_path() -> Path:
     return _default_scripts_dir() / "config" / "record_cfg.yaml"
 
 
+ROBOT_DETAIL_CONFIG_FILES = {
+    "franka": "franka_config.yaml",
+    "franka_dual_arm": "franka_config.yaml",
+    "nero_dual_arm": "nero_cofig.yaml",
+}
+
+
+def _load_robot_cfg_from_das(robot_type: str) -> Dict[str, Any]:
+    config_name = ROBOT_DETAIL_CONFIG_FILES.get(robot_type)
+    if config_name is None:
+        raise ValueError(
+            "No DAS_config mapping is defined for robot_type="
+            f"{robot_type!r}. Add record.robot or extend ROBOT_DETAIL_CONFIG_FILES."
+        )
+    das_config_path = _default_scripts_dir() / "DAS_config" / config_name
+    with open(das_config_path, "r") as f:
+        loaded = yaml.safe_load(f)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"DAS config must be a mapping: {das_config_path}")
+    detail_cfg = loaded.get("record", loaded)
+    if not isinstance(detail_cfg, dict) or "robot" not in detail_cfg:
+        raise ValueError(f"DAS config must contain a `robot` mapping: {das_config_path}")
+    return dict(detail_cfg["robot"])
+
+
 def _load_record_cfg_yaml(cfg_path: Path) -> Dict[str, Any]:
     with open(cfg_path, "r") as f:
         cfg = yaml.safe_load(f)
@@ -41,8 +66,9 @@ def main(argv: list[str] | None = None):
     args = parser.parse_args(argv)
     cfg = _load_record_cfg_yaml(args.config_path)
 
-    robot_type = cfg["record"].get("robot_type", "dobot_dual_arm")
-    robot_cfg = dict(cfg["record"]["robot"])
+    record_cfg = cfg["record"]
+    robot_type = record_cfg.get("robot_type", "dobot_dual_arm")
+    robot_cfg = dict(record_cfg.get("robot") or _load_robot_cfg_from_das(robot_type))
     robot_cfg["debug"] = False
     
     # 创建机器人配置
