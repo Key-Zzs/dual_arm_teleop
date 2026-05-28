@@ -291,16 +291,6 @@ class NeroDualArm(Robot):
         # Check for reset request
         if action.get("reset_requested", False):
             logger.info("[ROBOT] Reset requested for dual-arm system...")
-            self._robot.robot_go_home()
-            if self.config.use_gripper:
-                self._robot.left_gripper_goto(
-                    width=self._get_gripper_max_open("left"),
-                    force=self._gripper_force
-                )
-                self._robot.right_gripper_goto(
-                    width=self._get_gripper_max_open("right"),
-                    force=self._gripper_force
-                )
             self.reset()
             return action
 

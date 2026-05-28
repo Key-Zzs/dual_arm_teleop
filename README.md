@@ -497,5 +497,5 @@ Common key controls during collection:
 - Right arrow: stop the current episode and save it.
 - Left arrow: discard the current episode.
 - Esc: stop the recording session.
-- Enter: continue to the next teleoperation segment or next episode.
+- After an episode is saved or discarded, the robot returns home automatically. While waiting, use Quest to adjust the robot, press `A` to return home again, or press right arrow to start the next episode.
 - Ctrl+C: interrupt and clean up the incomplete dataset.

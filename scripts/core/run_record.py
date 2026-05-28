@@ -502,6 +502,117 @@ def handle_incomplete_dataset(dataset_path):
             print("====== [KEEP] Incomplete dataset folder retained, please check manually. ======")
 
 
+def _wait_controls_active(action: dict[str, Any]) -> bool:
+    return any(
+        bool(action.get(key, False))
+        for key in (
+            "reset_requested",
+            "left_grip_pressed",
+            "right_grip_pressed",
+            "left_trigger_pressed",
+            "right_trigger_pressed",
+        )
+    )
+
+
+def _wait_for_next_episode_start(
+    events: dict[str, Any],
+    timeout_s: int | float,
+    fps: int | float,
+    robot=None,
+    teleop=None,
+    teleop_action_processor=None,
+    robot_action_processor=None,
+    robot_observation_processor=None,
+    display_data: bool = False,
+) -> None:
+    if teleop is None:
+        logging.info("====== [WAIT] Robot is home. Press right arrow to start the next episode ======")
+    else:
+        required = {
+            "robot": robot,
+            "teleop_action_processor": teleop_action_processor,
+            "robot_action_processor": robot_action_processor,
+            "robot_observation_processor": robot_observation_processor,
+        }
+        missing = [name for name, value in required.items() if value is None]
+        if missing:
+            raise ValueError(f"Teleop wait requires {missing} when teleop is provided.")
+        logging.info(
+            "====== [WAIT] Use Quest to adjust the robot, press A to return home, "
+            "or press right arrow to start the next episode ======"
+        )
+    start_t = time.perf_counter()
+    timeout_s = float(timeout_s)
+    poll_dt_s = 1.0 / max(1.0, float(fps))
+    reset_button_pressed = False
+    wait_for_controls_release = False
+    release_warning_logged = False
+
+    while time.perf_counter() - start_t < timeout_s:
+        loop_start_t = time.perf_counter()
+
+        if events["stop_recording"]:
+            events["exit_early"] = False
+            events["rerecord_episode"] = False
+            return
+
+        if events["rerecord_episode"]:
+            logging.info(
+                "====== [WAIT] Left arrow is ignored while waiting for the next episode. "
+                "Press right arrow to continue. ======"
+            )
+            events["rerecord_episode"] = False
+            events["exit_early"] = False
+            continue
+
+        if events["exit_early"]:
+            events["exit_early"] = False
+            return
+
+        if teleop is None:
+            time.sleep(min(0.05, poll_dt_s))
+            continue
+
+        obs = robot.get_observation()
+        obs_processed = robot_observation_processor(obs)
+        raw_action = teleop.get_action()
+
+        if bool(raw_action.get("reset_requested", False)):
+            if not reset_button_pressed:
+                logging.info("====== [RESET] Quest A requested robot home during wait ======")
+                robot.reset()
+                wait_for_controls_release = True
+                release_warning_logged = False
+            reset_button_pressed = True
+            time.sleep(min(0.05, poll_dt_s))
+            continue
+        reset_button_pressed = False
+
+        if wait_for_controls_release:
+            if _wait_controls_active(raw_action):
+                if not release_warning_logged:
+                    logging.info(
+                        "====== [WAIT] Release Quest A, grips, and triggers before moving again ======"
+                    )
+                    release_warning_logged = True
+                time.sleep(min(0.05, poll_dt_s))
+                continue
+            wait_for_controls_release = False
+
+        action = teleop_action_processor((raw_action, obs))
+        robot_action_to_send = robot_action_processor((action, obs))
+        robot.send_action(robot_action_to_send)
+
+        if display_data:
+            log_rerun_data(observation=obs_processed, action=action)
+
+        dt_s = time.perf_counter() - loop_start_t
+        time.sleep(max(0.0, poll_dt_s - dt_s))
+
+    logging.info("====== [WAIT] Reset wait timed out; continuing to the next episode ======")
+
+
 def _resolve_record_dataset_root(
     dataset_name: str,
     run_mode: str,
@@ -1507,8 +1618,10 @@ def run_record(record_cfg: RecordConfig):
 
         episode_idx = 0
         run_mix_episode_stats: list[dict[str, Any]] = []
+        robot_reset_since_last_episode = False
 
         while episode_idx < record_cfg.num_episodes and not events["stop_recording"]:
+            robot_reset_since_last_episode = False
             logging.info(f"====== [RECORD] Recording episode {episode_idx + 1} of {record_cfg.num_episodes} ======")
             if record_cfg.run_mode == RUN_MODE_MIX:
                 mix_stats = run_mix_record_loop(
@@ -1620,29 +1733,26 @@ def run_record(record_cfg: RecordConfig):
             else:
                 dataset.save_episode()
 
-            # Reset the environment between episodes, and also before a re-record attempt.
+            # Reset the robot between episodes, and also before a re-record attempt.
             if not events["stop_recording"] and (episode_idx < record_cfg.num_episodes - 1 or rerecord_requested):
-                while True:
-                    termios.tcflush(sys.stdin, termios.TCIFLUSH)
-                    user_input = input("====== [WAIT] Press Enter to reset the environment ======")
-                    if user_input == "":
-                        break  
-                    else:
-                        logging.info("====== [WARNING] Please press only Enter to continue ======")
+                logging.info("====== [RESET] Auto-resetting robot to home ======")
+                robot.reset()
+                robot_reset_since_last_episode = True
+                events["exit_early"] = False
+                events["rerecord_episode"] = False
 
-                logging.info("====== [RESET] Resetting the environment ======")
-                record_loop(
-                    robot=robot,
-                    events=events,
-                    fps=record_cfg.fps,
-                    teleop=teleop,
-                    teleop_action_processor=teleop_action_processor,
-                    robot_action_processor=robot_action_processor,
-                    robot_observation_processor=robot_observation_processor,
-                    control_time_s=record_cfg.reset_time_sec,
-                    single_task=record_cfg.task_description,
-                    display_data=record_cfg.display,
-                )
+                if not events["stop_recording"]:
+                    _wait_for_next_episode_start(
+                        events=events,
+                        timeout_s=record_cfg.reset_time_sec,
+                        fps=record_cfg.fps,
+                        robot=robot,
+                        teleop=teleop,
+                        teleop_action_processor=teleop_action_processor,
+                        robot_action_processor=robot_action_processor,
+                        robot_observation_processor=robot_observation_processor,
+                        display_data=record_cfg.display,
+                    )
 
             if rerecord_requested:
                 continue
@@ -1654,10 +1764,13 @@ def run_record(record_cfg: RecordConfig):
 
         # Reset robot to home position at the end (same intent as pressing A in teleop).
         if record_cfg.reset_on_finish:
-            try:
-                robot.reset()
-            except Exception as reset_err:
-                logging.warning(f"[WARNING] reset_on_finish failed: {reset_err}")
+            if robot_reset_since_last_episode:
+                logging.info("[INFO] Skip reset_on_finish because robot was already reset after the last episode.")
+            else:
+                try:
+                    robot.reset()
+                except Exception as reset_err:
+                    logging.warning(f"[WARNING] reset_on_finish failed: {reset_err}")
 
         # Optional disconnect. For Nero, disconnect triggers client.close() -> robot_stop on server.
         if record_cfg.disconnect_on_finish:

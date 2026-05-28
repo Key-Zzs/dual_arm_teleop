@@ -497,5 +497,5 @@ robot-record --config scripts/config/record_cfg.yaml
 - 右箭头：停止当前 episode 并保存。
 - 左箭头：丢弃当前 episode。
 - Esc：停止整个录制任务。
-- Enter：继续下一段遥操作或下一条 episode。
+- episode 保存或丢弃后会自动回 home；等待下一条时可用 Quest 调整机械臂、按 `A` 再次回 home，按右箭头开始下一条 episode。
 - Ctrl+C：中断并清理未完成数据集。
