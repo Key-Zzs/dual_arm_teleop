@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import logging
@@ -62,6 +63,10 @@ def _default_scripts_dir() -> Path:
 
 def _default_project_root() -> Path:
     return _default_scripts_dir().parent
+
+
+def _default_dagger_rounds_cfg_path() -> Path:
+    return _default_scripts_dir() / "config" / "dagger_rounds_cfg.yaml"
 
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
@@ -965,7 +970,12 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
             policy_runner=policy_backend.runner,
             round_cfg=round_cfg,
         )
-        record_result = run_record(RecordConfig(record_section))
+        record_result = run_record(
+            RecordConfig(
+                record_section,
+                config_source_name=str(config.record_cfg_path),
+            )
+        )
         raw_repo_id = record_result["dataset_name"]
         raw_root = Path(record_result["dataset_root"])
         logging.info("[round %03d] raw run_mix logs: %s", round_idx, raw_root)
@@ -1281,11 +1291,19 @@ def run_dagger_rounds(config: DAggerRoundsConfig | dict[str, Any]) -> dict[str, 
     return final_state
 
 
-def main() -> None:
-    parent_path = Path(__file__).resolve().parent
-    cfg_path = parent_path.parent / "config" / "dagger_rounds_cfg.yaml"
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Run staged DAgger collection/export/training rounds.")
+    parser.add_argument(
+        "--config",
+        "--config-path",
+        dest="config_path",
+        type=Path,
+        default=_default_dagger_rounds_cfg_path(),
+        help="Path to dagger_rounds_cfg.yaml.",
+    )
+    args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s", force=True)
-    cfg = _load_yaml(cfg_path)
+    cfg = _load_yaml(args.config_path)
     rounds_cfg = cfg.get("dagger_rounds", cfg)
     run_dagger_rounds(rounds_cfg)
 

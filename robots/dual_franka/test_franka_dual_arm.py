@@ -17,9 +17,13 @@ import numpy as np
 
 from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 
+from robots import ROBOT_CONFIG_REGISTRY, create_robot_config, create_robot
+from robots.dual_agilex_nero.config_nero import NeroDualArmConfig
+from robots.dual_agilex_nero.nero_dual_arm import NeroDualArm
 from robots.dual_franka.config_franka import FrankaDualArmConfig
 from robots.dual_franka import franka_dual_arm as franka_mod
-from robots.dual_franka.franka_dual_arm import FrankaDualArm
+from robots.dual_franka.franka_dual_arm import FrankaDualArm, NERO_COMPAT_ACTION_KEYS
+from scripts.core.run_record import resolve_gripper_command_keys
 
 
 class FakeCamera:
@@ -407,6 +411,40 @@ class FrankaDualArmTest(unittest.TestCase):
 
         step_call = fake.calls[-1]
         self.assertEqual(step_call[1]["left_arm"]["gripper"]["width"], 0.0)
+
+    def test_registry_can_create_franka_dual_arm(self) -> None:
+        self.assertIn("franka_dual_arm", ROBOT_CONFIG_REGISTRY)
+        cfg = create_robot_config("franka_dual_arm", cameras={}, debug=True)
+        robot = create_robot("franka_dual_arm", cfg)
+        self.assertIsInstance(robot, FrankaDualArm)
+
+    def test_nero_compatible_action_schema_matches_nero_contract(self) -> None:
+        franka = make_robot(use_gripper=True, schema_mode="nero_compatible")
+        nero = NeroDualArm(NeroDualArmConfig(cameras={}, use_gripper=True))
+
+        self.assertEqual(list(franka.action_features), list(NERO_COMPAT_ACTION_KEYS))
+        self.assertEqual(list(franka.action_features), list(nero.action_features))
+
+    def test_nero_compatible_observation_keys_match_features(self) -> None:
+        robot, _ = connected_robot(use_gripper=True, schema_mode="nero_compatible")
+        camera = FakeCamera()
+        robot.cameras = {"front_image": camera}
+
+        obs = robot.get_observation()
+
+        self.assertEqual(list(obs.keys()), list(robot.observation_features.keys()))
+        self.assertIn("left_gripper_cmd", obs)
+        self.assertNotIn("left_gripper_state_norm", obs)
+
+    def test_gripper_key_resolver_accepts_nero_and_native_names(self) -> None:
+        self.assertEqual(
+            resolve_gripper_command_keys(["left_gripper_cmd", "right_gripper_cmd"]),
+            {"left": "left_gripper_cmd", "right": "right_gripper_cmd"},
+        )
+        self.assertEqual(
+            resolve_gripper_command_keys(["left_gripper_cmd_bin", "right_gripper_cmd_bin"]),
+            {"left": "left_gripper_cmd_bin", "right": "right_gripper_cmd_bin"},
+        )
 
 
 if __name__ == "__main__":

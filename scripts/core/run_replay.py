@@ -1,3 +1,5 @@
+import argparse
+import copy
 import time
 import yaml
 import logging
@@ -8,6 +10,61 @@ from robots import SUPPORTED_ROBOTS, create_robot_config, create_robot
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import log_say
+
+
+def _default_scripts_dir() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _default_record_cfg_path() -> Path:
+    return _default_scripts_dir() / "config" / "record_cfg.yaml"
+
+
+ROBOT_DETAIL_CONFIG_FILES = {
+    "franka": "franka_config.yaml",
+    "franka_dual_arm": "franka_config.yaml",
+    "nero_dual_arm": "nero_cofig.yaml",
+}
+
+
+def _load_das_config(robot_type: str) -> Dict[str, Any]:
+    config_name = ROBOT_DETAIL_CONFIG_FILES.get(robot_type)
+    if config_name is None:
+        raise ValueError(
+            "No DAS_config mapping is defined for robot_type="
+            f"{robot_type!r}. Add replay.robot or extend ROBOT_DETAIL_CONFIG_FILES."
+        )
+    das_config_path = _default_scripts_dir() / "DAS_config" / config_name
+    with open(das_config_path, "r") as f:
+        loaded = yaml.safe_load(f)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"DAS config must be a mapping: {das_config_path}")
+    detail_cfg = loaded.get("record", loaded)
+    if not isinstance(detail_cfg, dict):
+        raise ValueError(f"DAS config `record` section must be a mapping: {das_config_path}")
+    return detail_cfg
+
+
+def _hydrate_replay_robot_details(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    hydrated = copy.deepcopy(cfg)
+    robot_type = hydrated.get("robot_type", "dobot_dual_arm")
+    if "robot" in hydrated and hydrated.get("control_mode") is not None:
+        return hydrated
+
+    detail_cfg = _load_das_config(robot_type)
+    hydrated.setdefault("robot", copy.deepcopy(detail_cfg["robot"]))
+    teleop_cfg = detail_cfg.get("teleop", {})
+    hydrated.setdefault("control_mode", teleop_cfg.get("control_mode", "oculus"))
+    return hydrated
+
+
+def _load_record_cfg_yaml(cfg_path: Path) -> Dict[str, Any]:
+    with open(cfg_path, "r") as f:
+        cfg = yaml.safe_load(f)
+    if not isinstance(cfg, dict) or "replay" not in cfg:
+        raise ValueError(f"Replay config must contain a top-level `replay` mapping: {cfg_path}")
+    return cfg
+
 
 class ReplayConfig:
     def __init__(self, cfg: Dict[str, Any]):
@@ -88,12 +145,23 @@ def run_replay(replay_cfg: ReplayConfig):
     else:
         logging.warning("[INFO] Skip robot.disconnect() to avoid stop/e-stop at session end.")
 
-def main():
-    parent_path = Path(__file__).resolve().parent
-    cfg_path = parent_path.parent / "config" / "record_cfg.yaml"
-    with open(cfg_path, 'r') as f:
-        cfg = yaml.safe_load(f)
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description="Replay a recorded LeRobot episode.")
+    parser.add_argument(
+        "--config",
+        "--config-path",
+        dest="config_path",
+        type=Path,
+        default=_default_record_cfg_path(),
+        help="Path to record_cfg.yaml.",
+    )
+    args = parser.parse_args(argv)
+    cfg = _load_record_cfg_yaml(args.config_path)
 
-    replay_cfg = ReplayConfig(cfg["replay"])
+    replay_cfg = ReplayConfig(_hydrate_replay_robot_details(cfg["replay"]))
 
     run_replay(replay_cfg)
+
+
+if __name__ == "__main__":
+    main()

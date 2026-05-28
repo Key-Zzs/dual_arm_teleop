@@ -1,4 +1,5 @@
 import argparse
+import copy
 import yaml
 from pathlib import Path
 from typing import Dict, Any
@@ -82,6 +83,26 @@ VALID_RECORD_SUCCESS_POLICIES = {
     SUCCESS_POLICY_RECORDED_IS_SUCCESS,
     SUCCESS_POLICY_ALLOW_MISSING_FOR_SMOKE,
 }
+RUN_MODE_RECORD = "run_record"
+RUN_MODE_POLICY = "run_policy"
+RUN_MODE_MIX = "run_mix"
+POLICY_RUN_MODES = {RUN_MODE_POLICY, RUN_MODE_MIX}
+VALID_RUN_MODES = {RUN_MODE_RECORD, RUN_MODE_POLICY, RUN_MODE_MIX}
+GRIPPER_COMMAND_KEY_CANDIDATES = {
+    "left": ("left_gripper_cmd", "left_gripper_cmd_bin"),
+    "right": ("right_gripper_cmd", "right_gripper_cmd_bin"),
+}
+FRANKA_EXTRA_ROBOT_CONFIG_KEYS = (
+    "schema_mode",
+    "rpc_timeout_sec",
+    "open_grippers_on_connect",
+    "reset_opens_grippers",
+    "reset_go_home",
+    "go_home_duration_sec",
+    "go_home_rate_hz",
+    "max_cartesian_delta",
+    "max_rotation_delta",
+)
 
 def _default_scripts_dir() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -93,6 +114,136 @@ def _default_project_root() -> Path:
 
 def _default_record_cfg_path() -> Path:
     return _default_scripts_dir() / "config" / "record_cfg.yaml"
+
+
+ROBOT_DETAIL_CONFIG_FILES = {
+    "franka": "franka_config.yaml",
+    "franka_dual_arm": "franka_config.yaml",
+    "nero_dual_arm": "nero_cofig.yaml",
+}
+
+ROBOT_DETAIL_CONFIG_KEYS = ("teleop", "robot", "cameras")
+
+
+def _deep_merge_dicts(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _resolve_das_config_path(
+    robot_type: str,
+    scripts_dir: Path,
+    project_root: Path,
+    explicit_path: str | Path | None = None,
+) -> Path:
+    if explicit_path:
+        path = Path(explicit_path).expanduser()
+        if path.is_absolute():
+            return path
+        candidates = (
+            project_root / path,
+            scripts_dir / path,
+            scripts_dir / "DAS_config" / path,
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return candidates[0]
+
+    config_name = ROBOT_DETAIL_CONFIG_FILES.get(robot_type)
+    if config_name is None:
+        raise ValueError(
+            "No DAS_config mapping is defined for robot_type="
+            f"{robot_type!r}. Add record.das_config_path or extend "
+            "ROBOT_DETAIL_CONFIG_FILES."
+        )
+    return scripts_dir / "DAS_config" / config_name
+
+
+def _load_robot_detail_cfg(
+    robot_type: str,
+    scripts_dir: Path,
+    project_root: Path,
+    explicit_path: str | Path | None = None,
+) -> Dict[str, Any]:
+    das_config_path = _resolve_das_config_path(
+        robot_type,
+        scripts_dir=scripts_dir,
+        project_root=project_root,
+        explicit_path=explicit_path,
+    )
+    with open(das_config_path, "r") as f:
+        loaded = yaml.safe_load(f)
+    if not isinstance(loaded, dict):
+        raise ValueError(f"DAS config must be a mapping: {das_config_path}")
+    detail_cfg = loaded.get("record", loaded)
+    if not isinstance(detail_cfg, dict):
+        raise ValueError(f"DAS config `record` section must be a mapping: {das_config_path}")
+
+    missing = [key for key in ROBOT_DETAIL_CONFIG_KEYS if key not in detail_cfg]
+    if missing:
+        raise ValueError(
+            f"DAS config is missing required section(s) {missing}: {das_config_path}"
+        )
+    return {key: copy.deepcopy(detail_cfg[key]) for key in ROBOT_DETAIL_CONFIG_KEYS}
+
+
+def _hydrate_record_robot_details(
+    cfg: Dict[str, Any],
+    scripts_dir: Path,
+    project_root: Path,
+) -> Dict[str, Any]:
+    hydrated = copy.deepcopy(cfg)
+    robot_type = hydrated.get("robot_type", "dobot_dual_arm")
+    explicit_path = hydrated.get("das_config_path") or hydrated.get("robot_config_path")
+    needs_robot_details = any(key not in hydrated for key in ROBOT_DETAIL_CONFIG_KEYS)
+    if not needs_robot_details and explicit_path is None and robot_type not in ROBOT_DETAIL_CONFIG_FILES:
+        return hydrated
+
+    detail_cfg = _load_robot_detail_cfg(
+        robot_type,
+        scripts_dir=scripts_dir,
+        project_root=project_root,
+        explicit_path=explicit_path,
+    )
+    for key in ROBOT_DETAIL_CONFIG_KEYS:
+        if isinstance(hydrated.get(key), dict):
+            hydrated[key] = _deep_merge_dicts(detail_cfg[key], hydrated[key])
+        else:
+            hydrated[key] = detail_cfg[key]
+    return hydrated
+
+
+def _validate_local_pretrained_path(pretrained_path: str | Path | None) -> None:
+    """Fail early when an absolute/local checkpoint path is misspelled."""
+    if not pretrained_path:
+        return
+
+    raw_path = str(pretrained_path)
+    path = Path(raw_path).expanduser()
+    is_local_reference = path.is_absolute() or raw_path.startswith(("~", ".")) or path.exists()
+    if not is_local_reference:
+        return
+
+    if not path.is_dir():
+        raise FileNotFoundError(
+            "Local pretrained_path does not exist or is not a directory: "
+            f"{path}\n"
+            "Expected a checkpoint directory containing config.json and model.safetensors. "
+            "For example: .../checkpoints/010000/pretrained_model"
+        )
+
+    missing = [name for name in ("config.json", "model.safetensors") if not (path / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"Local pretrained_path is missing required file(s): {missing}\n"
+            f"Path: {path}"
+        )
 
 
 def _normalize_record_success_policy(task_cfg: Dict[str, Any]) -> str:
@@ -121,17 +272,25 @@ class RecordConfig:
         cfg: Dict[str, Any],
         scripts_dir: Path | None = None,
         project_root: Path | None = None,
+        config_source_name: str = "record_cfg.yaml",
+        force_policy_config: bool = False,
     ):
         self.scripts_dir = Path(scripts_dir) if scripts_dir is not None else _default_scripts_dir()
         self.project_root = (
             Path(project_root) if project_root is not None else self.scripts_dir.parent
+        )
+        self.config_source_name = config_source_name
+        cfg = _hydrate_record_robot_details(
+            cfg,
+            scripts_dir=self.scripts_dir,
+            project_root=self.project_root,
         )
         storage = cfg["storage"]
         task = cfg["task"]
         time = cfg["time"]
         cam = cfg["cameras"]
         robot = cfg["robot"]
-        policy = cfg["policy"]
+        policy = cfg.get("policy")
         teleop = cfg["teleop"]
         debug_cfg = cfg.get("debug", {})
         debug_options = debug_cfg if isinstance(debug_cfg, dict) else {}
@@ -150,7 +309,12 @@ class RecordConfig:
             Path(cfg["dataset_root"]) if cfg.get("dataset_root") is not None else None
         )
         self.user_info: str = cfg.get("user_notes", None)
-        self.run_mode: str = cfg.get("run_mode", "run_record")
+        self.run_mode: str = str(cfg.get("run_mode", RUN_MODE_RECORD)).strip().lower()
+        if self.run_mode not in VALID_RUN_MODES:
+            raise ValueError(
+                f"Unsupported `record.run_mode`: {self.run_mode!r}. "
+                f"Supported: {sorted(VALID_RUN_MODES)}"
+            )
         self.rename_map: dict[str, str] = field(default_factory=dict)
         # Finish behavior: by default reset to home and keep connection to avoid server stop on close.
         self.reset_on_finish: bool = cfg.get("reset_on_finish", True)
@@ -172,8 +336,25 @@ class RecordConfig:
         self.dual_arm = teleop.get("dual_arm", True)
         self._parse_teleop_config(teleop)
         
-        # Policy config
-        self._parse_policy_config(policy)
+        # Policy config is only required when the run mode actually executes a policy.
+        self.policy_type: str | None = None
+        self.policy_config_path: Path | None = None
+        self.policy = None
+        needs_policy = force_policy_config or self.run_mode in POLICY_RUN_MODES
+        if needs_policy:
+            if policy is None:
+                raise ValueError(
+                    "`record.policy` must be a mapping with at least `type` and "
+                    "`config_path` when `record.run_mode` is run_policy/run_mix "
+                    "or when policy dry-run is requested. "
+                    f"Current run_mode: {self.run_mode!r}"
+                )
+            self._parse_policy_config(policy)
+        elif policy is None:
+            logging.info(
+                "`record.policy` is empty; skipping policy config for run_mode=%s",
+                self.run_mode,
+            )
         
         # Robot config
         self.robot_ip: str = robot.get("robot_ip", "localhost")
@@ -184,6 +365,11 @@ class RecordConfig:
         self.gripper_max_open: float = robot.get("gripper_max_open", 0.085)
         self.gripper_force: float = robot.get("gripper_force", 10.0)
         self.gripper_speed: float = robot.get("gripper_speed", 0.1)
+        self.robot_extra_config: dict[str, Any] = {
+            key: robot[key]
+            for key in FRANKA_EXTRA_ROBOT_CONFIG_KEYS
+            if key in robot and robot[key] is not None
+        }
         
         # Task config
         self.num_episodes: int = task.get("num_episodes", 1)
@@ -227,6 +413,7 @@ class RecordConfig:
             self.channel_signs = oculus_cfg.get("channel_signs", [1, 1, 1, 1, 1, 1])
             self.visualize_placo = oculus_cfg.get("visualize_placo", False)
             self.action_smoothing_alpha = oculus_cfg.get("action_smoothing_alpha", 0.35)
+            self.mirror_teleop = oculus_cfg.get("mirror_teleop", False)
             if self.dual_arm:
                 self.left_pose_scaler = oculus_cfg.get("left_pose_scaler", self.pose_scaler)
                 self.right_pose_scaler = oculus_cfg.get("right_pose_scaler", self.pose_scaler)
@@ -238,6 +425,13 @@ class RecordConfig:
     
     def _parse_policy_config(self, policy: Dict[str, Any]) -> None:
         """Parse policy configuration."""
+        if not isinstance(policy, dict):
+            raise ValueError(
+                "`record.policy` must be a mapping with at least `type` and "
+                f"`config_path`. Got: {type(policy).__name__}"
+            )
+        if not policy.get("type"):
+            raise ValueError("`record.policy.type` is required when policy config is enabled.")
         self.policy_type = str(policy["type"]).strip().lower()
         self.policy_config_path = resolve_policy_config_path(
             policy,
@@ -250,10 +444,11 @@ class RecordConfig:
             self.policy_type,
             policy_yaml,
             legacy_policy_dict=policy,
-            legacy_source_name="record_cfg.yaml",
+            legacy_source_name=self.config_source_name,
             config_path=self.policy_config_path,
             mode="reason",
         )
+        _validate_local_pretrained_path(self.policy.pretrained_path)
     
     def create_teleop_config(self):
         """Create teleoperation configuration object."""
@@ -267,6 +462,7 @@ class RecordConfig:
                     left_channel_signs=self.left_channel_signs,
                     right_channel_signs=self.right_channel_signs,
                     action_smoothing_alpha=self.action_smoothing_alpha,
+                    mirror_teleop=self.mirror_teleop,
                     visualize_placo=self.visualize_placo,
                 )
             return OculusTeleopConfig(
@@ -399,6 +595,104 @@ def _clip_gripper_cmd(value: float) -> float:
     return min(1.0, max(0.0, value))
 
 
+def _flatten_feature_names(names: Any) -> list[str]:
+    if names is None:
+        return []
+    if isinstance(names, str):
+        return [names]
+    if isinstance(names, dict):
+        flattened: list[str] = []
+        for value in names.values():
+            flattened.extend(_flatten_feature_names(value))
+        return flattened
+    if isinstance(names, (list, tuple)):
+        flattened = []
+        for value in names:
+            flattened.extend(_flatten_feature_names(value))
+        return flattened
+    return [str(names)]
+
+
+def _action_names_from_features_or_names(features_or_names: Any) -> list[str]:
+    if features_or_names is None:
+        return []
+    if isinstance(features_or_names, (list, tuple)):
+        return [str(name) for name in features_or_names]
+    if isinstance(features_or_names, dict):
+        action_feature = features_or_names.get(ACTION)
+        if isinstance(action_feature, dict):
+            return _flatten_feature_names(action_feature.get("names"))
+        if "names" in features_or_names:
+            return _flatten_feature_names(features_or_names.get("names"))
+        return [str(name) for name in features_or_names.keys()]
+    return []
+
+
+def resolve_gripper_command_keys(features_or_names: Any) -> dict[str, str]:
+    """Resolve public gripper command keys from a robot/dataset action schema."""
+
+    action_names = _action_names_from_features_or_names(features_or_names)
+    action_name_set = set(action_names)
+    resolved: dict[str, str] = {}
+    for arm, candidates in GRIPPER_COMMAND_KEY_CANDIDATES.items():
+        for key in candidates:
+            if key in action_name_set:
+                resolved[arm] = key
+                break
+    return resolved
+
+
+def get_gripper_action_keys(robot) -> dict[str, str]:
+    return resolve_gripper_command_keys(getattr(robot, "action_features", {}))
+
+
+def _candidate_gripper_keys(arm: str, gripper_keys: dict[str, str]) -> list[str]:
+    preferred = gripper_keys.get(arm)
+    keys = [preferred] if preferred else []
+    keys.extend(GRIPPER_COMMAND_KEY_CANDIDATES.get(arm, ()))
+    seen: set[str] = set()
+    result: list[str] = []
+    for key in keys:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(key)
+    return result
+
+
+def _gripper_command_value(
+    arm: str,
+    source: dict[str, Any] | None,
+    gripper_keys: dict[str, str],
+) -> float | None:
+    if source is None:
+        return None
+    for key in _candidate_gripper_keys(arm, gripper_keys):
+        if key not in source:
+            continue
+        value = _float_or_none(source.get(key))
+        if value is not None:
+            return _clip_gripper_cmd(value)
+    return None
+
+
+def normalize_gripper_command_keys(
+    action: dict[str, Any],
+    gripper_keys: dict[str, str],
+) -> dict[str, Any]:
+    """Copy known gripper aliases into the schema-selected action key."""
+
+    normalized = dict(action)
+    for arm, expected_key in gripper_keys.items():
+        if expected_key in normalized:
+            continue
+        for candidate in _candidate_gripper_keys(arm, gripper_keys):
+            if candidate in normalized:
+                normalized[expected_key] = normalized[candidate]
+                break
+    return normalized
+
+
 def _reset_gripper_soft_takeover(state: dict[str, dict[str, Any]]) -> None:
     for arm_state in state.values():
         arm_state["active"] = False
@@ -414,14 +708,12 @@ def _current_gripper_cmd(
     raw_obs: dict[str, Any],
     last_exec_action: dict[str, Any] | None,
     fallback_action: dict[str, Any],
+    gripper_keys: dict[str, str],
 ) -> float | None:
-    key = f"{arm}_gripper_cmd"
     for source in (last_exec_action, raw_obs, fallback_action):
-        if source is None or key not in source:
-            continue
-        value = _float_or_none(source[key])
+        value = _gripper_command_value(arm, source, gripper_keys)
         if value is not None:
-            return _clip_gripper_cmd(value)
+            return value
     return None
 
 
@@ -430,6 +722,7 @@ def _gripper_request_reason(
     teleop_raw_action: dict[str, Any],
     last_teleop_raw_action: dict[str, Any] | None,
     state: dict[str, dict[str, Any]],
+    gripper_keys: dict[str, str],
     change_eps: float = RUN_MIX_CHANGE_EPS,
 ) -> str | None:
     arm_state = state[arm]
@@ -462,12 +755,11 @@ def _gripper_request_reason(
     if bool(teleop_raw_action.get(f"{arm}_trigger_pressed", False)):
         return f"{arm}_trigger_pressed"
 
-    key = f"{arm}_gripper_cmd"
-    if last_teleop_raw_action is None or key not in teleop_raw_action:
+    if last_teleop_raw_action is None:
         return None
 
-    current = _float_or_none(teleop_raw_action.get(key))
-    previous = _float_or_none(last_teleop_raw_action.get(key))
+    current = _gripper_command_value(arm, teleop_raw_action, gripper_keys)
+    previous = _gripper_command_value(arm, last_teleop_raw_action, gripper_keys)
     if current is None or previous is None:
         return None
 
@@ -492,9 +784,11 @@ def _copy_arm_channels(target_action: dict[str, Any], expert_action: dict[str, A
     return copied
 
 
-def _clip_gripper_channels(action: dict[str, Any]) -> None:
+def _clip_gripper_channels(action: dict[str, Any], gripper_keys: dict[str, str]) -> None:
     for arm in ("left", "right"):
-        key = f"{arm}_gripper_cmd"
+        key = gripper_keys.get(arm)
+        if key is None:
+            continue
         value = _float_or_none(action.get(key))
         if value is not None:
             action[key] = _clip_gripper_cmd(value)
@@ -511,9 +805,12 @@ def _apply_gripper_channel_control(
     state: dict[str, dict[str, Any]],
     gripper_request_reason: str | None,
     hold_without_manual: bool,
+    gripper_keys: dict[str, str],
 ) -> tuple[bool, str | None]:
     """Apply per-gripper teleop control without letting policy fight that gripper."""
-    key = f"{arm}_gripper_cmd"
+    key = gripper_keys.get(arm)
+    if key is None:
+        return False, None
     if key not in target_action or key not in expert_action:
         return False, None
 
@@ -533,7 +830,13 @@ def _apply_gripper_channel_control(
             return False, None
 
         if hold_without_manual:
-            hold = _current_gripper_cmd(arm, raw_obs, last_exec_action, fallback_action)
+            hold = _current_gripper_cmd(
+                arm,
+                raw_obs,
+                last_exec_action,
+                fallback_action,
+                gripper_keys,
+            )
             if hold is not None:
                 target_action[key] = hold
             return False, None
@@ -549,16 +852,20 @@ def _apply_gripper_channel_control(
     teleop_cmd = _clip_gripper_cmd(teleop_cmd)
 
     if arm_state["hold"] is None:
-        hold = _current_gripper_cmd(arm, raw_obs, last_exec_action, fallback_action)
+        hold = _current_gripper_cmd(
+            arm,
+            raw_obs,
+            last_exec_action,
+            fallback_action,
+            gripper_keys,
+        )
         arm_state["hold"] = teleop_cmd if hold is None else hold
 
     hold = arm_state["hold"]
     if not arm_state["active"]:
         previous_teleop_cmd = None
         if last_teleop_raw_action is not None:
-            previous_teleop_cmd = _float_or_none(last_teleop_raw_action.get(key))
-            if previous_teleop_cmd is not None:
-                previous_teleop_cmd = _clip_gripper_cmd(previous_teleop_cmd)
+            previous_teleop_cmd = _gripper_command_value(arm, last_teleop_raw_action, gripper_keys)
 
         takeover_matched = abs(teleop_cmd - hold) <= RUN_MIX_GRIPPER_SOFT_TAKEOVER_EPS
         if previous_teleop_cmd is not None:
@@ -625,6 +932,10 @@ def run_mix_record_loop(
     last_action_source = "policy"
     last_exec_action: dict[str, Any] | None = None
     action_names = _action_names_from_dataset(dataset)
+    gripper_action_keys = resolve_gripper_command_keys(action_names)
+    if gripper_action_keys:
+        logging.info("[run_mix] gripper action keys: %s", gripper_action_keys)
+    missing_gripper_warning_keys: set[str] = set()
     intervention_segment_id = -1
     intervention_active = False
     gripper_soft_takeover = {
@@ -669,6 +980,7 @@ def run_mix_record_loop(
         )
         policy_action_processed = make_robot_action(policy_action, dataset.features)
         policy_action_processed = _complete_action_dict(policy_action_processed, action_names)
+        policy_action_processed = normalize_gripper_command_keys(policy_action_processed, gripper_action_keys)
 
         # (2) Default execute policy action. Teleop may override selected channels below.
         exec_action = dict(policy_action_processed)
@@ -679,7 +991,21 @@ def run_mix_record_loop(
 
         # (3) Expert override is split by channel: arm/body and grippers are independent.
         teleop_raw_action = teleop.get_action()
-        expert_action_raw = dict(teleop_action_processor((teleop_raw_action, raw_obs)))
+        expert_action_raw = normalize_gripper_command_keys(
+            dict(teleop_action_processor((teleop_raw_action, raw_obs))),
+            gripper_action_keys,
+        )
+        for arm, key in gripper_action_keys.items():
+            if key in expert_action_raw or key in missing_gripper_warning_keys:
+                continue
+            logging.warning(
+                "[run_mix] expert action is missing expected %s gripper key `%s`; "
+                "known aliases are %s. This frame will not be a complete expert label.",
+                arm,
+                key,
+                list(GRIPPER_COMMAND_KEY_CANDIDATES[arm]),
+            )
+            missing_gripper_warning_keys.add(key)
         expert_action_missing_names = _missing_or_invalid_action_names(expert_action_raw, action_names)
         expert_action = dict(expert_action_raw)
         is_arm_override, arm_override_reason = _is_arm_override_active(teleop_raw_action)
@@ -689,6 +1015,7 @@ def run_mix_record_loop(
                 teleop_raw_action,
                 last_teleop_raw_action,
                 gripper_soft_takeover,
+                gripper_action_keys,
             )
             for arm in ("left", "right")
         }
@@ -715,11 +1042,12 @@ def run_mix_record_loop(
                 state=gripper_soft_takeover,
                 gripper_request_reason=gripper_reason,
                 hold_without_manual=is_arm_override,
+                gripper_keys=gripper_action_keys,
             )
             if gripper_overridden and gripper_override_reason is not None:
-                overridden_action_names.update(
-                    name for name in action_names if name.startswith(f"{arm}_gripper_cmd")
-                )
+                gripper_key = gripper_action_keys.get(arm)
+                if gripper_key is not None:
+                    overridden_action_names.add(gripper_key)
                 override_reasons.append(gripper_override_reason)
 
         if override_reasons:
@@ -744,7 +1072,7 @@ def run_mix_record_loop(
         else:
             pass
 
-        _clip_gripper_channels(exec_action)
+        _clip_gripper_channels(exec_action, gripper_action_keys)
         # Keep the expert label independent from policy/sent action. Missing
         # dimensions are zero-filled only so the raw LeRobot schema can be
         # written; export drops these rows via expert_label_complete=False.
@@ -752,8 +1080,8 @@ def run_mix_record_loop(
             name
             for arm in ("left", "right")
             if gripper_soft_takeover[arm].get("released_to_policy", False)
-            for name in action_names
-            if name.startswith(f"{arm}_gripper_cmd")
+            for name in [gripper_action_keys.get(arm)]
+            if name is not None
         ]
         expert_action_missing_names = sorted(
             set(expert_action_missing_names) | set(released_to_policy_action_names)
@@ -805,12 +1133,18 @@ def run_mix_record_loop(
 
         # (4) Execute action.
         robot_action_to_send = robot_action_processor((exec_action, raw_obs))
-        sent_action = _complete_action_dict(dict(robot_action_to_send), action_names, fallback_action=exec_action)
+        sent_action = normalize_gripper_command_keys(
+            _complete_action_dict(dict(robot_action_to_send), action_names, fallback_action=exec_action),
+            gripper_action_keys,
+        )
         sent_action_raw = robot.send_action(sent_action)
-        sent_action = _complete_action_dict(
-            dict(sent_action_raw or sent_action),
-            action_names,
-            fallback_action=exec_action,
+        sent_action = normalize_gripper_command_keys(
+            _complete_action_dict(
+                dict(sent_action_raw or sent_action),
+                action_names,
+                fallback_action=exec_action,
+            ),
+            gripper_action_keys,
         )
         last_exec_action = dict(sent_action)
 
@@ -981,19 +1315,23 @@ def run_record(record_cfg: RecordConfig):
         teleop_config = record_cfg.create_teleop_config()
         
         # Create robot configuration dynamically based on robot_type
+        robot_config_kwargs = {
+            "robot_ip": record_cfg.robot_ip,
+            "robot_port": record_cfg.robot_port,
+            "cameras": camera_config,
+            "debug": record_cfg.debug,
+            "use_gripper": record_cfg.use_gripper,
+            "gripper_max_open": record_cfg.gripper_max_open,
+            "gripper_force": record_cfg.gripper_force,
+            "gripper_speed": record_cfg.gripper_speed,
+            "close_threshold": record_cfg.close_threshold,
+            "gripper_reverse": record_cfg.gripper_reverse,
+            "control_mode": record_cfg.control_mode,
+            **record_cfg.robot_extra_config,
+        }
         robot_config = create_robot_config(
             record_cfg.robot_type,
-            robot_ip=record_cfg.robot_ip,
-            robot_port=record_cfg.robot_port,
-            cameras=camera_config,
-            debug=record_cfg.debug,
-            use_gripper=record_cfg.use_gripper,
-            gripper_max_open=record_cfg.gripper_max_open,
-            gripper_force=record_cfg.gripper_force,
-            gripper_speed=record_cfg.gripper_speed,
-            close_threshold=record_cfg.close_threshold,
-            gripper_reverse=record_cfg.gripper_reverse,
-            control_mode=record_cfg.control_mode,
+            **robot_config_kwargs,
         )
         
         # Initialize the robot dynamically based on robot_type
@@ -1003,7 +1341,7 @@ def run_record(record_cfg: RecordConfig):
         action_features = hw_to_dataset_features(robot.action_features, "action")
         obs_features = hw_to_dataset_features(robot.observation_features, "observation", use_video=True)
         dataset_features = {**action_features, **obs_features}
-        if record_cfg.run_mode == "run_mix":
+        if record_cfg.run_mode == RUN_MODE_MIX:
             # Extend dataset schema for DAgger mixed collection metadata.
             action_feature = dataset_features[ACTION]
             dataset_features["policy_action"] = _clone_action_feature(action_feature)
@@ -1044,7 +1382,7 @@ def run_record(record_cfg: RecordConfig):
                     "names": None,
                 }
 
-        if record_cfg.run_mode == "run_mix":
+        if record_cfg.run_mode == RUN_MODE_MIX:
             logging.info("====== [RUN_MIX] Mix mode config ======")
             logging.info(
                 "[run_mix] robot_type=%s control_mode=%s fps=%s episode_time=%s reset_time=%s",
@@ -1120,22 +1458,22 @@ def run_record(record_cfg: RecordConfig):
         postprocessor = None
 
         # configure the teleop and policy
-        if record_cfg.run_mode == "run_record":
+        if record_cfg.run_mode == RUN_MODE_RECORD:
             logging.info("====== [INFO] Running in teleoperation mode ======")
             teleop = OculusTeleop(teleop_config)
             policy = None
-        elif record_cfg.run_mode == "run_policy":
+        elif record_cfg.run_mode == RUN_MODE_POLICY:
             logging.info("====== [INFO] Running in policy mode ======")
             policy = make_policy(record_cfg.policy, ds_meta=dataset.meta)
             teleop = None
-        elif record_cfg.run_mode == "run_mix":
+        elif record_cfg.run_mode == RUN_MODE_MIX:
             logging.info("====== [INFO] Running in mixed mode ======")
             policy = make_policy(record_cfg.policy, ds_meta=dataset.meta)
             teleop = OculusTeleop(teleop_config)
         else:
             raise ValueError(
                 f"Unsupported run_mode: {record_cfg.run_mode}. "
-                "Supported: run_record | run_policy | run_mix"
+                f"Supported: {RUN_MODE_RECORD} | {RUN_MODE_POLICY} | {RUN_MODE_MIX}"
             )
         
         if policy is not None:
@@ -1158,7 +1496,7 @@ def run_record(record_cfg: RecordConfig):
 
         while episode_idx < record_cfg.num_episodes and not events["stop_recording"]:
             logging.info(f"====== [RECORD] Recording episode {episode_idx + 1} of {record_cfg.num_episodes} ======")
-            if record_cfg.run_mode == "run_mix":
+            if record_cfg.run_mode == RUN_MODE_MIX:
                 mix_stats = run_mix_record_loop(
                     robot=robot,
                     teleop=teleop,
@@ -1214,7 +1552,7 @@ def run_record(record_cfg: RecordConfig):
                 events["exit_early"] = False
                 if dataset.episode_buffer is not None:
                     dataset.clear_episode_buffer()
-            elif record_cfg.run_mode == "run_mix":
+            elif record_cfg.run_mode == RUN_MODE_MIX:
                 has_recorded_frames = (
                     dataset.episode_buffer is not None and dataset.episode_buffer.get("size", 0) > 0
                 )
@@ -1326,7 +1664,7 @@ def run_record(record_cfg: RecordConfig):
             "dataset_root": str(dataset_root),
             "data_version": data_version,
         }
-        if record_cfg.run_mode == "run_mix":
+        if record_cfg.run_mode == RUN_MODE_MIX:
             total_expert = sum(s["expert_exec_steps"] for s in run_mix_episode_stats)
             total_policy = sum(s["policy_exec_steps"] for s in run_mix_episode_stats)
             result["run_mix_stats"] = {
@@ -1372,6 +1710,8 @@ def dry_run_policy_config(cfg_path: Path) -> RecordConfig:
         cfg["record"],
         scripts_dir=scripts_dir,
         project_root=project_root,
+        config_source_name=str(cfg_path),
+        force_policy_config=True,
     )
     logging.info("====== [POLICY CONFIG DRY-RUN] OK ======")
     logging.info("policy.type: %s", record_cfg.policy_type)
@@ -1419,6 +1759,7 @@ def main(argv: list[str] | None = None):
         cfg["record"],
         scripts_dir=scripts_dir,
         project_root=project_root,
+        config_source_name=str(args.config_path),
     )
     run_record(record_cfg)
 
