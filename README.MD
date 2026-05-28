@@ -262,6 +262,27 @@ lerobot-edit-dataset
 ```
 - For more dataset processing commands, see [LeRobot](https://huggingface.co/docs/lerobot/using_dataset_tools).
 
+### 7.1 Dataset Preprocessing and Sub-Episode Labeling
+Use these helper scripts when recorded episodes need cleanup, subtask segmentation, language labels, or VLA manifests before training.
+
+1. `preprocess_dataset.py` rewrites a LeRobot dataset to a separate output dataset. It can trim long static spans, preserve context around gripper transitions, and optionally smooth or clamp delta end-effector action labels. Configure `scripts/config/preprocess_dataset_cfg.yaml`.
+```bash
+python scripts/tools/preprocess_dataset.py --config scripts/config/preprocess_dataset_cfg.yaml --dry-run --max-episodes 2
+python scripts/tools/preprocess_dataset.py --config scripts/config/preprocess_dataset_cfg.yaml --overwrite
+```
+
+2. `split_label_dataset.py` splits long episodes into sub-episodes, labels each segment, writes `split_manifest.jsonl` and `vla_manifest.jsonl`, and can create a StarVLA-style `modality.json`. When semantic segmentation is enabled, it uses OpenRouter first and falls back to gripper/motion rules if configured. Configure `scripts/config/split_label_dataset_cfg.yaml`.
+```bash
+export OPENROUTER_API_KEY=<your_key>
+python scripts/tools/split_label_dataset.py --config scripts/config/split_label_dataset_cfg.yaml --dry-run --max-episodes 1
+python scripts/tools/split_label_dataset.py --config scripts/config/split_label_dataset_cfg.yaml --label-only
+python scripts/tools/split_label_dataset.py --config scripts/config/split_label_dataset_cfg.yaml --overwrite
+```
+
+- Keep `source.root` and `output.root` different. Both scripts refuse in-place writes.
+- For offline or template labeling, set `openrouter.enabled: false`; dry-runs do not upload images unless `semantic_segmentation.run_on_dry_run: true`.
+- If `language_augmentation.write_variants_as_episodes: true`, one segment may become multiple output episodes with different task strings.
+
 ## 8. Recording Control Keys
 
 - **Right Arrow Key**  

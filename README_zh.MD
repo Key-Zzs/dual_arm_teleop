@@ -241,6 +241,27 @@ lerobot-edit-dataset --repo_id <merged_repo_id> --operation.type merge --operati
 ```
 - 更多数据集处理命令，请参考 [LeRobot](https://huggingface.co/docs/lerobot/using_dataset_tools)
 
+### 7.1 数据预处理与子片段标注
+如果录制好的 episode 在训练前需要清理静止段、拆分子任务、生成语言标签或导出 VLA manifest，可以使用下面两个工具脚本。
+
+1. `preprocess_dataset.py` 会把源 LeRobot 数据集重写到一个新的输出数据集。它可以裁剪长时间无动作片段、保留夹爪开合前后的上下文，并可选地对 delta 末端位姿 action 做平滑或限幅。配置文件为 `scripts/config/preprocess_dataset_cfg.yaml`。
+```bash
+python scripts/tools/preprocess_dataset.py --config scripts/config/preprocess_dataset_cfg.yaml --dry-run --max-episodes 2
+python scripts/tools/preprocess_dataset.py --config scripts/config/preprocess_dataset_cfg.yaml --overwrite
+```
+
+2. `split_label_dataset.py` 会把长 episode 拆成子 episode，为每个片段生成语言标签，写出 `split_manifest.jsonl`、`vla_manifest.jsonl`，并可生成 StarVLA 风格的 `modality.json`。开启语义分段时会优先调用 OpenRouter；如果配置允许，会回退到夹爪/运动规则分段。配置文件为 `scripts/config/split_label_dataset_cfg.yaml`。
+```bash
+export OPENROUTER_API_KEY=<your_key>
+python scripts/tools/split_label_dataset.py --config scripts/config/split_label_dataset_cfg.yaml --dry-run --max-episodes 1
+python scripts/tools/split_label_dataset.py --config scripts/config/split_label_dataset_cfg.yaml --label-only
+python scripts/tools/split_label_dataset.py --config scripts/config/split_label_dataset_cfg.yaml --overwrite
+```
+
+- `source.root` 和 `output.root` 必须不同；两个脚本都会拒绝原地覆盖源数据集。
+- 如需离线或模板标签，可设置 `openrouter.enabled: false`；`--dry-run` 默认不会上传图片，除非设置 `semantic_segmentation.run_on_dry_run: true`。
+- 如果 `language_augmentation.write_variants_as_episodes: true`，一个子片段会按不同 task 文本写成多个输出 episode。
+
 ## 8. 录制控制按键说明
 1. **右方向键**  
    1. 按下右方向键: 结束当前 episode 的录制并保存数据，程序将暂停等待。
