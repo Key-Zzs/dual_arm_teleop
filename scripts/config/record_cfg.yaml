@@ -1,6 +1,6 @@
 record:
-  # repo_id: &repo_id "franka_task3_step1/TODO_task_description"
-  repo_id: &repo_id "nero_task3_step1/2mL_empty_right"
+  repo_id: &repo_id "franka_dual_arm/left_right_pick_chp_rollout"
+  # repo_id: &repo_id "nero_task3_step1/2mL_empty_right"
   # Suggested format: <robot_task<num>_step<num>>/<description>, e.g. nero_task3_step1/2mL_empty
   # <description>: https://github.com/wbcdcompetition/wbcd_tasks/tree/main/track-3-lab-experiments
   #   step1:
@@ -24,8 +24,8 @@ record:
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka.
   # Hardware-specific teleop / robot / cameras sections are loaded from scripts/DAS_config by robot_type.
-  # robot_type: &robot_type "franka_dual_arm"
-  robot_type: &robot_type "nero_dual_arm"
+  robot_type: &robot_type "franka_dual_arm"
+  # robot_type: &robot_type "nero_dual_arm"
 
   # Optional explicit override if you do not want the robot_type default mapping:
   # das_config_path: scripts/DAS_config/franka_config.yaml
@@ -37,13 +37,14 @@ record:
 
     # Franka:
     # For ACT:
-    # type: "act"
-    # config_path: scripts/policy_config/act_reason_config.yaml
-    # pretrained_path: "/home/deepcybo/Le-nero/outputs/train/franka_dual_arm/left_right_pick/act_20260520_E50_V01_2/checkpoints/last/pretrained_model"
+    type: "act"
+    config_path: scripts/policy_config/act_reason_config.yaml
+    pretrained_path: "/home/deepcybo/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/franka_dual_arm/act_left_right_pick_20260526_E150/checkpoints/last/pretrained_model"
+    
     # For diffusion:
-    type: "diffusion"
-    config_path: scripts/policy_config/diffusion_reason_config.yaml
-    pretrained_path: "/home/deepcybo/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/franka_dual_arm/dp_left_right_pick_20260525_test/checkpoints/last/pretrained_model"
+    # type: "diffusion"
+    # config_path: scripts/policy_config/diffusion_reason_config.yaml
+    # pretrained_path: "/home/deepcybo/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/franka_dual_arm/dp_left_right_pick_20260526_E150/checkpoints/last/pretrained_model"
 
     # Nero:
     # For ACT:
@@ -76,7 +77,7 @@ record:
     push_to_hub: false # whether to push the dataset to your HuggingFace repo after recording
 
 replay:
-  dataset_name: franka_dual_arm/left_right_pick_20260520_v04
+  dataset_name: franka_dual_arm/left_right_pick_merged_E150
   # dataset_name: nero_task3_step1/2mL_empty_20260430_v01
   episode_idx: 0 # episode index to replay
   # episode_idx: 15
@@ -85,7 +86,7 @@ replay:
   robot_type: *robot_type # robot details are loaded from scripts/DAS_config by robot_type
 
 visualize:
-  dataset_name: franka_dual_arm/left_right_pick_20260520_v04
+  dataset_name: franka_dual_arm/left_right_pick_merged_E150
   # dataset_name: nero_task3_step1/2mL_empty_20260430_v01
   episode_index: 0 # episode index to visualize
   # episode_index: 15
