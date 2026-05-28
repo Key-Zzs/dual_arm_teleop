@@ -27,7 +27,9 @@ robot:
   close_threshold: 0.05 # threshold to determine gripper open/close
   # gripper_bin_threshold: 0.05 # threshold to determine gripper is closed
   gripper_reverse: false # if gripper moves opposite, flip this value
-  gripper_max_open: 0.1 # Robotiq 2F-85 max open width in meters
+  gripper_max_open: 0.1 # fallback max open width in meters
+  left_gripper_max_open: 0.1 # left gripper max open width in meters
+  right_gripper_max_open: 0.1 # right gripper max open width in meters
   gripper_force: 2.0 # Robotiq 2F-85 max force in Newtons
 
 cameras:

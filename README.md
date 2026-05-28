@@ -247,7 +247,7 @@ Hardware parameters are usually edited in `scripts/DAS_config/*.yaml`:
 - `teleop.oculus_config.ip`: Oculus Quest IP.
 - `teleop.oculus_config.*_pose_scaler` and `*_channel_signs`: mapping from left/right controllers to robot actions.
 - `robot.robot_ip`, `robot.robot_port`: robot service address.
-- `robot.use_gripper` and gripper parameters: enable grippers, close/open thresholds, max opening width, and force.
+- `robot.use_gripper` and gripper parameters: enable grippers, close/open thresholds, default max opening width, optional left/right max opening widths, and force.
 - `cameras.*_serial`, `width`, `height`: RealSense serial numbers and resolution.
 
 Before training, usually edit `scripts/config/train_cfg.yaml`:

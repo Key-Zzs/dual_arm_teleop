@@ -3,6 +3,7 @@ Configuration for Nero dual-arm robot system.
 Each arm has 7 DOF
 """
 from dataclasses import dataclass, field
+from typing import Optional
 
 from lerobot.cameras import CameraConfig
 from lerobot.robots.config import RobotConfig
@@ -24,7 +25,9 @@ class NeroDualArmConfig(RobotConfig):
     gripper_ip: str = "192.168.110.114"  # gripper zerorpc ip, if different from robot_ip, set to robot_ip
     gripper_port: int = 4243  # gripper zerorpc port (single port for both arms)
     use_gripper: bool = True
-    gripper_max_open: float = 0.1  # agx_gripper max opening: 10mm
+    gripper_max_open: float = 0.1  # default agx_gripper max opening in meters
+    left_gripper_max_open: Optional[float] = None
+    right_gripper_max_open: Optional[float] = None
     gripper_force: float = 2.0  # Gripping force in N
     gripper_speed: float = 0.1  # Speed in m/s
     gripper_reverse: bool = False  # Whether to reverse gripper command

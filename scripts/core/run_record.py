@@ -363,6 +363,18 @@ class RecordConfig:
         self.close_threshold = robot.get("close_threshold", 0.5)
         self.gripper_reverse: bool = robot.get("gripper_reverse", False)
         self.gripper_max_open: float = robot.get("gripper_max_open", 0.085)
+        left_gripper_max_open = robot.get("left_gripper_max_open")
+        right_gripper_max_open = robot.get("right_gripper_max_open")
+        self.left_gripper_max_open: float = (
+            self.gripper_max_open
+            if left_gripper_max_open is None
+            else left_gripper_max_open
+        )
+        self.right_gripper_max_open: float = (
+            self.gripper_max_open
+            if right_gripper_max_open is None
+            else right_gripper_max_open
+        )
         self.gripper_force: float = robot.get("gripper_force", 10.0)
         self.gripper_speed: float = robot.get("gripper_speed", 0.1)
         self.robot_extra_config: dict[str, Any] = {
@@ -1322,6 +1334,8 @@ def run_record(record_cfg: RecordConfig):
             "debug": record_cfg.debug,
             "use_gripper": record_cfg.use_gripper,
             "gripper_max_open": record_cfg.gripper_max_open,
+            "left_gripper_max_open": record_cfg.left_gripper_max_open,
+            "right_gripper_max_open": record_cfg.right_gripper_max_open,
             "gripper_force": record_cfg.gripper_force,
             "gripper_speed": record_cfg.gripper_speed,
             "close_threshold": record_cfg.close_threshold,

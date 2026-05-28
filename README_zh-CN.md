@@ -247,7 +247,7 @@ robot-dagger-export --config scripts/config/dagger_rounds_cfg.yaml
 - `teleop.oculus_config.ip`：Oculus Quest IP。
 - `teleop.oculus_config.*_pose_scaler` 和 `*_channel_signs`：左右手柄到机器人动作的映射。
 - `robot.robot_ip`、`robot.robot_port`：机器人服务地址。
-- `robot.use_gripper` 和夹爪参数：夹爪启用、开合阈值、最大开口和力。
+- `robot.use_gripper` 和夹爪参数：夹爪启用、开合阈值、默认最大开口、可选左右夹爪最大开口和力。
 - `cameras.*_serial`、`width`、`height`：RealSense 序列号和分辨率。
 
 训练前通常需要修改 `scripts/config/train_cfg.yaml`：

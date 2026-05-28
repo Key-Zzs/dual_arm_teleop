@@ -75,6 +75,7 @@ class ReplayConfig:
         self.episode_idx: int = int(cfg.get("episode_idx", 0))
 
         # robot config
+        self.robot_config: Dict[str, Any] = dict(robot)
         # Support both `robot_ip` and legacy `ip` in YAML replay config.
         self.robot_ip: str = robot.get("robot_ip", robot.get("ip", "localhost"))
         self.robot_port: int = robot.get("robot_port", 4242)
@@ -94,12 +95,16 @@ class ReplayConfig:
 def run_replay(replay_cfg: ReplayConfig):
     episode_idx = replay_cfg.episode_idx
 
-    robot_config = create_robot_config(
-        replay_cfg.robot_type,
+    robot_config_kwargs = dict(replay_cfg.robot_config)
+    robot_config_kwargs.update(
         robot_ip=replay_cfg.robot_ip,
         robot_port=replay_cfg.robot_port,
         debug=False,
-        control_mode=replay_cfg.control_mode
+        control_mode=replay_cfg.control_mode,
+    )
+    robot_config = create_robot_config(
+        replay_cfg.robot_type,
+        **robot_config_kwargs,
     )
     
     robot = create_robot(replay_cfg.robot_type, robot_config)
