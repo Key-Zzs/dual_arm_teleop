@@ -17,19 +17,18 @@ record:
 
   debug:
     robot_debug: false # if true, robot will not execute arm actions, but gripper can still be controlled
-  user_notes: "Franka template; replace TODO values before real collection."
-  # user_notes:  # any additional notes about the dataset
+  user_notes:  # any additional notes about the dataset
   fps: 30 # dataset and camera frame rate
-  run_mode: "run_record" # run_record | run_policy | run_mix
+  run_mode: "run_policy" # run_record | run_policy | run_mix
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka.
-  # Hardware-specific teleop / robot / cameras sections are loaded from scripts/DAS_config by robot_type.
-  robot_type: &robot_type "franka_dual_arm"
-  # robot_type: &robot_type "nero_dual_arm"
+  # Hardware-specific teleop / robot / cameras sections are loaded from scripts/config/DAS_config by robot_type.
+  # robot_type: &robot_type "franka_dual_arm"
+  robot_type: &robot_type "nero_dual_arm"
 
   # Optional explicit override if you do not want the robot_type default mapping:
-  # das_config_path: scripts/DAS_config/franka_config.yaml
-  # das_config_path: scripts/DAS_config/nero_cofig.yaml
+  # das_config_path: scripts/config/DAS_config/franka_config.yaml
+  # das_config_path: scripts/config/DAS_config/nero_cofig.yaml
 
   policy:
     # 策略类型: act | diffusion | dp | diffusion_policy
@@ -37,25 +36,25 @@ record:
 
     # Franka:
     # For ACT:
-    type: "act"
-    config_path: scripts/policy_config/act_reason_config.yaml
-    pretrained_path: "/home/deepcybo/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/franka_dual_arm/act_left_right_pick_20260526_E150/checkpoints/last/pretrained_model"
-    
+    # type: "act"
+    # config_path: scripts/config/policy_config/act_reason_config.yaml
+    # pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/empty/act_20260529_E113_phase/checkpoints/last/pretrained_model"
     # For diffusion:
     # type: "diffusion"
-    # config_path: scripts/policy_config/diffusion_reason_config.yaml
+    # config_path: scripts/config/policy_config/diffusion_reason_config.yaml
     # pretrained_path: "/home/deepcybo/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/franka_dual_arm/dp_left_right_pick_20260526_E150/checkpoints/last/pretrained_model"
 
     # Nero:
     # For ACT:
-    # type: "act"
-    # config_path: scripts/policy_config/act_reason_config.yaml
-    # pretrained_path: "/home/deepcybo/Le-nero/outputs/train/nero_dual_arm/left_right_pick/act_20260520_E50_V01_2/checkpoints/last/pretrained_model"
+    type: "act"
+    config_path: scripts/config/policy_config/act_reason_config.yaml
+    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/empty/act_20260529_E113_phase/checkpoints/last/pretrained_model"
+    # For diffusion:
     # type: "diffusion"
-    # config_path: scripts/policy_config/diffusion_reason_config.yaml
+    # config_path: scripts/config/policy_config/diffusion_reason_config.yaml
     # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right/dp_20260523_E249_LastFrames0/checkpoints/last/pretrained_model"
 
-    # Policy hyperparameters have been moved to scripts/policy_config/*_reason_config.yaml.
+    # Policy hyperparameters have been moved to scripts/config/policy_config/*_reason_config.yaml.
 
   task:
     description: "pick up small vials and insert them in the empty rack" # task description
@@ -77,16 +76,12 @@ record:
     push_to_hub: false # whether to push the dataset to your HuggingFace repo after recording
 
 replay:
-  dataset_name: franka_dual_arm/left_right_pick_merged_E150
-  # dataset_name: nero_task3_step1/2mL_empty_20260430_v01
+  dataset_name: nero_task3_step1/2mL_empty_20260430_v01
   episode_idx: 0 # episode index to replay
-  # episode_idx: 15
   reset_on_finish: true # replay结束后回home
   disconnect_on_finish: false # 默认不断开，避免触发server stop/e-stop
-  robot_type: *robot_type # robot details are loaded from scripts/DAS_config by robot_type
+  robot_type: *robot_type # robot details are loaded from scripts/config/DAS_config by robot_type
 
 visualize:
-  dataset_name: franka_dual_arm/left_right_pick_merged_E150
-  # dataset_name: nero_task3_step1/2mL_empty_20260430_v01
+  dataset_name: nero_task3_step1/2mL_empty_20260430_v01
   episode_index: 0 # episode index to visualize
-  # episode_index: 15

@@ -31,12 +31,27 @@ from lerobot.utils.control_utils import sanity_check_dataset_robot_compatibility
 from lerobot.policies.factory import make_policy, make_pre_post_processors
 from lerobot.policies.utils import make_robot_action
 from lerobot.processor.rename_processor import rename_stats
-from lerobot.utils.constants import ACTION, OBS_STR
+from lerobot.utils.constants import ACTION
 from lerobot.utils.control_utils import predict_action
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import get_safe_torch_device
 from lerobot.utils.visualization_utils import log_rerun_data
 from dataclasses import field
+from scripts.core.phase_conditioning import (
+    OBS_STATE_KEY,
+    PHASE_NAMES,
+    PhaseConditioningConfig,
+    apply_phase_action_gate as _apply_phase_action_gate,
+    build_policy_observation_frame as _build_policy_observation_frame,
+    dataset_features_without_phase as _dataset_features_without_phase,
+    extend_dataset_features_for_phase_conditioning as _extend_dataset_features_for_phase_conditioning,
+    load_phase_conditioning_config,
+    local_checkpoint_expected_state_dim as _local_checkpoint_expected_state_dim,
+    make_phase_state_machine as _make_phase_state_machine,
+    self_test_phase_conditioning,
+    try_reset_policy_after_phase_switch as _try_reset_policy_after_phase_switch,
+    validate_dataset_state_dim_against_checkpoint as _validate_dataset_state_dim_against_checkpoint,
+)
 from scripts.core.policy_config_utils import (
     build_policy_config,
     load_policy_yaml,
@@ -148,7 +163,7 @@ def _resolve_das_config_path(
         candidates = (
             project_root / path,
             scripts_dir / path,
-            scripts_dir / "DAS_config" / path,
+            scripts_dir / "config" / "DAS_config" / path,
         )
         for candidate in candidates:
             if candidate.is_file():
@@ -162,7 +177,7 @@ def _resolve_das_config_path(
             f"{robot_type!r}. Add record.das_config_path or extend "
             "ROBOT_DETAIL_CONFIG_FILES."
         )
-    return scripts_dir / "DAS_config" / config_name
+    return scripts_dir / "config" / "DAS_config" / config_name
 
 
 def _load_robot_detail_cfg(
@@ -264,6 +279,7 @@ def _normalize_record_success_policy(task_cfg: Dict[str, Any]) -> str:
     return success_policy
 
 
+
 class RecordConfig:
     """Configuration class for recording sessions."""
     
@@ -314,6 +330,16 @@ class RecordConfig:
             raise ValueError(
                 f"Unsupported `record.run_mode`: {self.run_mode!r}. "
                 f"Supported: {sorted(VALID_RUN_MODES)}"
+            )
+        self.phase_conditioning = load_phase_conditioning_config(
+            scripts_dir=self.scripts_dir,
+            project_root=self.project_root,
+        )
+        if self.phase_conditioning.enabled and self.run_mode not in POLICY_RUN_MODES:
+            logging.warning(
+                "[phase_conditioning] enabled=true but run_mode=%s has no policy inference; "
+                "phase conditioning will not be used in this run.",
+                self.run_mode,
             )
         self.rename_map: dict[str, str] = field(default_factory=dict)
         # Finish behavior: by default reset to home and keep connection to avoid server stop on close.
@@ -816,6 +842,7 @@ def normalize_gripper_command_keys(
     return normalized
 
 
+
 def _reset_gripper_soft_takeover(state: dict[str, dict[str, Any]]) -> None:
     for arm_state in state.values():
         arm_state["active"] = False
@@ -1021,6 +1048,126 @@ def _apply_gripper_channel_control(
     return True, gripper_request_reason or f"{arm}_gripper_active"
 
 
+def run_policy_record_loop(
+    robot,
+    policy,
+    preprocessor,
+    postprocessor,
+    dataset: LeRobotDataset,
+    robot_action_processor,
+    robot_observation_processor,
+    events: dict,
+    fps: int,
+    control_time_s: int | float,
+    single_task: str,
+    display_data: bool,
+    phase_conditioning: PhaseConditioningConfig,
+    right_gripper_max_open: float | None,
+) -> None:
+    if dataset is not None and dataset.fps != fps:
+        raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
+
+    policy.reset()
+    preprocessor.reset()
+    postprocessor.reset()
+
+    base_observation_features = _dataset_features_without_phase(
+        dataset.features,
+        phase_conditioning,
+    )
+    phase_machine = _make_phase_state_machine(
+        phase_conditioning,
+        dataset_features=dataset.features,
+        fps=fps,
+        right_gripper_max_open=right_gripper_max_open,
+    )
+    action_names = _action_names_from_dataset(dataset)
+    gripper_action_keys = resolve_gripper_command_keys(action_names)
+    last_sent_action: dict[str, Any] | None = None
+
+    timestamp_s = 0.0
+    frame_idx = 0
+    start_episode_t = time.perf_counter()
+    try:
+        while timestamp_s < control_time_s:
+            loop_start_t = time.perf_counter()
+
+            if events["exit_early"]:
+                events["exit_early"] = False
+                break
+
+            raw_obs = robot.get_observation()
+            obs_processed = robot_observation_processor(raw_obs)
+
+            if phase_machine is not None:
+                phase_update = phase_machine.update(
+                    frame_idx=frame_idx,
+                    timestamp_s=timestamp_s,
+                    raw_obs=raw_obs,
+                    obs_processed=obs_processed,
+                    last_sent_action=last_sent_action,
+                    gripper_keys=gripper_action_keys,
+                )
+                if phase_update.switched_this_frame and phase_conditioning.reset_policy_on_switch:
+                    _try_reset_policy_after_phase_switch(policy)
+
+            observation_frame = _build_policy_observation_frame(
+                dataset_features=dataset.features,
+                base_observation_features=base_observation_features,
+                obs_processed=obs_processed,
+                phase_machine=phase_machine,
+                policy=policy,
+            )
+
+            action_values = predict_action(
+                observation=observation_frame,
+                policy=policy,
+                device=get_safe_torch_device(policy.config.device),
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+                use_amp=policy.config.use_amp,
+                task=single_task,
+                robot_type=robot.robot_type,
+            )
+            act_processed_policy = make_robot_action(action_values, dataset.features)
+            act_processed_policy = _complete_action_dict(act_processed_policy, action_names)
+            act_processed_policy = _apply_phase_action_gate(
+                act_processed_policy,
+                phase_machine=phase_machine,
+                phase_conditioning=phase_conditioning,
+                gripper_keys=gripper_action_keys,
+                frame_idx=frame_idx,
+                source="run_policy",
+            )
+            robot_action_to_send = robot_action_processor((act_processed_policy, raw_obs))
+            sent_action_raw = robot.send_action(robot_action_to_send)
+            sent_action = normalize_gripper_command_keys(
+                _complete_action_dict(
+                    dict(sent_action_raw or robot_action_to_send),
+                    action_names,
+                    fallback_action=act_processed_policy,
+                ),
+                gripper_action_keys,
+            )
+            last_sent_action = dict(sent_action)
+
+            if dataset is not None:
+                action_frame = build_dataset_frame(dataset.features, act_processed_policy, prefix=ACTION)
+                frame = {**observation_frame, **action_frame, "task": single_task}
+                dataset.add_frame(frame)
+
+            if display_data:
+                log_rerun_data(observation=obs_processed, action=act_processed_policy)
+
+            dt_s = time.perf_counter() - loop_start_t
+            busy_wait(1 / fps - dt_s)
+            timestamp_s = time.perf_counter() - start_episode_t
+            frame_idx += 1
+    finally:
+        if phase_machine is not None:
+            phase_machine.close()
+
+
 def run_mix_record_loop(
     robot,
     teleop,
@@ -1036,8 +1183,13 @@ def run_mix_record_loop(
     control_time_s: int | float,
     single_task: str,
     display_data: bool,
+    phase_conditioning: PhaseConditioningConfig,
+    right_gripper_max_open: float | None,
     success_policy: str = SUCCESS_POLICY_NONE,
 ) -> dict[str, Any]:
+    if dataset is None:
+        raise ValueError("run_mix_record_loop requires a dataset.")
+
     policy.reset()
     preprocessor.reset()
     postprocessor.reset()
@@ -1051,6 +1203,7 @@ def run_mix_record_loop(
     saved_steps = 0
     intervention_count = 0
     complete_expert_label_steps = 0
+    frame_idx = 0
 
     last_action_source = "policy"
     last_exec_action: dict[str, Any] | None = None
@@ -1079,209 +1232,242 @@ def run_mix_record_loop(
             "waiting_logged": False,
         },
     }
-    while timestamp_s < control_time_s:
-        loop_start_t = time.perf_counter()
+    base_observation_features = _dataset_features_without_phase(
+        dataset.features,
+        phase_conditioning,
+    )
+    phase_machine = _make_phase_state_machine(
+        phase_conditioning,
+        dataset_features=dataset.features,
+        fps=fps,
+        right_gripper_max_open=right_gripper_max_open,
+    )
+    try:
+        while timestamp_s < control_time_s:
+            loop_start_t = time.perf_counter()
 
-        if events["exit_early"]:
-            events["exit_early"] = False
-            break
+            if events["exit_early"]:
+                events["exit_early"] = False
+                break
 
-        raw_obs = robot.get_observation()
-        obs_processed = robot_observation_processor(raw_obs)
-        observation_frame = build_dataset_frame(dataset.features, obs_processed, prefix=OBS_STR)
-
-        # (1) Policy inference.
-        policy_action = predict_action(
-            observation=observation_frame,
-            policy=policy,
-            device=get_safe_torch_device(policy.config.device),
-            preprocessor=preprocessor,
-            postprocessor=postprocessor,
-            use_amp=policy.config.use_amp,
-            task=single_task,
-            robot_type=robot.robot_type,
-        )
-        policy_action_processed = make_robot_action(policy_action, dataset.features)
-        policy_action_processed = _complete_action_dict(policy_action_processed, action_names)
-        policy_action_processed = normalize_gripper_command_keys(policy_action_processed, gripper_action_keys)
-
-        # (2) Default execute policy action. Teleop may override selected channels below.
-        exec_action = dict(policy_action_processed)
-        action_source = "policy"
-        is_expert = False
-        frame_role = "policy"
-        frame_segment_id = -1
-
-        # (3) Expert override is split by channel: arm/body and grippers are independent.
-        teleop_raw_action = teleop.get_action()
-        expert_action_raw = normalize_gripper_command_keys(
-            dict(teleop_action_processor((teleop_raw_action, raw_obs))),
-            gripper_action_keys,
-        )
-        for arm, key in gripper_action_keys.items():
-            if key in expert_action_raw or key in missing_gripper_warning_keys:
-                continue
-            logging.warning(
-                "[run_mix] expert action is missing expected %s gripper key `%s`; "
-                "known aliases are %s. This frame will not be a complete expert label.",
-                arm,
-                key,
-                list(GRIPPER_COMMAND_KEY_CANDIDATES[arm]),
-            )
-            missing_gripper_warning_keys.add(key)
-        expert_action_missing_names = _missing_or_invalid_action_names(expert_action_raw, action_names)
-        expert_action = dict(expert_action_raw)
-        is_arm_override, arm_override_reason = _is_arm_override_active(teleop_raw_action)
-        gripper_request_reasons = {
-            arm: _gripper_request_reason(
-                arm,
-                teleop_raw_action,
-                last_teleop_raw_action,
-                gripper_soft_takeover,
-                gripper_action_keys,
-            )
-            for arm in ("left", "right")
-        }
-
-        override_reasons: list[str] = []
-        overridden_action_names: set[str] = set()
-
-        if is_arm_override:
-            overridden_action_names.update(_copy_arm_channels(exec_action, expert_action))
-            override_reasons.append(arm_override_reason)
-            # Flush policy temporal state only for arm/body interventions. Gripper-only
-            # control should not disturb policy arm motion.
-            policy.reset()
-
-        for arm, gripper_reason in gripper_request_reasons.items():
-            gripper_overridden, gripper_override_reason = _apply_gripper_channel_control(
-                arm=arm,
-                target_action=exec_action,
-                expert_action=expert_action,
-                raw_obs=raw_obs,
-                last_exec_action=last_exec_action,
-                last_teleop_raw_action=last_teleop_raw_action,
-                fallback_action=policy_action_processed,
-                state=gripper_soft_takeover,
-                gripper_request_reason=gripper_reason,
-                hold_without_manual=is_arm_override,
-                gripper_keys=gripper_action_keys,
-            )
-            if gripper_overridden and gripper_override_reason is not None:
-                gripper_key = gripper_action_keys.get(arm)
-                if gripper_key is not None:
-                    overridden_action_names.add(gripper_key)
-                override_reasons.append(gripper_override_reason)
-
-        if override_reasons:
-            action_source = (
-                "expert"
-                if action_names and overridden_action_names.issuperset(set(action_names))
-                else "mixed"
-            )
-            is_expert = True
-            if last_action_source == "policy":
-                logging.info(
-                    "[run_mix] source->%s (teleop override). reason=%s",
-                    action_source,
-                    ", ".join(override_reasons),
+            raw_obs = robot.get_observation()
+            obs_processed = robot_observation_processor(raw_obs)
+            if phase_machine is not None:
+                phase_update = phase_machine.update(
+                    frame_idx=frame_idx,
+                    timestamp_s=timestamp_s,
+                    raw_obs=raw_obs,
+                    obs_processed=obs_processed,
+                    last_sent_action=last_exec_action,
+                    gripper_keys=gripper_action_keys,
                 )
-        elif last_action_source in {"expert", "mixed"}:
-            logging.info(
-                "[run_mix] source->policy (no expert override detected). last_reason=%s",
-                "no_channel_override_signal",
+                if phase_update.switched_this_frame and phase_conditioning.reset_policy_on_switch:
+                    _try_reset_policy_after_phase_switch(policy)
+            observation_frame = _build_policy_observation_frame(
+                dataset_features=dataset.features,
+                base_observation_features=base_observation_features,
+                obs_processed=obs_processed,
+                phase_machine=phase_machine,
+                policy=policy,
             )
-            _reset_gripper_soft_takeover(gripper_soft_takeover)
-        else:
-            pass
 
-        _clip_gripper_channels(exec_action, gripper_action_keys)
-        # Keep the expert label independent from policy/sent action. Missing
-        # dimensions are zero-filled only so the raw LeRobot schema can be
-        # written; export drops these rows via expert_label_complete=False.
-        released_to_policy_action_names = [
-            name
-            for arm in ("left", "right")
-            if gripper_soft_takeover[arm].get("released_to_policy", False)
-            for name in [gripper_action_keys.get(arm)]
-            if name is not None
-        ]
-        expert_action_missing_names = sorted(
-            set(expert_action_missing_names) | set(released_to_policy_action_names)
-        )
-        expert_action = _complete_action_dict(expert_action_raw, action_names, fallback_action={})
-        last_action_source = action_source
+            # (1) Policy inference.
+            policy_action = predict_action(
+                observation=observation_frame,
+                policy=policy,
+                device=get_safe_torch_device(policy.config.device),
+                preprocessor=preprocessor,
+                postprocessor=postprocessor,
+                use_amp=policy.config.use_amp,
+                task=single_task,
+                robot_type=robot.robot_type,
+            )
+            policy_action_processed = make_robot_action(policy_action, dataset.features)
+            policy_action_processed = _complete_action_dict(policy_action_processed, action_names)
+            policy_action_processed = normalize_gripper_command_keys(policy_action_processed, gripper_action_keys)
+            policy_action_processed = _apply_phase_action_gate(
+                policy_action_processed,
+                phase_machine=phase_machine,
+                phase_conditioning=phase_conditioning,
+                gripper_keys=gripper_action_keys,
+                frame_idx=frame_idx,
+                source="run_mix_policy",
+            )
 
-        reset_requested = bool(teleop_raw_action.get("reset_requested", False))
-        waiting_only = bool(override_reasons) and all("waiting" in reason for reason in override_reasons)
-        expert_label_complete = (
-            bool(is_expert)
-            and not waiting_only
-            and not reset_requested
-            and len(expert_action_missing_names) == 0
-        )
-        if is_expert and not waiting_only:
-            if not intervention_active:
-                intervention_segment_id += 1
-                intervention_count += 1
-                frame_role = "takeover_start"
-            else:
-                frame_role = "recovery"
-            if reset_requested:
-                frame_role = "reset"
-            frame_segment_id = intervention_segment_id
-            intervention_active = True
-        elif waiting_only:
-            frame_role = "ignore"
-            frame_segment_id = -1
-            intervention_active = False
-        else:
+            # (2) Default execute policy action. Teleop may override selected channels below.
+            exec_action = dict(policy_action_processed)
+            action_source = "policy"
+            is_expert = False
             frame_role = "policy"
             frame_segment_id = -1
-            intervention_active = False
 
-        logging.debug(
-            "[run_mix] action_source=%s frame_role=%s segment=%s reason=%s"
-            " left_grip=%s right_grip=%s reset=%s",
-            action_source,
-            frame_role,
-            frame_segment_id,
-            ",".join(override_reasons) if override_reasons else "no_channel_override_signal",
-            teleop_raw_action.get("left_grip_pressed", False),
-            teleop_raw_action.get("right_grip_pressed", False),
-            teleop_raw_action.get("reset_requested", False),
-        )
+            # (3) Expert override is split by channel: arm/body and grippers are independent.
+            teleop_raw_action = teleop.get_action()
+            expert_action_raw = normalize_gripper_command_keys(
+                dict(teleop_action_processor((teleop_raw_action, raw_obs))),
+                gripper_action_keys,
+            )
+            for arm, key in gripper_action_keys.items():
+                if key in expert_action_raw or key in missing_gripper_warning_keys:
+                    continue
+                logging.warning(
+                    "[run_mix] expert action is missing expected %s gripper key `%s`; "
+                    "known aliases are %s. This frame will not be a complete expert label.",
+                    arm,
+                    key,
+                    list(GRIPPER_COMMAND_KEY_CANDIDATES[arm]),
+                )
+                missing_gripper_warning_keys.add(key)
+            expert_action_missing_names = _missing_or_invalid_action_names(expert_action_raw, action_names)
+            expert_action = dict(expert_action_raw)
+            is_arm_override, arm_override_reason = _is_arm_override_active(teleop_raw_action)
+            gripper_request_reasons = {
+                arm: _gripper_request_reason(
+                    arm,
+                    teleop_raw_action,
+                    last_teleop_raw_action,
+                    gripper_soft_takeover,
+                    gripper_action_keys,
+                )
+                for arm in ("left", "right")
+            }
 
-        last_teleop_raw_action = teleop_raw_action
+            override_reasons: list[str] = []
+            overridden_action_names: set[str] = set()
 
-        # (4) Execute action.
-        robot_action_to_send = robot_action_processor((exec_action, raw_obs))
-        sent_action = normalize_gripper_command_keys(
-            _complete_action_dict(dict(robot_action_to_send), action_names, fallback_action=exec_action),
-            gripper_action_keys,
-        )
-        sent_action_raw = robot.send_action(sent_action)
-        sent_action = normalize_gripper_command_keys(
-            _complete_action_dict(
-                dict(sent_action_raw or sent_action),
-                action_names,
-                fallback_action=exec_action,
-            ),
-            gripper_action_keys,
-        )
-        last_exec_action = dict(sent_action)
+            if is_arm_override:
+                overridden_action_names.update(_copy_arm_channels(exec_action, expert_action))
+                override_reasons.append(arm_override_reason)
+                # Flush policy temporal state only for arm/body interventions. Gripper-only
+                # control should not disturb policy arm motion.
+                policy.reset()
 
-        if action_source in {"expert", "mixed"}:
-            expert_exec_steps += 1
-        else:
-            policy_exec_steps += 1
-        if expert_label_complete:
-            complete_expert_label_steps += 1
+            for arm, gripper_reason in gripper_request_reasons.items():
+                gripper_overridden, gripper_override_reason = _apply_gripper_channel_control(
+                    arm=arm,
+                    target_action=exec_action,
+                    expert_action=expert_action,
+                    raw_obs=raw_obs,
+                    last_exec_action=last_exec_action,
+                    last_teleop_raw_action=last_teleop_raw_action,
+                    fallback_action=policy_action_processed,
+                    state=gripper_soft_takeover,
+                    gripper_request_reason=gripper_reason,
+                    hold_without_manual=is_arm_override,
+                    gripper_keys=gripper_action_keys,
+                )
+                if gripper_overridden and gripper_override_reason is not None:
+                    gripper_key = gripper_action_keys.get(arm)
+                    if gripper_key is not None:
+                        overridden_action_names.add(gripper_key)
+                    override_reasons.append(gripper_override_reason)
 
-        # Raw run_mix logs intentionally keep the full timeline. `action` remains
-        # the actual mixed command sent to the robot; export later rewrites
-        # `action = expert_action` only when expert_label_complete=True.
-        if dataset is not None:
+            if override_reasons:
+                action_source = (
+                    "expert"
+                    if action_names and overridden_action_names.issuperset(set(action_names))
+                    else "mixed"
+                )
+                is_expert = True
+                if last_action_source == "policy":
+                    logging.info(
+                        "[run_mix] source->%s (teleop override). reason=%s",
+                        action_source,
+                        ", ".join(override_reasons),
+                    )
+            elif last_action_source in {"expert", "mixed"}:
+                logging.info(
+                    "[run_mix] source->policy (no expert override detected). last_reason=%s",
+                    "no_channel_override_signal",
+                )
+                _reset_gripper_soft_takeover(gripper_soft_takeover)
+
+            _clip_gripper_channels(exec_action, gripper_action_keys)
+            # Keep the expert label independent from policy/sent action. Missing
+            # dimensions are zero-filled only so the raw LeRobot schema can be
+            # written; export drops these rows via expert_label_complete=False.
+            released_to_policy_action_names = [
+                name
+                for arm in ("left", "right")
+                if gripper_soft_takeover[arm].get("released_to_policy", False)
+                for name in [gripper_action_keys.get(arm)]
+                if name is not None
+            ]
+            expert_action_missing_names = sorted(
+                set(expert_action_missing_names) | set(released_to_policy_action_names)
+            )
+            expert_action = _complete_action_dict(expert_action_raw, action_names, fallback_action={})
+            last_action_source = action_source
+
+            reset_requested = bool(teleop_raw_action.get("reset_requested", False))
+            waiting_only = bool(override_reasons) and all("waiting" in reason for reason in override_reasons)
+            expert_label_complete = (
+                bool(is_expert)
+                and not waiting_only
+                and not reset_requested
+                and len(expert_action_missing_names) == 0
+            )
+            if is_expert and not waiting_only:
+                if not intervention_active:
+                    intervention_segment_id += 1
+                    intervention_count += 1
+                    frame_role = "takeover_start"
+                else:
+                    frame_role = "recovery"
+                if reset_requested:
+                    frame_role = "reset"
+                frame_segment_id = intervention_segment_id
+                intervention_active = True
+            elif waiting_only:
+                frame_role = "ignore"
+                frame_segment_id = -1
+                intervention_active = False
+            else:
+                frame_role = "policy"
+                frame_segment_id = -1
+                intervention_active = False
+
+            logging.debug(
+                "[run_mix] action_source=%s frame_role=%s segment=%s reason=%s"
+                " left_grip=%s right_grip=%s reset=%s",
+                action_source,
+                frame_role,
+                frame_segment_id,
+                ",".join(override_reasons) if override_reasons else "no_channel_override_signal",
+                teleop_raw_action.get("left_grip_pressed", False),
+                teleop_raw_action.get("right_grip_pressed", False),
+                teleop_raw_action.get("reset_requested", False),
+            )
+
+            last_teleop_raw_action = teleop_raw_action
+
+            # (4) Execute action.
+            robot_action_to_send = robot_action_processor((exec_action, raw_obs))
+            sent_action = normalize_gripper_command_keys(
+                _complete_action_dict(dict(robot_action_to_send), action_names, fallback_action=exec_action),
+                gripper_action_keys,
+            )
+            sent_action_raw = robot.send_action(sent_action)
+            sent_action = normalize_gripper_command_keys(
+                _complete_action_dict(
+                    dict(sent_action_raw or sent_action),
+                    action_names,
+                    fallback_action=exec_action,
+                ),
+                gripper_action_keys,
+            )
+            last_exec_action = dict(sent_action)
+
+            if action_source in {"expert", "mixed"}:
+                expert_exec_steps += 1
+            else:
+                policy_exec_steps += 1
+            if expert_label_complete:
+                complete_expert_label_steps += 1
+
+            # Raw run_mix logs intentionally keep the full timeline. `action` remains
+            # the actual mixed command sent to the robot; export later rewrites
+            # `action = expert_action` only when expert_label_complete=True.
             action_frame = build_dataset_frame(dataset.features, sent_action, prefix=ACTION)
             policy_action_frame = build_dataset_frame(
                 dataset.features,
@@ -1317,12 +1503,16 @@ def run_mix_record_loop(
             dataset.add_frame(frame)
             saved_steps += 1
 
-        if display_data:
-            log_rerun_data(observation=obs_processed, action=sent_action)
+            if display_data:
+                log_rerun_data(observation=obs_processed, action=sent_action)
 
-        dt_s = time.perf_counter() - loop_start_t
-        busy_wait(1 / fps - dt_s)
-        timestamp_s = time.perf_counter() - start_episode_t
+            dt_s = time.perf_counter() - loop_start_t
+            busy_wait(1 / fps - dt_s)
+            timestamp_s = time.perf_counter() - start_episode_t
+            frame_idx += 1
+    finally:
+        if phase_machine is not None:
+            phase_machine.close()
 
     return {
         "expert_exec_steps": expert_exec_steps,
@@ -1466,6 +1656,28 @@ def run_record(record_cfg: RecordConfig):
         action_features = hw_to_dataset_features(robot.action_features, "action")
         obs_features = hw_to_dataset_features(robot.observation_features, "observation", use_video=True)
         dataset_features = {**action_features, **obs_features}
+        if record_cfg.run_mode in POLICY_RUN_MODES:
+            _extend_dataset_features_for_phase_conditioning(
+                dataset_features,
+                record_cfg.phase_conditioning,
+            )
+            _validate_dataset_state_dim_against_checkpoint(
+                dataset_features=dataset_features,
+                policy_cfg=record_cfg.policy,
+                phase_cfg=record_cfg.phase_conditioning,
+            )
+            if record_cfg.phase_conditioning.enabled:
+                state_feature = dataset_features[OBS_STATE_KEY]
+                checkpoint_state_dim = _local_checkpoint_expected_state_dim(
+                    record_cfg.policy.pretrained_path
+                )
+                logging.info(
+                    "[phase_conditioning] enabled: observation.state dim=%s phase_names=%s "
+                    "checkpoint_expected_dim=%s",
+                    tuple(state_feature["shape"]),
+                    list(PHASE_NAMES),
+                    checkpoint_state_dim,
+                )
         if record_cfg.run_mode == RUN_MODE_MIX:
             # Extend dataset schema for DAgger mixed collection metadata.
             action_feature = dataset_features[ACTION]
@@ -1639,6 +1851,8 @@ def run_record(record_cfg: RecordConfig):
                     control_time_s=record_cfg.episode_time_sec,
                     single_task=record_cfg.task_description,
                     display_data=record_cfg.display,
+                    phase_conditioning=record_cfg.phase_conditioning,
+                    right_gripper_max_open=record_cfg.right_gripper_max_open,
                     success_policy=record_cfg.success_policy,
                 )
                 mix_stats["episode_index"] = episode_idx
@@ -1652,6 +1866,23 @@ def run_record(record_cfg: RecordConfig):
                     mix_stats["expert_frame_ratio"],
                     mix_stats["intervention_count"],
                     mix_stats["complete_expert_label_steps"],
+                )
+            elif record_cfg.run_mode == RUN_MODE_POLICY:
+                run_policy_record_loop(
+                    robot=robot,
+                    policy=policy,
+                    preprocessor=preprocessor,
+                    postprocessor=postprocessor,
+                    dataset=dataset,
+                    robot_action_processor=robot_action_processor,
+                    robot_observation_processor=robot_observation_processor,
+                    events=events,
+                    fps=record_cfg.fps,
+                    control_time_s=record_cfg.episode_time_sec,
+                    single_task=record_cfg.task_description,
+                    display_data=record_cfg.display,
+                    phase_conditioning=record_cfg.phase_conditioning,
+                    right_gripper_max_open=record_cfg.right_gripper_max_open,
                 )
             else:
                 record_loop(
@@ -1849,6 +2080,7 @@ def dry_run_policy_config(cfg_path: Path) -> RecordConfig:
     return record_cfg
 
 
+
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description="Record LeRobot dual-arm data.")
     parser.add_argument(
@@ -1869,10 +2101,19 @@ def main(argv: list[str] | None = None):
         action="store_true",
         help="Run minimal in-process checks for the policy config loader, then exit.",
     )
+    parser.add_argument(
+        "--self-test-phase-conditioning",
+        action="store_true",
+        help="Run in-process checks for phase-conditioned observation injection and state switching.",
+    )
     args = parser.parse_args(argv)
 
     if args.self_test_policy_config:
         self_test_policy_config_loader()
+        return
+
+    if args.self_test_phase_conditioning:
+        self_test_phase_conditioning()
         return
 
     if args.dry_run_policy_config:

@@ -1,0 +1,37 @@
+# Online inference phase conditioning.
+# Set enabled=false for old checkpoints/datasets.
+# Enable only for a single policy trained on observation.state with appended:
+# [phase_right_arm, phase_left_arm].
+phase_conditioning:
+  enabled: true
+  mode: two_phase_active_arm
+  initial_phase: right_arm
+  reset_policy_on_switch: true
+  log_phase_state: true
+  debug_csv: null
+
+  # Runtime safety gate for deployment: right phase zeros left-arm deltas,
+  # left phase zeros right-arm deltas. It does not change the policy network.
+  active_arm_action_gate:
+    enabled: true
+    zero_inactive_arm_delta_pose: true
+    zero_inactive_arm_gripper: false
+    log_action_norms: true
+
+  switch_right_to_left:
+    enabled: true
+    require_right_gripper_open: true
+    right_gripper_open_threshold: 0.8
+    # Avoid switching immediately when an episode starts with the right gripper already open.
+    require_right_gripper_closed_once: true
+    right_gripper_closed_threshold: 0.2
+
+    require_right_arm_stable: true
+    stable_source: measured_ee_pose
+    right_delta_trans_threshold: 0.001
+    right_delta_rot_threshold: 0.005
+    right_ee_speed_threshold: 0.01
+    stable_window_frames: 10
+
+    dwell_frames: 15
+    min_phase_frames: 120

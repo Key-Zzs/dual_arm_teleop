@@ -8,7 +8,7 @@
 device: cuda  # common: cuda | cpu. Validated by PreTrainedConfig/torch availability; cuda:N is normalized by policy_config_utils.
 use_amp: false  # AMP flag on policy config. Custom run_train uses Accelerator, but keep explicit for saved config semantics.
 n_obs_steps: 1  # ACT supports exactly 1; ACTConfig raises if n_obs_steps != 1.
-chunk_size: 15  # int > 0. ACT predicted action chunk length and training target sequence length.
+chunk_size: 20  # int > 0. ACT predicted action chunk length and training target sequence length.
 
 # =========================
 # Model / policy architecture
@@ -18,8 +18,8 @@ normalization_mapping:  # supported modes: MIN_MAX | MEAN_STD | IDENTITY | QUANT
   STATE: MEAN_STD  # Used by preprocessor robot state normalization.
   ACTION: MEAN_STD  # Used by training targets and action unnormalization.
 
-vision_backbone: resnet18  # must start with "resnet"; passed to torchvision.models.<vision_backbone>: resnet18/34 | resnet50(untested)
-pretrained_backbone_weights: ResNet18_Weights.IMAGENET1K_V1  # options not enumerated in LeRobot; passed to torchvision backbone weights.
+vision_backbone: resnet34  # must start with "resnet"; passed to torchvision.models.<vision_backbone>: resnet18/34 | resnet50(untested)
+pretrained_backbone_weights: ResNet34_Weights.IMAGENET1K_V1  # options not enumerated in LeRobot; passed to torchvision backbone weights.
 replace_final_stride_with_dilation: false  # ResNet layer4 stride/dilation option. Note: true increases feature map size and may cause OOM.
 
 pre_norm: false  # Transformer pre-norm switch.

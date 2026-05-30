@@ -131,10 +131,10 @@ This directory keeps LeRobot policy abstractions and implementations such as `ac
 
 The most commonly used policy config files in this package are:
 
-- `scripts/policy_config/act_train_config.yaml`: ACT training config.
-- `scripts/policy_config/act_reason_config.yaml`: ACT inference/deployment config.
-- `scripts/policy_config/diffusion_train_config.yaml`: Diffusion Policy training config.
-- `scripts/policy_config/diffusion_reason_config.yaml`: Diffusion Policy inference/deployment config.
+- `scripts/config/policy_config/act_train_config.yaml`: ACT training config.
+- `scripts/config/policy_config/act_reason_config.yaml`: ACT inference/deployment config.
+- `scripts/config/policy_config/diffusion_train_config.yaml`: Diffusion Policy training config.
+- `scripts/config/policy_config/diffusion_reason_config.yaml`: Diffusion Policy inference/deployment config.
 
 `scripts/core/policy_config_utils.py` resolves policy config paths from `record_cfg.yaml`, `train_cfg.yaml`, or `dagger_rounds_cfg.yaml`. Relative paths are resolved first against this package root, and absolute paths are also supported.
 
@@ -165,7 +165,7 @@ Each concrete robot class implements the robot interface expected by LeRobot, su
 Hardware-specific parameters should usually live in config files instead of runtime scripts:
 
 ```text
-scripts/DAS_config
+scripts/config/DAS_config
 ```
 
 For example, `nero_cofig.yaml` defines the Nero robot IP, port, gripper parameters, Oculus mapping, and camera serial numbers. `run_record.py`, `run_replay.py`, and `reset_robot.py` automatically load the corresponding DAS config based on `record.robot_type`. You can also explicitly set `das_config_path` in `record_cfg.yaml`.
@@ -182,8 +182,8 @@ Common directories:
 
 - `scripts/core`: command entry implementations for record, replay, visualize, reset, train, and DAgger.
 - `scripts/config`: main workflow configs, including `record_cfg.yaml`, `train_cfg.yaml`, and `dagger_rounds_cfg.yaml`.
-- `scripts/policy_config`: policy hyperparameter configs, split into train and reason configs.
-- `scripts/DAS_config`: hardware and teleoperation detail configs.
+- `scripts/config/policy_config`: policy hyperparameter configs, split into train and reason configs.
+- `scripts/config/DAS_config`: hardware and teleoperation detail configs.
 - `scripts/tools`: dataset checks, RealSense device checks, dataset patching, renaming, and related utilities.
 
 Core config files:
@@ -242,7 +242,7 @@ Before data collection, usually edit `scripts/config/record_cfg.yaml`:
 - `record.time`: max episode duration, reset duration, and metadata save period.
 - `replay`, `visualize`: default dataset and episode used by replay and visualization.
 
-Hardware parameters are usually edited in `scripts/DAS_config/*.yaml`:
+Hardware parameters are usually edited in `scripts/config/DAS_config/*.yaml`:
 
 - `teleop.oculus_config.ip`: Oculus Quest IP.
 - `teleop.oculus_config.*_pose_scaler` and `*_channel_signs`: mapping from left/right controllers to robot actions.
@@ -292,7 +292,7 @@ After installation, the app appears in the Oculus Quest library under **Unknown 
 
 ### Configure Oculus Teleoperation
 
-Set the Oculus IP and mapping in the selected DAS config, for example `scripts/DAS_config/nero_cofig.yaml`:
+Set the Oculus IP and mapping in the selected DAS config, for example `scripts/config/DAS_config/nero_cofig.yaml`:
 
 ```yaml
 teleop:
@@ -363,7 +363,7 @@ adb install -r teleoperators/oculus_teleoperator/oculus/oculus_reader/oculus_rea
 ```bash
 cd Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop
 
-# 1. Show camera serial numbers and fill them into scripts/DAS_config/*.yaml
+# 1. Show camera serial numbers and fill them into scripts/config/DAS_config/*.yaml
 tools-check-rs
 
 # 2. Check that policy configs resolve correctly. Recommended before run_policy/run_mix

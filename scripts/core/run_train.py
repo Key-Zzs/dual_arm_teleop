@@ -221,10 +221,17 @@ class TrainPipelineConfig(HubMixin):
             str(policy["device"]) if policy.get("device") is not None else None
         )
     
-        self.dataset: DatasetConfig = DatasetConfig(
-            repo_id = dataset["repo_id"],
-            root = dataset["root"]
-            )
+        dataset_kwargs: dict[str, Any] = {
+            "repo_id": dataset["repo_id"],
+            "root": dataset.get("root"),
+        }
+        for key in ("episodes", "revision", "use_imagenet_stats", "video_backend", "streaming"):
+            if key in dataset and dataset[key] is not None:
+                dataset_kwargs[key] = dataset[key]
+        if "video_backend" in dataset_kwargs:
+            dataset_kwargs["video_backend"] = str(dataset_kwargs["video_backend"]).strip().lower()
+
+        self.dataset: DatasetConfig = DatasetConfig(**dataset_kwargs)
 
         # self.env: envs.EnvConfig | None = envs.EnvConfig(
         #     env_name = env["env_name"],

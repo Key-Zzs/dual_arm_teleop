@@ -17,9 +17,9 @@ teleop:
     visualize_placo: false # whether to visualize robot using placo
 
 robot:
-  # robot_ip: "192.168.110.203" # dobot server ip
+  robot_ip: "192.168.110.203" # dobot server ip
   # robot_ip: "localhost" # nero server ip
-  robot_ip: "10.10.10.1" # dobot server ip
+  # robot_ip: "10.10.10.1" # dobot server ip
   robot_port: 4242 # dual-arm zerorpc port (single port for both arms)
   use_gripper: true
   # gripper_ip: "192.168.110.15" # gripper zerorpc ip, if different from robot_ip, set to robot_ip
