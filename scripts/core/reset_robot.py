@@ -34,7 +34,7 @@ def _load_robot_cfg_from_das(robot_type: str) -> Dict[str, Any]:
             "No DAS_config mapping is defined for robot_type="
             f"{robot_type!r}. Add record.robot or extend ROBOT_DETAIL_CONFIG_FILES."
         )
-    das_config_path = _default_scripts_dir() / "DAS_config" / config_name
+    das_config_path = _default_scripts_dir() / "config" / "DAS_config" / config_name
     with open(das_config_path, "r") as f:
         loaded = yaml.safe_load(f)
     if not isinstance(loaded, dict):
