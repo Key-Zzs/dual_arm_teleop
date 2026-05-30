@@ -138,13 +138,13 @@ class NeroDualArm(Robot):
             logger.info("\n===== [GRIPPER] Initializing grippers =====")
             # self._robot.left_gripper_initialize()
             self._robot.left_gripper_goto(
-                width=self.config.gripper_max_open,
+                width=self._get_gripper_max_open("left"),
                 force=self._gripper_force
             )
             logger.info("[LEFT GRIPPER] Initialized successfully")
             # self._robot.right_gripper_initialize()
             self._robot.right_gripper_goto(
-                width=self.config.gripper_max_open,
+                width=self._get_gripper_max_open("right"),
                 force=self._gripper_force
                 )
             self._left_gripper_cmd = 1.0
@@ -165,11 +165,11 @@ class NeroDualArm(Robot):
         
         if self.config.use_gripper:
             self._robot.left_gripper_goto(
-                width=self.config.gripper_max_open,
+                width=self._get_gripper_max_open("left"),
                 force=self._gripper_force
             )
             self._robot.right_gripper_goto(
-                width=self.config.gripper_max_open,
+                width=self._get_gripper_max_open("right"),
                 force=self._gripper_force
             )
             self._left_gripper_cmd = 1.0
@@ -234,6 +234,18 @@ class NeroDualArm(Robot):
     def _clip_gripper_cmd(value: float) -> float:
         return min(1.0, max(0.0, float(value)))
 
+    def _get_gripper_max_open(self, arm_side: str) -> float:
+        if arm_side == "left":
+            max_open = self.config.left_gripper_max_open
+        elif arm_side == "right":
+            max_open = self.config.right_gripper_max_open
+        else:
+            raise ValueError(f"Unsupported arm_side: {arm_side!r}")
+
+        if max_open is None:
+            return float(self.config.gripper_max_open)
+        return float(max_open)
+
     def handle_gripper(self, arm_side: str, gripper_value: float, is_binary: bool = False) -> None:
         if not self.config.use_gripper:
             return
@@ -252,18 +264,19 @@ class NeroDualArm(Robot):
         if last_cmd is not None and abs(gripper_cmd - last_cmd) < 1e-3:
             return
         
+        max_open = self._get_gripper_max_open(arm_side)
         try:
             if arm_side == "left":
                 self._robot.left_gripper_goto(
-                    width=gripper_cmd * self.config.gripper_max_open,
+                    width=gripper_cmd * max_open,
                     force=self._gripper_force
                 )
             else:
                 self._robot.right_gripper_goto(
-                    width=gripper_cmd * self.config.gripper_max_open,
+                    width=gripper_cmd * max_open,
                     force=self._gripper_force
                 )
-            # print(f"width: {gripper_cmd * self.config.gripper_max_open}")
+            # print(f"width: {gripper_cmd * max_open}")
             setattr(self, gripper_cmd_attr, gripper_cmd)
         except Exception as e:
             logger.warning(f"[{arm_side.upper()} GRIPPER] zerorpc error: {e}")
@@ -278,16 +291,6 @@ class NeroDualArm(Robot):
         # Check for reset request
         if action.get("reset_requested", False):
             logger.info("[ROBOT] Reset requested for dual-arm system...")
-            self._robot.robot_go_home()
-            if self.config.use_gripper:
-                self._robot.left_gripper_goto(
-                    width=self.config.gripper_max_open,
-                    force=self._gripper_force
-                )
-                self._robot.right_gripper_goto(
-                    width=self.config.gripper_max_open,
-                    force=self._gripper_force
-                )
             self.reset()
             return action
 

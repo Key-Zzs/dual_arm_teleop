@@ -247,7 +247,7 @@ robot-dagger-export --config scripts/config/dagger_rounds_cfg.yaml
 - `teleop.oculus_config.ip`：Oculus Quest IP。
 - `teleop.oculus_config.*_pose_scaler` 和 `*_channel_signs`：左右手柄到机器人动作的映射。
 - `robot.robot_ip`、`robot.robot_port`：机器人服务地址。
-- `robot.use_gripper` 和夹爪参数：夹爪启用、开合阈值、最大开口和力。
+- `robot.use_gripper` 和夹爪参数：夹爪启用、开合阈值、默认最大开口、可选左右夹爪最大开口和力。
 - `cameras.*_serial`、`width`、`height`：RealSense 序列号和分辨率。
 
 训练前通常需要修改 `scripts/config/train_cfg.yaml`：
@@ -497,5 +497,5 @@ robot-record --config scripts/config/record_cfg.yaml
 - 右箭头：停止当前 episode 并保存。
 - 左箭头：丢弃当前 episode。
 - Esc：停止整个录制任务。
-- Enter：继续下一段遥操作或下一条 episode。
+- episode 保存或丢弃后会自动回 home；等待下一条时可用 Quest 调整机械臂、按 `A` 再次回 home，按右箭头开始下一条 episode。
 - Ctrl+C：中断并清理未完成数据集。
