@@ -41,18 +41,24 @@ DEFAULT_FEATURES = {
     "task_index": {},
 }
 LeRobotDataset = None
+get_feature_stats = None
+load_stats = None
+write_info = None
+write_stats = None
 _LEROBOT_IMPORT_ERROR: ModuleNotFoundError | None = None
 
 try:
+    from lerobot.datasets.compute_stats import get_feature_stats
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
-    from lerobot.datasets.utils import DEFAULT_FEATURES
+    from lerobot.datasets.utils import DEFAULT_FEATURES, load_stats, write_info, write_stats
 except ModuleNotFoundError as exc:  # pragma: no cover - support running from repo checkout
     _LEROBOT_IMPORT_ERROR = exc
     repo_root = Path(__file__).resolve().parents[4]
     sys.path.insert(0, str(repo_root / "src"))
     try:
+        from lerobot.datasets.compute_stats import get_feature_stats
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
-        from lerobot.datasets.utils import DEFAULT_FEATURES
+        from lerobot.datasets.utils import DEFAULT_FEATURES, load_stats, write_info, write_stats
     except ModuleNotFoundError as fallback_exc:
         _LEROBOT_IMPORT_ERROR = fallback_exc
 
@@ -76,7 +82,13 @@ LABEL_NAMES = {
 
 
 def _require_lerobot() -> None:
-    if LeRobotDataset is None:
+    if (
+        LeRobotDataset is None
+        or get_feature_stats is None
+        or load_stats is None
+        or write_info is None
+        or write_stats is None
+    ):
         raise ModuleNotFoundError(
             "LeRobot and its dataset dependencies are not importable in this Python environment. "
             "Activate the same environment used for LeRobot training/recording before running annotation."
@@ -733,6 +745,149 @@ def _create_output_dataset(
     )
 
 
+def _phase_lookup_by_dataset_index(source: LeRobotDataset, annotations: dict[int, EpisodeAnnotation]) -> np.ndarray:
+    phase_by_index = np.empty(int(source.meta.total_frames), dtype=np.int64)
+    for ep in source.meta.episodes:
+        ep_idx = int(ep["episode_index"])
+        start = int(ep["dataset_from_index"])
+        end = int(ep["dataset_to_index"])
+        phases = annotations[ep_idx].phases
+        if len(phases) != end - start:
+            raise ValueError(
+                f"Episode {ep_idx} phase length mismatch: {len(phases)} != {end - start}"
+            )
+        phase_by_index[start:end] = phases
+    return phase_by_index
+
+
+def _append_phase_to_copied_data_files(
+    source: LeRobotDataset,
+    output_root: Path,
+    annotations: dict[int, EpisodeAnnotation],
+    output_features: dict[str, dict],
+) -> tuple[dict[int, dict[str, np.ndarray]], dict[str, np.ndarray]]:
+    import pandas as pd
+
+    state_key = "observation.state"
+    expected_state_dim = int(tuple(output_features[state_key]["shape"])[0])
+    phase_by_index = _phase_lookup_by_dataset_index(source, annotations)
+    episode_state_chunks: dict[int, list[np.ndarray]] = {}
+    all_state_chunks: list[np.ndarray] = []
+
+    data_paths = sorted((output_root / "data").glob("chunk-*/*.parquet"))
+    if not data_paths:
+        raise FileNotFoundError(f"No data parquet files found under {output_root / 'data'}")
+
+    for data_path in data_paths:
+        df = pd.read_parquet(data_path)
+        row_indices = df["index"].to_numpy(dtype=np.int64)
+        phase_values = np.stack([_phase_one_hot(int(phase_by_index[idx])) for idx in row_indices])
+
+        if state_key in df:
+            states = np.stack(df[state_key].to_numpy()).astype(np.float32)
+            new_states = np.concatenate([states, phase_values], axis=1).astype(np.float32)
+        else:
+            new_states = phase_values.astype(np.float32)
+
+        if new_states.shape[1] != expected_state_dim:
+            raise ValueError(
+                f"{data_path} produced {state_key} dim {new_states.shape[1]}, "
+                f"expected {expected_state_dim}"
+            )
+
+        df[state_key] = [row.tolist() for row in new_states]
+        df.to_parquet(data_path, index=False)
+
+        episode_indices = df["episode_index"].to_numpy(dtype=np.int64)
+        for ep_idx in np.unique(episode_indices):
+            mask = episode_indices == ep_idx
+            episode_state_chunks.setdefault(int(ep_idx), []).append(new_states[mask])
+        all_state_chunks.append(new_states)
+
+    episode_state_stats = {
+        ep_idx: get_feature_stats(np.concatenate(chunks, axis=0), axis=0, keepdims=False)
+        for ep_idx, chunks in episode_state_chunks.items()
+    }
+    global_state_stats = get_feature_stats(np.concatenate(all_state_chunks, axis=0), axis=0, keepdims=False)
+    return episode_state_stats, global_state_stats
+
+
+def _rewrite_info_with_phase_feature(output_root: Path, output_features: dict[str, dict]) -> None:
+    info_path = output_root / "meta" / "info.json"
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    info.setdefault("features", {})["observation.state"] = copy.deepcopy(
+        output_features["observation.state"]
+    )
+    write_info(info, output_root)
+
+
+def _rewrite_stats_with_phase_state(output_root: Path, global_state_stats: dict[str, np.ndarray]) -> None:
+    stats = load_stats(output_root)
+    if stats is None:
+        raise ValueError(f"Copied dataset is missing stats.json: {output_root}")
+    stats["observation.state"] = global_state_stats
+    write_stats(stats, output_root)
+
+
+def _rewrite_episode_state_stats(
+    output_root: Path,
+    episode_state_stats: dict[int, dict[str, np.ndarray]],
+) -> None:
+    import pandas as pd
+
+    episode_paths = sorted((output_root / "meta" / "episodes").glob("chunk-*/*.parquet"))
+    if not episode_paths:
+        raise FileNotFoundError(
+            f"No episode metadata parquet files found under {output_root / 'meta' / 'episodes'}"
+        )
+
+    for episode_path in episode_paths:
+        df = pd.read_parquet(episode_path)
+        episode_indices = df["episode_index"].to_numpy(dtype=np.int64)
+        for stat_name in next(iter(episode_state_stats.values())).keys():
+            col = f"stats/observation.state/{stat_name}"
+            df[col] = [
+                np.asarray(episode_state_stats[int(ep_idx)][stat_name]).tolist()
+                for ep_idx in episode_indices
+            ]
+        df.to_parquet(episode_path, index=False)
+
+
+def _copy_source_dataset_with_phase(
+    source: LeRobotDataset,
+    *,
+    input_root: Path,
+    output_root: Path,
+    output_features: dict[str, dict],
+    annotations: dict[int, EpisodeAnnotation],
+    overwrite: bool,
+) -> None:
+    """Create a phase dataset without decoding or re-encoding videos.
+
+    Phase annotation only changes tabular state data. Copying source videos
+    byte-for-byte avoids introducing codec artifacts or changing video shard
+    boundaries while preserving the original camera streams.
+    """
+
+    if output_root.exists():
+        if not overwrite:
+            raise FileExistsError(
+                f"Output dataset already exists: {output_root}. Pass --overwrite to replace it."
+            )
+        shutil.rmtree(output_root)
+
+    shutil.copytree(input_root, output_root)
+    episode_state_stats, global_state_stats = _append_phase_to_copied_data_files(
+        source,
+        output_root,
+        annotations,
+        output_features,
+    )
+    _rewrite_info_with_phase_feature(output_root, output_features)
+    _rewrite_stats_with_phase_state(output_root, global_state_stats)
+    _rewrite_episode_state_stats(output_root, episode_state_stats)
+
+
 def _plot_episode(
     path: Path,
     annotation: EpisodeAnnotation,
@@ -1041,34 +1196,19 @@ def main() -> None:
                 logger.warning("[PLOT] %s", warning)
                 args.save_plots = False
 
-    output = None
     validation_warnings: list[str] = []
     if not args.dry_run:
         if output_root is None:
             raise ValueError("--output-root is required when not using --dry-run")
-        output = _create_output_dataset(
+        _copy_source_dataset_with_phase(
             source,
+            input_root=input_root,
             output_root=output_root,
-            output_repo_id=output_repo_id,
             output_features=output_features,
+            annotations=annotations,
             overwrite=bool(args.overwrite),
-            fps=int(round(fps)),
         )
-        try:
-            for ep in source.meta.episodes:
-                ep_idx = int(ep["episode_index"])
-                start = int(ep["dataset_from_index"])
-                end = int(ep["dataset_to_index"])
-                phases = annotations[ep_idx].phases
-                for local_idx, source_idx in enumerate(range(start, end)):
-                    item = source[int(source_idx)]
-                    frame = _frame_from_source_item(source, item, int(phases[local_idx]), output_features)
-                    output.add_frame(frame)
-                output.save_episode()
-                logger.info("[WRITE] episode %s copied with phase feature", ep_idx)
-        finally:
-            if output is not None:
-                output.finalize()
+        logger.info("[WRITE] dataset copied with phase feature; videos preserved byte-for-byte")
 
         validation_warnings = _validate_output_dataset(
             output_root=output_root,

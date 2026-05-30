@@ -48,7 +48,7 @@ record:
     # For ACT:
     type: "act"
     config_path: scripts/config/policy_config/act_reason_config.yaml
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/empty/act_20260529_E113_phase/checkpoints/last/pretrained_model"
+    pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/empty/act_20260529_E113_phase/checkpoints/last/pretrained_model"
     # For diffusion:
     # type: "diffusion"
     # config_path: scripts/config/policy_config/diffusion_reason_config.yaml

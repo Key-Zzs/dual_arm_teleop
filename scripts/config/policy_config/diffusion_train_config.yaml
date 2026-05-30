@@ -66,7 +66,7 @@ scheduler_warmup_steps: 500  # int >= 0. Warmup steps for DiffuserSchedulerConfi
 push_to_hub: false  # PreTrainedConfig default is true; keep explicit to avoid accidental model upload validation/push.
 use_amp: false  # AMP flag on policy config. Custom run_train uses Accelerator, but keep explicit for saved config semantics.
 pretrained_path: null  # null means train from scratch; set to a pretrained_model directory only for finetune.
-n_action_steps: 7  # int > 0 and <= horizon - n_obs_steps + 1. Not diffusion loss target length, but saved for rollout caching.
+n_action_steps: 4  # int > 0 and <= horizon - n_obs_steps + 1. Not diffusion loss target length, but saved for rollout caching.
 clip_sample: true  # inference scheduler behavior saved in config; clips denoised samples to +/- clip_sample_range.
 clip_sample_range: 1.0  # float. Scheduler clip magnitude used when clip_sample is true.
 
