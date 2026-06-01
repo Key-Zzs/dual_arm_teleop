@@ -40,6 +40,20 @@ train:
   # Number of workers for the dataloader.
   num_workers: 4
   batch_size: 32
+  keyframe_sampler:
+    # Optional action-window keyframe oversampling. Disabled by default; does not change loss weighting.
+    enabled: false
+    annotation_weight_column: "annotation.keyframe_weight"
+    annotation_event_column: "annotation.gripper_event"
+    positive_if_weight_gt: 1.0
+    positive_event_ids: [2, 5] # closing/opening
+    include_pre_post_events: true
+    positive_sample_weight: 3.0
+    normal_sample_weight: 1.0
+    max_sample_weight: 4.0
+    require_annotation: false
+    seed: 0
+    log_sampler_stats: true
   steps: 40_000
   eval_freq: 2_000
   log_freq: 500 # Nero historical value

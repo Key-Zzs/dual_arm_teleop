@@ -80,7 +80,12 @@ from lerobot.configs import parser
 from lerobot.configs.default import DatasetConfig, EvalConfig, WandBConfig
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.datasets.factory import make_dataset
-from lerobot.datasets.sampler import EpisodeAwareSampler
+from lerobot.datasets.sampler import (
+    EpisodeAwareSampler,
+    build_keyframe_weighted_sampler,
+    format_keyframe_sampler_stats,
+    keyframe_sampler_enabled,
+)
 from lerobot.datasets.utils import cycle
 from lerobot.envs.factory import make_env
 from lerobot.envs.utils import close_envs
@@ -287,6 +292,7 @@ class TrainPipelineConfig(HubMixin):
         # Number of workers for the dataloader.
         self.num_workers: int = cfg["num_workers"]
         self.batch_size: int = cfg["batch_size"]
+        self.keyframe_sampler: dict[str, Any] = dict(cfg.get("keyframe_sampler", {"enabled": False}))
         self.dagger_sampling: dict[str, Any] = dict(cfg.get("dagger_sampling", {"enabled": False}))
         self.steps: int = cfg["steps"]
         self.eval_freq: int = cfg["eval_freq"]
@@ -740,7 +746,34 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         shuffle = True
         sampler = None
 
+    keyframe_sampler_cfg = getattr(cfg, "keyframe_sampler", {"enabled": False})
     dagger_sampling_cfg = getattr(cfg, "dagger_sampling", {"enabled": False})
+    if (
+        keyframe_sampler_enabled(keyframe_sampler_cfg)
+        and isinstance(dagger_sampling_cfg, dict)
+        and dagger_sampling_cfg.get("enabled", False)
+    ):
+        raise ValueError(
+            "keyframe_sampler and DAgger source-aware sampler are both enabled. "
+            "Both use WeightedRandomSampler; disable one sampler before training."
+        )
+
+    if keyframe_sampler_enabled(keyframe_sampler_cfg):
+        if cfg.dataset.streaming:
+            raise ValueError("keyframe_sampler.enabled=true is not supported for streaming datasets.")
+        eligible_indices = sampler.indices if isinstance(sampler, EpisodeAwareSampler) else None
+        keyframe_sampler_result = build_keyframe_weighted_sampler(
+            dataset,
+            cfg.policy.action_delta_indices,
+            keyframe_sampler_cfg,
+            eligible_indices=eligible_indices,
+        )
+        if keyframe_sampler_cfg.get("log_sampler_stats", True) and is_main_process:
+            logging.info(format_keyframe_sampler_stats(keyframe_sampler_result.stats))
+        if keyframe_sampler_result.sampler is not None:
+            sampler = keyframe_sampler_result.sampler
+            shuffle = False
+
     if isinstance(dagger_sampling_cfg, dict) and dagger_sampling_cfg.get("enabled", False):
         if sampler is not None:
             logging.warning(
