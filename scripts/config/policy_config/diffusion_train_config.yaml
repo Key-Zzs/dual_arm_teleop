@@ -43,6 +43,22 @@ prediction_type: epsilon  # options: epsilon | sample. Selects diffusion loss ta
 # =========================
 drop_n_last_frames: 0  # int >= 0. Used by EpisodeAwareSampler; original default is horizon - n_action_steps - n_obs_steps + 1.
 do_mask_loss_for_padding: false  # training loss only. false matches original Diffusion Policy behavior.
+loss_weighting:  # Disabled by default. Set enabled=true to train DP with annotation horizon keyframe weights.
+  enabled: false
+  keyframe_weight_column: "annotation.keyframe_weight"
+  gripper_event_column: "annotation.gripper_event"
+  use_horizon_weight: true
+  use_action_dim_weight: true
+  gripper_dim_indices: [12, 13]  # Current dual-arm action[14] gripper dims; code does not hard-code these.
+  infer_gripper_dim_from_feature_names: true
+  gripper_dim_weight: 2.0
+  max_weight: 10.0
+  normalize_weighted_loss: true
+  apply_to_pose_dims: true
+  pose_keyframe_weight_scale: 1.0
+  apply_to_gripper_dims: true
+  gripper_keyframe_weight_scale: 1.0
+  log_weighted_loss_breakdown: true
 optimizer_lr: 0.0001  # Adam preset lr when use_policy_training_preset is true.
 optimizer_betas: [0.95, 0.999]  # Adam preset betas; two floats in [0, 1).
 optimizer_eps: 0.00000001  # Adam preset eps.
