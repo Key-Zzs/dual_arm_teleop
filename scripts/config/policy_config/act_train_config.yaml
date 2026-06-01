@@ -39,6 +39,18 @@ n_vae_encoder_layers: 4  # Number of transformer layers in the VAE encoder.
 # =========================
 kl_weight: 10  # training loss only when use_vae=true; loss = l1_loss + kl_weight * kld_loss.
 dropout: 0.1  # Dropout probability used in transformer layers during training.
+loss_weighting:  # Disabled by default. Set enabled=true to train ACT with annotation keyframe weights.
+  enabled: false
+  keyframe_weight_column: "annotation.keyframe_weight"
+  gripper_event_column: "annotation.gripper_event"
+  use_timestep_weight: true
+  use_action_dim_weight: true
+  gripper_dim_indices: [12, 13]  # Current dual-arm action[14] gripper dims; code does not hard-code these.
+  infer_gripper_dim_from_feature_names: true
+  gripper_dim_weight: 2.0
+  max_weight: 10.0
+  normalize_weighted_loss: true
+  log_weighted_loss_breakdown: true
 optimizer_lr: 0.00001  # AdamW preset lr when use_policy_training_preset is true.
 optimizer_weight_decay: 0.0001  # AdamW preset weight_decay.
 optimizer_lr_backbone: 0.00001  # ACT get_optim_params assigns this lr to model.backbone params.
