@@ -174,3 +174,14 @@ def test_event_breakdown_adds_opening_and_closing_metrics() -> None:
     assert "loss/gripper_l1" in metrics
     assert "loss/pose_l1" in metrics
     assert "loss/keyframe_ratio" in metrics
+    assert "loss/normal_ratio" in metrics
+    assert "loss/mean_annotation_weight" in metrics
+    assert "loss/max_effective_weight" in metrics
+    assert "loss/act_action_l1_unweighted" in metrics
+    assert "loss/act_action_l1_weighted" in metrics
+    assert "loss/act_keyframe_l1" in metrics
+    assert "loss/act_normal_l1" in metrics
+    assert "loss/act_gripper_l1" in metrics
+    assert "loss/act_pose_l1" in metrics
+    assert "loss/act_closing_l1" in metrics
+    assert "loss/act_opening_l1" in metrics

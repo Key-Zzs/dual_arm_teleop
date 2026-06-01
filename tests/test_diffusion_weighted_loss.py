@@ -172,6 +172,17 @@ def test_event_breakdown_adds_opening_and_closing_metrics() -> None:
     assert "loss/gripper_mse" in metrics
     assert "loss/pose_mse" in metrics
     assert "loss/keyframe_ratio" in metrics
+    assert "loss/normal_ratio" in metrics
+    assert "loss/mean_annotation_weight" in metrics
+    assert "loss/max_effective_weight" in metrics
+    assert "loss/dp_denoising_mse_unweighted" in metrics
+    assert "loss/dp_denoising_mse_weighted" in metrics
+    assert "loss/dp_keyframe_mse" in metrics
+    assert "loss/dp_normal_mse" in metrics
+    assert "loss/dp_gripper_mse" in metrics
+    assert "loss/dp_pose_mse" in metrics
+    assert "loss/dp_closing_mse" in metrics
+    assert "loss/dp_opening_mse" in metrics
 
 
 def test_diffusion_timestep_shaped_weight_is_not_used_as_horizon_weight() -> None:

@@ -54,6 +54,13 @@ train:
     require_annotation: false
     seed: 0
     log_sampler_stats: true
+  debug_metrics:
+    enabled: true
+    write_annotation_summary_json: true
+    write_sampler_summary_json: true
+    write_batch_metrics_preview: false
+    max_preview_batches: 5
+    plot_annotation_distribution: false
   steps: 40_000
   eval_freq: 2_000
   log_freq: 500 # Nero historical value

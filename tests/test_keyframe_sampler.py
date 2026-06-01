@@ -200,7 +200,7 @@ def test_real_annotated_dataset_smoke_if_present() -> None:
     if not root.is_dir():
         return
 
-    os.environ.setdefault("HF_DATASETS_CACHE", "/tmp/hf-datasets-cache")
+    os.environ["HF_DATASETS_CACHE"] = "/tmp/hf-datasets-cache"
 
     try:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
