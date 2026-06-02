@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import torch
 import torch.nn.functional as F  # noqa: N812
@@ -9,6 +11,7 @@ from lerobot.policies.diffusion.configuration_diffusion import (
     DiffusionLossWeightingConfig,
 )
 from lerobot.policies.diffusion.modeling_diffusion import (
+    DiffusionPolicy,
     compute_unweighted_denoising_mse_loss,
     compute_weighted_denoising_mse_loss,
     infer_gripper_dim_indices,
@@ -203,3 +206,25 @@ def test_diffusion_timestep_shaped_weight_is_not_used_as_horizon_weight() -> Non
 
     expected = F.mse_loss(pred, target)
     torch.testing.assert_close(loss, expected)
+
+
+def test_diffusion_policy_forward_accepts_scalar_loss_metrics() -> None:
+    class _FakeDiffusion:
+        def compute_loss_and_metrics(self, batch):
+            return torch.tensor(1.0), {
+                "loss/total": 1.0,
+                "loss/dp_denoising_mse_weighted": torch.tensor(2.0),
+            }
+
+    policy = SimpleNamespace(
+        config=SimpleNamespace(image_features={}),
+        diffusion=_FakeDiffusion(),
+    )
+
+    loss, loss_dict = DiffusionPolicy.forward(policy, {})
+
+    torch.testing.assert_close(loss, torch.tensor(1.0))
+    assert loss_dict == {
+        "loss/total": 1.0,
+        "loss/dp_denoising_mse_weighted": 2.0,
+    }

@@ -17,6 +17,17 @@ except ModuleNotFoundError:
 from lerobot.datasets.sampler import build_keyframe_weighted_sampler, compute_keyframe_sample_weights
 
 
+def _use_tmp_hf_datasets_cache() -> None:
+    cache_dir = Path("/tmp/hf-datasets-cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_DATASETS_CACHE"] = str(cache_dir)
+    try:
+        import datasets.config as datasets_config
+    except ModuleNotFoundError:
+        return
+    datasets_config.HF_DATASETS_CACHE = cache_dir
+
+
 class _FakeHFDataset:
     def __init__(self, data: dict[str, list[int | float]]) -> None:
         self.data = data
@@ -200,7 +211,7 @@ def test_real_annotated_dataset_smoke_if_present() -> None:
     if not root.is_dir():
         return
 
-    os.environ["HF_DATASETS_CACHE"] = "/tmp/hf-datasets-cache"
+    _use_tmp_hf_datasets_cache()
 
     try:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset

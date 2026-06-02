@@ -27,6 +27,17 @@ from lerobot.utils.keyframe_metrics import (
 )
 
 
+def _use_tmp_hf_datasets_cache() -> None:
+    cache_dir = Path("/tmp/hf-datasets-cache")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_DATASETS_CACHE"] = str(cache_dir)
+    try:
+        import datasets.config as datasets_config
+    except ModuleNotFoundError:
+        return
+    datasets_config.HF_DATASETS_CACHE = cache_dir
+
+
 class _FakeHFDataset:
     def __init__(self, data: dict[str, list[int | float]]) -> None:
         self.data = data
@@ -149,6 +160,7 @@ def test_real_annotated_dataset_summary_smoke_if_available() -> None:
     if not dataset_root.exists():
         pytest.skip(f"annotated dataset smoke skipped; path does not exist: {dataset_root}")
 
+    _use_tmp_hf_datasets_cache()
     pytest.importorskip("lerobot.datasets.lerobot_dataset")
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
