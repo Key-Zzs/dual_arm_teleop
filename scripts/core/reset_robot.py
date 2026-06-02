@@ -21,27 +21,27 @@ def _default_record_cfg_path() -> Path:
 
 
 ROBOT_DETAIL_CONFIG_FILES = {
-    "franka": "franka_config.yaml",
-    "franka_dual_arm": "franka_config.yaml",
-    "nero_dual_arm": "nero_cofig.yaml",
+    "franka": "franka_teleop.yaml",
+    "franka_dual_arm": "franka_teleop.yaml",
+    "nero_dual_arm": "nero_teleop.yaml",
 }
 
 
-def _load_robot_cfg_from_das(robot_type: str) -> Dict[str, Any]:
+def _load_robot_cfg_from_daq(robot_type: str) -> Dict[str, Any]:
     config_name = ROBOT_DETAIL_CONFIG_FILES.get(robot_type)
     if config_name is None:
         raise ValueError(
-            "No DAS_config mapping is defined for robot_type="
+            "No DAQ_config mapping is defined for robot_type="
             f"{robot_type!r}. Add record.robot or extend ROBOT_DETAIL_CONFIG_FILES."
         )
-    das_config_path = _default_scripts_dir() / "config" / "DAS_config" / config_name
-    with open(das_config_path, "r") as f:
+    daq_config_path = _default_scripts_dir() / "config" / "DAQ_config" / config_name
+    with open(daq_config_path, "r") as f:
         loaded = yaml.safe_load(f)
     if not isinstance(loaded, dict):
-        raise ValueError(f"DAS config must be a mapping: {das_config_path}")
+        raise ValueError(f"DAQ config must be a mapping: {daq_config_path}")
     detail_cfg = loaded.get("record", loaded)
     if not isinstance(detail_cfg, dict) or "robot" not in detail_cfg:
-        raise ValueError(f"DAS config must contain a `robot` mapping: {das_config_path}")
+        raise ValueError(f"DAQ config must contain a `robot` mapping: {daq_config_path}")
     return dict(detail_cfg["robot"])
 
 
@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None):
 
     record_cfg = cfg["record"]
     robot_type = record_cfg.get("robot_type", "dobot_dual_arm")
-    robot_cfg = dict(record_cfg.get("robot") or _load_robot_cfg_from_das(robot_type))
+    robot_cfg = dict(record_cfg.get("robot") or _load_robot_cfg_from_daq(robot_type))
     robot_cfg["debug"] = False
     
     # 创建机器人配置

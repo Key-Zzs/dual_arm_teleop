@@ -45,7 +45,7 @@ n_vae_encoder_layers: 4  # Kept to match checkpoint VAE encoder module structure
 # =========================
 # Inference-only parameters
 # =========================
-# temporal_ensemble_coeff: 0.05  # ACT inference only. null/non-positive disables; positive float enables smoothing and requires n_action_steps=1.
+# temporal_ensemble_coeff: 0.03  # ACT inference only. null/non-positive disables; positive float enables smoothing and requires n_action_steps=1.
 
 # =========================
 # Default semantic overrides / 默认语义补充

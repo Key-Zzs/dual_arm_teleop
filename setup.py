@@ -42,7 +42,10 @@ setup(
             "tools-check-dataset = scripts.tools.check_dataset_info:main",
             "tools-check-dagger-dataset = scripts.tools.check_dagger_dataset:main",
             "tools-check-rs = scripts.tools.rs_devices:main",
-
+            "tools-preprocess-dataset = scripts.tools.preprocess_dataset:main",
+            "tools-split-label-dataset = scripts.tools.split_label_dataset:main",
+            "tools-merge-datasets = scripts.tools.merge_lerobot_tasks:main",
+            
             # unified help command
             "robot-help = scripts.help.help_info:main",
         ]

@@ -21,27 +21,27 @@ def _default_record_cfg_path() -> Path:
 
 
 ROBOT_DETAIL_CONFIG_FILES = {
-    "franka": "franka_config.yaml",
-    "franka_dual_arm": "franka_config.yaml",
-    "nero_dual_arm": "nero_cofig.yaml",
+    "franka": "franka_teleop.yaml",
+    "franka_dual_arm": "franka_teleop.yaml",
+    "nero_dual_arm": "nero_teleop.yaml",
 }
 
 
-def _load_das_config(robot_type: str) -> Dict[str, Any]:
+def _load_daq_config(robot_type: str) -> Dict[str, Any]:
     config_name = ROBOT_DETAIL_CONFIG_FILES.get(robot_type)
     if config_name is None:
         raise ValueError(
-            "No DAS_config mapping is defined for robot_type="
+            "No DAQ_config mapping is defined for robot_type="
             f"{robot_type!r}. Add replay.robot or extend ROBOT_DETAIL_CONFIG_FILES."
         )
-    das_config_path = _default_scripts_dir() / "config" / "DAS_config" / config_name
-    with open(das_config_path, "r") as f:
+    daq_config_path = _default_scripts_dir() / "config" / "DAQ_config" / config_name
+    with open(daq_config_path, "r") as f:
         loaded = yaml.safe_load(f)
     if not isinstance(loaded, dict):
-        raise ValueError(f"DAS config must be a mapping: {das_config_path}")
+        raise ValueError(f"DAQ config must be a mapping: {daq_config_path}")
     detail_cfg = loaded.get("record", loaded)
     if not isinstance(detail_cfg, dict):
-        raise ValueError(f"DAS config `record` section must be a mapping: {das_config_path}")
+        raise ValueError(f"DAQ config `record` section must be a mapping: {daq_config_path}")
     return detail_cfg
 
 
@@ -51,7 +51,7 @@ def _hydrate_replay_robot_details(cfg: Dict[str, Any]) -> Dict[str, Any]:
     if "robot" in hydrated and hydrated.get("control_mode") is not None:
         return hydrated
 
-    detail_cfg = _load_das_config(robot_type)
+    detail_cfg = _load_daq_config(robot_type)
     hydrated.setdefault("robot", copy.deepcopy(detail_cfg["robot"]))
     teleop_cfg = detail_cfg.get("teleop", {})
     hydrated.setdefault("control_mode", teleop_cfg.get("control_mode", "oculus"))
