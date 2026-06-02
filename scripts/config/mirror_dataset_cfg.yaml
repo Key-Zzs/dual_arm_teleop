@@ -1,0 +1,94 @@
+dataset:
+  # src/dst can be absolute paths or paths relative to the current working directory.
+  # mirror_dataset.py keeps its built-in defaults repo-relative; this config may use absolute paths when needed.
+  src: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/dual_empty_merged_E100_cleaned"
+  dst: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/dual_empty_merged_E100_cleaned_mirrored"
+
+run:
+  dry_run: false
+  validate_only: false
+  overwrite: false
+  skip_video: false
+  skip_fk_check: false
+  num_vis_episodes: 2
+  num_vis_frames_per_episode: 2
+
+mirror:
+  reflection_axis: "y"
+  reflection_matrix: [1, 0, 0, 0, -1, 0, 0, 0, 1]
+
+cameras:
+  head:
+    src_key: "observation.images.head_image"
+    dst_key: "observation.images.head_image"
+    horizontal_flip: true
+  left_wrist:
+    src_key: "observation.images.left_wrist_image"
+    dst_key: "observation.images.left_wrist_image"
+    from_src_key: "observation.images.right_wrist_image"
+    horizontal_flip: true
+  right_wrist:
+    src_key: "observation.images.right_wrist_image"
+    dst_key: "observation.images.right_wrist_image"
+    from_src_key: "observation.images.left_wrist_image"
+    horizontal_flip: true
+
+state:
+  key: "observation.state"
+  layout:
+    - name: "left_joint"
+      slice: [0, 7]
+      type: "joint_left"
+    - name: "right_joint"
+      slice: [7, 14]
+      type: "joint_right"
+    - name: "left_ee_pose"
+      slice: [14, 20]
+      type: "ee_pose_left"
+      pose_format: "rotvec"
+    - name: "right_ee_pose"
+      slice: [20, 26]
+      type: "ee_pose_right"
+      pose_format: "rotvec"
+    - name: "left_gripper"
+      slice: [26, 27]
+      type: "gripper_left"
+    - name: "right_gripper"
+      slice: [27, 28]
+      type: "gripper_right"
+
+action:
+  key: "action"
+  mode: "delta"
+  layout:
+    - name: "left_delta_ee_pose"
+      slice: [0, 6]
+      type: "delta_ee_pose_left"
+      pose_format: "rotvec"
+    - name: "right_delta_ee_pose"
+      slice: [6, 12]
+      type: "delta_ee_pose_right"
+      pose_format: "rotvec"
+    - name: "left_gripper"
+      slice: [12, 13]
+      type: "gripper_left"
+    - name: "right_gripper"
+      slice: [13, 14]
+      type: "gripper_right"
+
+joint_mirror:
+  verified: true
+  verification_note: "Conservative Nero default inferred from initial mirrored-looking samples; verify against FK/URDF before production training."
+  left_joint_slice: [0, 7]
+  right_joint_slice: [7, 14]
+  left_from_right_sign: [-1, 1, -1, 1, -1, -1, 1]
+  right_from_left_sign: [-1, 1, -1, 1, -1, -1, 1]
+  left_from_right_offset: [0, 0, 0, 0, 0, 0, 0]
+  right_from_left_offset: [0, 0, 0, 0, 0, 0, 0]
+
+validation:
+  num_episodes: 5
+  num_frames_per_episode: 2
+  double_mirror_atol: 1.0e-6
+  pose_position_atol_m: 1.0e-5
+  pose_orientation_atol_rad: 1.0e-5

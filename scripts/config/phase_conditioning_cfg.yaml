@@ -3,7 +3,7 @@
 # Enable only for a single policy trained on observation.state with appended:
 # [phase_right_arm, phase_left_arm].
 phase_conditioning:
-  enabled: true
+  enabled: false
   mode: two_phase_active_arm
   initial_phase: right_arm
   reset_policy_on_switch: true

@@ -22,13 +22,13 @@ record:
   run_mode: "run_policy" # run_record | run_policy | run_mix
 
   # Robot type selection. Supported robots: dobot_dual_arm, franka_dual_arm, nero_dual_arm, arx_dual_arm, franka.
-  # Hardware-specific teleop / robot / cameras sections are loaded from scripts/config/DAS_config by robot_type.
+  # Hardware-specific data acquisition / teleop / robot / cameras sections are loaded from scripts/config/DAQ_config by robot_type.
   # robot_type: &robot_type "franka_dual_arm"
   robot_type: &robot_type "nero_dual_arm"
 
   # Optional explicit override if you do not want the robot_type default mapping:
-  # das_config_path: scripts/config/DAS_config/franka_config.yaml
-  # das_config_path: scripts/config/DAS_config/nero_cofig.yaml
+  # daq_config_path: scripts/config/DAQ_config/franka_teleop.yaml
+  # daq_config_path: scripts/config/DAQ_config/nero_teleop.yaml
 
   policy:
     # 策略类型: act | diffusion | dp | diffusion_policy
@@ -48,11 +48,13 @@ record:
     # For ACT:
     type: "act"
     config_path: scripts/config/policy_config/act_reason_config.yaml
-    pretrained_path: "/home/geist/wbcd_workspace/lerobot/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/empty/act_20260529_E113_phase/checkpoints/last/pretrained_model"
+    pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/dual_empty/act_20260602_E100_cleaned_annotated/checkpoints/last/pretrained_model"
     # For diffusion:
     # type: "diffusion"
     # config_path: scripts/config/policy_config/diffusion_reason_config.yaml
-    # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/2mL_empty_right/dp_20260523_E249_LastFrames0/checkpoints/last/pretrained_model"
+    # # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/dual_empty/dp_20260601_E100_cleaned/checkpoints/last/pretrained_model"
+    # # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/empty/dp_20260530_E113_phase/checkpoints/last/pretrained_model"
+    # pretrained_path: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/empty_right/dp_20260523_E249_Crop224/checkpoints/last/pretrained_model"
 
     # Policy hyperparameters have been moved to scripts/config/policy_config/*_reason_config.yaml.
 
@@ -76,12 +78,12 @@ record:
     push_to_hub: false # whether to push the dataset to your HuggingFace repo after recording
 
 replay:
-  dataset_name: nero_task3_step1/2mL_empty_20260430_v01
+  dataset_name: nero_task3_step1/empty_merged_E113_cleaned_mirrored
   episode_idx: 0 # episode index to replay
   reset_on_finish: true # replay结束后回home
   disconnect_on_finish: false # 默认不断开，避免触发server stop/e-stop
-  robot_type: *robot_type # robot details are loaded from scripts/config/DAS_config by robot_type
+  robot_type: *robot_type # robot details are loaded from scripts/config/DAQ_config by robot_type
 
 visualize:
-  dataset_name: nero_task3_step1/2mL_empty_20260430_v01
+  dataset_name: nero_task3_step1/empty_merged_E113_cleaned_mirrored
   episode_index: 0 # episode index to visualize

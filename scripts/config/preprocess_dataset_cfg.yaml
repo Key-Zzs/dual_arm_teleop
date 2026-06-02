@@ -1,13 +1,13 @@
 preprocess_dataset:
   source:
-    repo_id: "dual_franka_1/pick_up_and_seal_20260513_v01"
-    root: "/home/deepcybo/.cache/huggingface/lerobot/dual_franka_1/pick_up_and_seal_20260513_v01"
+    repo_id: "nero_task3_step1/dual_empty_merged_E100"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/dual_empty_merged_E100"
     episodes: null        # null means all episodes, or set e.g. [0, 1, 2]
     max_episodes: null    # optional quick-test limit
 
   output:
-    repo_id: "dual_franka_1/pick_up_and_seal_20260513_v01_cleaned"
-    root: "/home/deepcybo/.cache/huggingface/lerobot/dual_franka_1/pick_up_and_seal_20260513_v01_cleaned"
+    repo_id: "nero_task3_step1/dual_empty_merged_E100_cleaned"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/dual_empty_merged_E100_cleaned"
     overwrite: false
     image_writer_threads: 4
     batch_encoding_size: 1
