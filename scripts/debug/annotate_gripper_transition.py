@@ -7,12 +7,11 @@ only. With ``--export-annotated-copy`` it first copies the source dataset to a
 new root, then adds gripper transition annotation columns only in that copy.
 It never modifies the source dataset.
 
-python scripts/debug/annotate_gripper_transition.py \
-    --dataset-root /home/geist/.cache/huggingface/lerobot/nero_task3_step1/empty_merged_E113 \
-    --output-dir /home/geist/.cache/huggingface/lerobot/nero_task3_step1/empty_merged_E113/report   \
-    --max-episodes 10   \
-    --plot   \
-    --dry-run   \
+python dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/debug/annotate_gripper_transition.py   \
+    --dataset-root /home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/empty_merged_E113_cleaned   \
+    --output-dataset-root /home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/empty_merged_E113_cleaned_annotated   \
+    --export-annotated-copy   \
+    --copy-mode symlink   \
     --detector hysteresis   \
     --open-high true   \
     --open-threshold 0.9   \
@@ -23,8 +22,9 @@ python scripts/debug/annotate_gripper_transition.py \
     --expected-left-opening 2   \
     --expected-left-closing 2   \
     --expected-right-opening 2   \
-    --expected-right-closing 2 \
-    --overwrite
+    --expected-right-closing 2   \
+    --validate-output \
+    --overwrite-output
 """
 
 from __future__ import annotations

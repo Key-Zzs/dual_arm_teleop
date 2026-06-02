@@ -13,10 +13,10 @@ train:
       fail_if_cuda_unavailable: false
 
   dataset:
-    repo_id: "nero_task3_step1/empty_merged_E113_phase"
+    repo_id: "nero_task3_step1/empty_merged_E113_cleaned_annotated"
     # Local dataset directory. It should point to the dataset repo root.
     # root: "/home/deepcybo/.cache/huggingface/lerobot/franka_dual_arm/left_right_pick_merged_E150"
-    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/empty_merged_E113_phase"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/empty_merged_E113_cleaned_annotated"
     video_backend: "torchcodec" # torchcodec | pyav | video_reader
 
   env:
@@ -32,8 +32,8 @@ train:
 
     # Policy hyperparameters have been moved to scripts/config/policy_config/*_train_config.yaml.
 
-  output_dir: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/empty/act_20260530_E113_phase"
-  job_name: "act_empty_20260530_E113_phase"
+  output_dir: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/dual_empty/act_20260602_E113_cleaned_annotated"
+  job_name: "act_dual_empty_20260602_E113_cleaned_annotated"
 
   resume: false
   seed: 1000
