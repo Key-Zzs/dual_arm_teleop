@@ -18,7 +18,7 @@ normalization_mapping:  # supported modes: MIN_MAX | MEAN_STD | IDENTITY | QUANT
   ACTION: MIN_MAX  # Used by training targets and action unnormalization.
 
 vision_backbone: resnet18  # must start with "resnet"; passed to torchvision.models.<vision_backbone>.
-crop_shape: [160, 160]  # null or [H, W] with positive dims; must fit image features inferred from dataset metadata.
+crop_shape: [224, 224]  # null or [H, W] with positive dims; must fit image features inferred from dataset metadata.
 crop_is_random: false  # train-time random crop when true; eval/inference always center crops.
 pretrained_backbone_weights: null  # options not enumerated in LeRobot; passed to torchvision backbone weights.
 use_group_norm: true  # Diffusion RGB encoder option; cannot be true with pretrained_backbone_weights set.

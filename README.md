@@ -165,10 +165,10 @@ Each concrete robot class implements the robot interface expected by LeRobot, su
 Hardware-specific parameters should usually live in config files instead of runtime scripts:
 
 ```text
-scripts/config/DAS_config
+scripts/config/DAQ_config
 ```
 
-For example, `nero_cofig.yaml` defines the Nero robot IP, port, gripper parameters, Oculus mapping, and camera serial numbers. `run_record.py`, `run_replay.py`, and `reset_robot.py` automatically load the corresponding DAS config based on `record.robot_type`. You can also explicitly set `das_config_path` in `record_cfg.yaml`.
+For example, `nero_teleop.yaml` defines the Nero data acquisition settings, including robot IP, port, gripper parameters, Oculus mapping, and camera serial numbers. `run_record.py`, `run_replay.py`, and `reset_robot.py` automatically load the corresponding DAQ (Data Acquisition) config based on `record.robot_type`. You can also explicitly set `daq_config_path` in `record_cfg.yaml`.
 
 ### Tool Scripts, Data Collection, and Policy Configs
 
@@ -183,7 +183,7 @@ Common directories:
 - `scripts/core`: command entry implementations for record, replay, visualize, reset, train, and DAgger.
 - `scripts/config`: main workflow configs, including `record_cfg.yaml`, `train_cfg.yaml`, and `dagger_rounds_cfg.yaml`.
 - `scripts/config/policy_config`: policy hyperparameter configs, split into train and reason configs.
-- `scripts/config/DAS_config`: hardware and teleoperation detail configs.
+- `scripts/config/DAQ_config`: data acquisition, hardware, and teleoperation detail configs.
 - `scripts/tools`: dataset checks, RealSense device checks, dataset patching, renaming, and related utilities.
 
 Core config files:
@@ -216,6 +216,9 @@ After installing this package, `setup.py` registers these console commands:
 | `tools-check-dataset` | Inspect local LeRobot dataset information | Command arguments |
 | `tools-check-dagger-dataset` | Inspect an exported DAgger dataset | Command arguments |
 | `tools-check-rs` | Show RealSense device serial numbers | None |
+| `tools-preprocess-dataset` | Preprocess a LeRobot dataset, including static trimming and action smoothing | `scripts/config/preprocess_dataset_cfg.yaml` |
+| `tools-split-label-dataset` | Split long episodes into sub-episodes and generate/write semantic labels | `scripts/config/split_label_dataset_cfg.yaml` |
+| `tools-merge-datasets` | Merge local LeRobot datasets or task labels | Command arguments |
 | `robot-help` | Print the command summary | None |
 
 All core commands support an explicit config file. It is recommended to pass the path during debugging:
@@ -230,6 +233,27 @@ robot-dagger --config scripts/config/dagger_rounds_cfg.yaml
 robot-dagger-export --config scripts/config/dagger_rounds_cfg.yaml
 ```
 
+Common tool command examples:
+
+```bash
+# Preprocess a dataset; start with dry-run to inspect the planned output size
+tools-preprocess-dataset --config scripts/config/preprocess_dataset_cfg.yaml --dry-run
+tools-preprocess-dataset --config scripts/config/preprocess_dataset_cfg.yaml --overwrite
+
+# Split long episodes and generate semantic labels; add --write-dataset to write output data
+tools-split-label-dataset --config scripts/config/split_label_dataset_cfg.yaml --dry-run
+tools-split-label-dataset --config scripts/config/split_label_dataset_cfg.yaml --write-dataset --overwrite
+
+# Merge task labels; dry-run first to preview metadata changes
+tools-merge-datasets --dataset-root /path/to/dataset \
+  --source-task "source task prompt" \
+  --target-task "target task prompt" \
+  --dry-run
+
+# Show all registered commands
+robot-help
+```
+
 ## Configuration Checklist
 
 Before data collection, usually edit `scripts/config/record_cfg.yaml`:
@@ -242,7 +266,7 @@ Before data collection, usually edit `scripts/config/record_cfg.yaml`:
 - `record.time`: max episode duration, reset duration, and metadata save period.
 - `replay`, `visualize`: default dataset and episode used by replay and visualization.
 
-Hardware parameters are usually edited in `scripts/config/DAS_config/*.yaml`:
+Hardware and data acquisition parameters are usually edited in `scripts/config/DAQ_config/*.yaml`:
 
 - `teleop.oculus_config.ip`: Oculus Quest IP.
 - `teleop.oculus_config.*_pose_scaler` and `*_channel_signs`: mapping from left/right controllers to robot actions.
@@ -292,7 +316,7 @@ After installation, the app appears in the Oculus Quest library under **Unknown 
 
 ### Configure Oculus Teleoperation
 
-Set the Oculus IP and mapping in the selected DAS config, for example `scripts/config/DAS_config/nero_cofig.yaml`:
+Set the Oculus IP and mapping in the selected DAQ config, for example `scripts/config/DAQ_config/nero_teleop.yaml`:
 
 ```yaml
 teleop:
@@ -363,7 +387,7 @@ adb install -r teleoperators/oculus_teleoperator/oculus/oculus_reader/oculus_rea
 ```bash
 cd Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop
 
-# 1. Show camera serial numbers and fill them into scripts/config/DAS_config/*.yaml
+# 1. Show camera serial numbers and fill them into scripts/config/DAQ_config/*.yaml
 tools-check-rs
 
 # 2. Check that policy configs resolve correctly. Recommended before run_policy/run_mix
