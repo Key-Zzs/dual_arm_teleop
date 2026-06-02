@@ -47,7 +47,7 @@ loss_weighting:  # Disabled by default. Set enabled=true to train ACT with annot
   use_action_dim_weight: true
   gripper_dim_indices: [12, 13]  # Current dual-arm action[14] gripper dims; code does not hard-code these.
   infer_gripper_dim_from_feature_names: true
-  gripper_dim_weight: 1.5
+  gripper_dim_weight: 2.0
   max_weight: 8.0
   normalize_weighted_loss: true
   log_weighted_loss_breakdown: true

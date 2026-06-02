@@ -8,17 +8,17 @@ new root, then adds gripper transition annotation columns only in that copy.
 It never modifies the source dataset.
 
 python dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/debug/annotate_gripper_transition.py   \
-    --dataset-root /home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/empty_merged_E113_cleaned   \
-    --output-dataset-root /home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/empty_merged_E113_cleaned_annotated   \
+    --dataset-root /home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/dual_empty_merged_E100_cleaned   \
+    --output-dataset-root /home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/dual_empty_merged_E100_cleaned_annotated   \
     --export-annotated-copy   \
     --copy-mode symlink   \
     --detector hysteresis   \
     --open-high true   \
     --open-threshold 0.9   \
-    --close-threshold 0.2   \
+    --close-threshold 0.1   \
     --event-frame reached_state   \
-    --pre-window 10   \
-    --post-window 6   \
+    --pre-window 60   \
+    --post-window 30   \
     --expected-left-opening 2   \
     --expected-left-closing 2   \
     --expected-right-opening 2   \
