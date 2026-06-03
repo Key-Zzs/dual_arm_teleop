@@ -13,11 +13,13 @@ train:
       fail_if_cuda_unavailable: false
 
   dataset:
-    repo_id: "nero_task3_step1/dual_empty_merged_E100_c_a"
+    repo_id: "nero_task3_step1_random/2mL_empty_right"
     # Local dataset directory. It should point to the dataset repo root.
     # root: "/home/deepcybo/.cache/huggingface/lerobot/franka_dual_arm/left_right_pick_merged_E150"
-    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/dual_empty_merged_E100_cleaned_annotated"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125"
     video_backend: "torchcodec" # torchcodec | pyav | video_reader
+    # Corrupt video packets found by full dataset decode scan; the training sampler skips these dataset indices.
+    skip_indices: [10076, 16318, 16319, 19159, 19182, 19183]
 
   env:
 
@@ -32,8 +34,8 @@ train:
 
     # Policy hyperparameters have been moved to scripts/config/policy_config/*_train_config.yaml.
 
-  output_dir: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1/dual_empty/act_20260602_E100_cleaned_annotated"
-  job_name: "act_dual_empty_20260602_E100_c_a"
+  output_dir: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1_random/2mL_empty_right/dp_20260603_E125"
+  job_name: "dp_2mL_empty_right_20260603_E125"
 
   resume: false
   seed: 1000
@@ -61,12 +63,12 @@ train:
     write_batch_metrics_preview: false
     max_preview_batches: 5
     plot_annotation_distribution: false
-  steps: 40_000
+  steps: 80_000
   eval_freq: 2_000
   log_freq: 500 # Nero historical value
   save_checkpoint: true
   # Checkpoint is saved every `save_freq` training iterations and after the last training step.
-  save_freq: 10_000
+  save_freq: 20_000
   use_policy_training_preset: true
 
   eval:

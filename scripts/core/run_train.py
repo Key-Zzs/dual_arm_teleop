@@ -246,6 +246,14 @@ class TrainPipelineConfig(HubMixin):
             dataset_kwargs["video_backend"] = str(dataset_kwargs["video_backend"]).strip().lower()
 
         self.dataset: DatasetConfig = DatasetConfig(**dataset_kwargs)
+        raw_skip_indices = dataset.get("skip_indices", [])
+        if raw_skip_indices is None:
+            raw_skip_indices = []
+        if isinstance(raw_skip_indices, int):
+            raw_skip_indices = [raw_skip_indices]
+        self.dataset_skip_indices: tuple[int, ...] = tuple(
+            sorted({int(index) for index in raw_skip_indices})
+        )
 
         # self.env: envs.EnvConfig | None = envs.EnvConfig(
         #     env_name = env["env_name"],
@@ -756,6 +764,45 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
         shuffle = True
         sampler = None
 
+    dataset_skip_indices = set(getattr(cfg, "dataset_skip_indices", ()))
+    if dataset_skip_indices:
+        invalid_skip_indices = sorted(
+            index for index in dataset_skip_indices if index < 0 or index >= len(dataset)
+        )
+        if invalid_skip_indices:
+            raise ValueError(
+                "train.dataset.skip_indices contains indices outside the dataset range: "
+                f"{invalid_skip_indices}. Dataset length is {len(dataset)}."
+            )
+
+        before_skip_count = len(sampler) if sampler is not None else len(dataset)
+        if sampler is None:
+            eligible_indices = [
+                index for index in range(len(dataset)) if index not in dataset_skip_indices
+            ]
+            sampler = torch.utils.data.SubsetRandomSampler(eligible_indices)
+            shuffle = False
+        else:
+            sampler_indices = getattr(sampler, "indices", None)
+            if sampler_indices is None:
+                raise ValueError(
+                    "train.dataset.skip_indices can only be combined with samplers exposing an "
+                    "`indices` attribute."
+                )
+            sampler.indices = [
+                int(index) for index in sampler_indices if int(index) not in dataset_skip_indices
+            ]
+        after_skip_count = len(sampler)
+        if is_main_process:
+            logging.warning(
+                "Skipping %d configured dataset indices during training: %s. "
+                "Eligible samples: %d -> %d.",
+                len(dataset_skip_indices),
+                sorted(dataset_skip_indices),
+                before_skip_count,
+                after_skip_count,
+            )
+
     keyframe_sampler_cfg = getattr(cfg, "keyframe_sampler", {"enabled": False})
     dagger_sampling_cfg = getattr(cfg, "dagger_sampling", {"enabled": False})
     debug_metrics_cfg = normalize_debug_metrics_config(getattr(cfg, "debug_metrics", None))
@@ -779,7 +826,7 @@ def run_train(cfg: TrainPipelineConfig, accelerator: Accelerator | None = None):
     if keyframe_sampler_enabled(keyframe_sampler_cfg):
         if cfg.dataset.streaming:
             raise ValueError("keyframe_sampler.enabled=true is not supported for streaming datasets.")
-        eligible_indices = sampler.indices if isinstance(sampler, EpisodeAwareSampler) else None
+        eligible_indices = getattr(sampler, "indices", None) if sampler is not None else None
         keyframe_sampler_result = build_keyframe_weighted_sampler(
             dataset,
             cfg.policy.action_delta_indices,

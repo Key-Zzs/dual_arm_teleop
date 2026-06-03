@@ -40,7 +40,7 @@ n_vae_encoder_layers: 4  # Number of transformer layers in the VAE encoder.
 kl_weight: 10  # training loss only when use_vae=true; loss = l1_loss + kl_weight * kld_loss.
 dropout: 0.1  # Dropout probability used in transformer layers during training.
 loss_weighting:  # Disabled by default. Set enabled=true to train ACT with annotation keyframe weights.
-  enabled: true
+  enabled: false
   keyframe_weight_column: "annotation.keyframe_weight"
   gripper_event_column: "annotation.gripper_event"
   use_timestep_weight: true

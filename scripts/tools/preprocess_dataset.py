@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 
 import argparse
+import json
 import logging
 import shutil
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,12 @@ import yaml
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import DEFAULT_FEATURES
+from lerobot.datasets.video_utils import VideoEncodingManager, decode_video_frames
+
+try:
+    from lerobot.datasets.video_utils import _default_decoder_cache
+except ImportError:  # pragma: no cover - compatibility with older LeRobot versions.
+    _default_decoder_cache = None
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
@@ -20,6 +28,13 @@ logger = logging.getLogger(__name__)
 def _load_config(path: Path) -> dict[str, Any]:
     with open(path, "r") as f:
         return yaml.safe_load(f)["preprocess_dataset"]
+
+
+def _positive_int(value: Any, name: str) -> int:
+    value = int(value)
+    if value <= 0:
+        raise ValueError(f"{name} must be > 0. Got {value}.")
+    return value
 
 
 def _as_path_or_none(value: str | None) -> Path | None:
@@ -65,6 +80,20 @@ def _select_episodes(dataset: LeRobotDataset, cfg: dict[str, Any]) -> list[int]:
     max_episodes = cfg["source"].get("max_episodes")
     if max_episodes is not None:
         episodes = episodes[: int(max_episodes)]
+    if not episodes:
+        raise ValueError("No source episodes selected.")
+
+    valid = set(range(dataset.meta.total_episodes))
+    invalid = sorted(set(episodes) - valid)
+    if invalid:
+        raise ValueError(
+            f"Invalid source episode indices: {invalid}. "
+            f"Dataset has episodes 0..{dataset.meta.total_episodes - 1}."
+        )
+
+    duplicates = sorted({ep for ep in episodes if episodes.count(ep) > 1})
+    if duplicates:
+        raise ValueError(f"Duplicate source episodes are not supported: {duplicates}.")
     return episodes
 
 
@@ -276,6 +305,209 @@ def _frame_from_source_item(
     return frame
 
 
+def _apply_output_chunk_settings(output: LeRobotDataset, output_cfg: dict[str, Any]) -> None:
+    chunk_settings = {
+        key: output_cfg.get(key)
+        for key in ("chunks_size", "data_files_size_in_mb", "video_files_size_in_mb")
+        if output_cfg.get(key) is not None
+    }
+    if not chunk_settings:
+        return
+
+    output.meta.update_chunk_settings(
+        chunks_size=(
+            _positive_int(chunk_settings["chunks_size"], "output.chunks_size")
+            if "chunks_size" in chunk_settings
+            else None
+        ),
+        data_files_size_in_mb=(
+            _positive_int(
+                chunk_settings["data_files_size_in_mb"],
+                "output.data_files_size_in_mb",
+            )
+            if "data_files_size_in_mb" in chunk_settings
+            else None
+        ),
+        video_files_size_in_mb=(
+            _positive_int(
+                chunk_settings["video_files_size_in_mb"],
+                "output.video_files_size_in_mb",
+            )
+            if "video_files_size_in_mb" in chunk_settings
+            else None
+        ),
+    )
+
+
+def _validate_pending_image_files(output: LeRobotDataset, expected_frames: int) -> None:
+    if len(output.meta.camera_keys) == 0:
+        return
+
+    output._wait_image_writer()
+    errors: list[str] = []
+    for key in output.meta.camera_keys:
+        paths = [Path(path) for path in output.episode_buffer.get(key, [])]
+        if len(paths) != expected_frames:
+            errors.append(f"{key}: expected {expected_frames} image paths, found {len(paths)}")
+            continue
+
+        missing = [path for path in paths if not path.is_file()]
+        empty = [path for path in paths if path.is_file() and path.stat().st_size == 0]
+        if missing:
+            preview = ", ".join(str(path) for path in missing[:3])
+            errors.append(f"{key}: {len(missing)} missing image file(s), e.g. {preview}")
+        if empty:
+            preview = ", ".join(str(path) for path in empty[:3])
+            errors.append(f"{key}: {len(empty)} empty image file(s), e.g. {preview}")
+
+    if errors:
+        raise RuntimeError(
+            "Image writing failed before episode encoding:\n" + "\n".join(f"- {err}" for err in errors)
+        )
+
+
+def _sample_verification_indices(num_frames: int, verify_cfg: dict[str, Any]) -> list[int]:
+    if num_frames <= 0:
+        return []
+    if bool(verify_cfg.get("full_scan", True)):
+        return list(range(num_frames))
+
+    sample_count = int(verify_cfg.get("sample_count", 512))
+    if sample_count <= 0:
+        return []
+    if sample_count >= num_frames:
+        return list(range(num_frames))
+    return sorted({int(idx) for idx in np.linspace(0, num_frames - 1, sample_count)})
+
+
+def _scalar(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.item() if value.shape == () or value.size == 1 else value[0]
+    return value
+
+
+def _probe_video_keys(
+    dataset: LeRobotDataset,
+    idx: int,
+    backend: str,
+) -> list[dict[str, Any]]:
+    item = dataset.hf_dataset[idx]
+    ep_idx = int(_scalar(item["episode_index"]))
+    timestamp = float(_scalar(item["timestamp"]))
+    ep = dataset.meta.episodes[ep_idx]
+    results: list[dict[str, Any]] = []
+
+    for key in dataset.meta.video_keys:
+        from_ts = float(ep[f"videos/{key}/from_timestamp"])
+        shifted_ts = from_ts + timestamp
+        video_path = dataset.root / dataset.meta.get_video_file_path(ep_idx, key)
+        try:
+            if backend == "torchcodec" and _default_decoder_cache is not None:
+                _default_decoder_cache.clear()
+            decode_video_frames(video_path, [shifted_ts], dataset.tolerance_s, backend)
+            status = "ok"
+            error = None
+        except Exception as exc:
+            status = "failed"
+            error = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
+
+        results.append(
+            {
+                "video_key": key,
+                "status": status,
+                "error": error,
+                "video_path": str(video_path),
+                "query_timestamp": shifted_ts,
+            }
+        )
+
+    if _default_decoder_cache is not None:
+        _default_decoder_cache.clear()
+    return results
+
+
+def _verify_output_dataset(
+    cfg: dict[str, Any],
+    expected_frames: int,
+    expected_episodes: int,
+) -> None:
+    verify_cfg = cfg.get("verification", {}) or {}
+    if not verify_cfg.get("enabled", True):
+        logger.info("[VERIFY] skipped by config")
+        return
+
+    output_cfg = cfg["output"]
+    output_root = _as_path_or_none(output_cfg.get("root"))
+    backend = str(
+        verify_cfg.get("video_backend") or output_cfg.get("video_backend") or "torchcodec"
+    ).strip().lower()
+    output = LeRobotDataset(
+        output_cfg["repo_id"],
+        root=output_root,
+        video_backend=backend,
+    )
+
+    if output.meta.total_frames != expected_frames:
+        raise RuntimeError(
+            "Output frame count mismatch after preprocessing: "
+            f"metadata has {output.meta.total_frames}, expected {expected_frames}."
+        )
+    if output.meta.total_episodes != expected_episodes:
+        raise RuntimeError(
+            "Output episode count mismatch after preprocessing: "
+            f"metadata has {output.meta.total_episodes}, expected {expected_episodes}."
+        )
+
+    indices = _sample_verification_indices(len(output), verify_cfg)
+    logger.info(
+        "[VERIFY] decoding %d/%d frame(s) with backend=%s",
+        len(indices),
+        len(output),
+        backend,
+    )
+
+    failures: list[dict[str, Any]] = []
+    max_failures = int(verify_cfg.get("max_failures", 20))
+    for position, idx in enumerate(indices, start=1):
+        try:
+            output[idx]
+        except Exception as exc:
+            item = output.hf_dataset[idx]
+            record = {
+                "idx": int(idx),
+                "episode_index": int(_scalar(item["episode_index"])),
+                "frame_index": int(_scalar(item["frame_index"])),
+                "timestamp": float(_scalar(item["timestamp"])),
+                "error": f"{type(exc).__name__}: {str(exc).splitlines()[0]}",
+                "video_keys": _probe_video_keys(output, int(idx), backend),
+            }
+            failures.append(record)
+            logger.error("[VERIFY FAIL] %s", record)
+            if len(failures) >= max_failures:
+                break
+
+        if position % 5000 == 0:
+            logger.info("[VERIFY] decoded %d/%d frame(s)", position, len(indices))
+
+    if failures:
+        report_path = output.root / "meta" / "preprocess_validation_failures.json"
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(report_path, "w") as f:
+            json.dump(failures, f, indent=2)
+        message = (
+            f"Output dataset verification found {len(failures)} decode failure(s). "
+            f"Report written to {report_path}."
+        )
+        if verify_cfg.get("fail_on_error", True):
+            raise RuntimeError(message)
+        logger.warning(message)
+        return
+
+    logger.info("[VERIFY] OK")
+
+
 def _create_output_dataset(source: LeRobotDataset, cfg: dict[str, Any]) -> LeRobotDataset:
     _assert_output_is_separate_from_source(source, cfg)
     output_cfg = cfg["output"]
@@ -289,7 +521,7 @@ def _create_output_dataset(source: LeRobotDataset, cfg: dict[str, Any]) -> LeRob
                 "Set output.overwrite=true to replace it."
             )
 
-    return LeRobotDataset.create(
+    output = LeRobotDataset.create(
         repo_id=output_cfg["repo_id"],
         root=output_root,
         fps=source.fps,
@@ -302,7 +534,10 @@ def _create_output_dataset(source: LeRobotDataset, cfg: dict[str, Any]) -> LeRob
         use_videos=len(source.meta.video_keys) > 0,
         image_writer_threads=int(output_cfg.get("image_writer_threads", 4)),
         batch_encoding_size=int(output_cfg.get("batch_encoding_size", 1)),
+        video_backend=output_cfg.get("video_backend"),
     )
+    _apply_output_chunk_settings(output, output_cfg)
+    return output
 
 
 def preprocess_dataset(cfg: dict[str, Any]) -> None:
@@ -310,17 +545,23 @@ def preprocess_dataset(cfg: dict[str, Any]) -> None:
     source = LeRobotDataset(
         source_cfg["repo_id"],
         root=_as_path_or_none(source_cfg.get("root")),
+        video_backend=source_cfg.get("video_backend"),
     )
     episodes = _select_episodes(source, cfg)
     action_names = source.features["action"]["names"]
     dry_run = bool(cfg.get("dry_run", False))
+    quality_cfg = cfg.get("quality", {}) or {}
+    min_output_frames = int(quality_cfg.get("min_output_frames", 1))
+    drop_short_episodes = bool(quality_cfg.get("drop_short_episodes", False))
 
     output = None if dry_run else _create_output_dataset(source, cfg)
     total_in = 0
     total_out = 0
+    written_episodes = 0
 
-    try:
-        for new_ep_idx, ep_idx in enumerate(episodes):
+    context = nullcontext() if dry_run else VideoEncodingManager(output)
+    with context:
+        for ep_idx in episodes:
             ep = source.meta.episodes[int(ep_idx)]
             start = int(ep["dataset_from_index"])
             end = int(ep["dataset_to_index"])
@@ -333,19 +574,29 @@ def preprocess_dataset(cfg: dict[str, Any]) -> None:
             keep_indices = np.flatnonzero(keep_mask) + start
 
             total_in += end - start
-            total_out += len(keep_indices)
             logger.info(
                 "[EP %s -> %s] frames %d -> %d (%.1f%% kept), motion=%.1f%% gripper_keep=%.1f%%",
                 ep_idx,
-                new_ep_idx,
+                written_episodes,
                 end - start,
                 len(keep_indices),
                 100.0 * len(keep_indices) / max(end - start, 1),
                 100.0 * float(motion.mean()) if len(motion) else 0.0,
                 100.0 * float(gripper_keep.mean()) if len(gripper_keep) else 0.0,
             )
+            if len(keep_indices) < min_output_frames:
+                message = (
+                    f"Episode {ep_idx} would produce only {len(keep_indices)} frame(s); "
+                    f"min_output_frames={min_output_frames}."
+                )
+                if drop_short_episodes:
+                    logger.warning("[SKIP] %s", message)
+                    continue
+                raise RuntimeError(message)
 
             if dry_run:
+                total_out += len(keep_indices)
+                written_episodes += 1
                 continue
 
             for source_idx in keep_indices:
@@ -353,13 +604,18 @@ def preprocess_dataset(cfg: dict[str, Any]) -> None:
                 item = source[int(source_idx)]
                 frame = _frame_from_source_item(source, item, smoothed_actions[local_idx])
                 output.add_frame(frame)
+            _validate_pending_image_files(output, len(keep_indices))
             output.save_episode()
-    finally:
-        if output is not None:
-            output.finalize()
+            total_out += len(keep_indices)
+            written_episodes += 1
+
+    if not dry_run:
+        _verify_output_dataset(cfg, total_out, written_episodes)
 
     logger.info(
-        "[DONE] frames %d -> %d (%.1f%% kept)%s",
+        "[DONE] episodes %d -> %d, frames %d -> %d (%.1f%% kept)%s",
+        len(episodes),
+        written_episodes,
         total_in,
         total_out,
         100.0 * total_out / max(total_in, 1),

@@ -1,18 +1,35 @@
 preprocess_dataset:
   source:
-    repo_id: "nero_task3_step1/dual_empty_merged_E100"
-    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/dual_empty_merged_E100"
+    repo_id: "nero_task3_step1_random/2mL_empty_right"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125"
     episodes: null        # null means all episodes, or set e.g. [0, 1, 2]
     max_episodes: null    # optional quick-test limit
+    video_backend: "torchcodec" # torchcodec | pyav | video_reader
 
   output:
-    repo_id: "nero_task3_step1/dual_empty_merged_E100_cleaned"
-    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1/dual_empty_merged_E100_cleaned"
+    repo_id: "nero_task3_step1_random/2mL_empty_right"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125_cleaned"
     overwrite: false
     image_writer_threads: 4
     batch_encoding_size: 1
+    video_backend: "torchcodec"
+    # Keep output videos small. This avoids repeatedly stream-copy concatenating many AV1 episode clips
+    # into one long mp4, which can create rare packets that fail random-access decoding during training.
+    video_files_size_in_mb: 1
 
   dry_run: false
+
+  quality:
+    min_output_frames: 1
+    drop_short_episodes: false
+
+  verification:
+    enabled: true
+    video_backend: "torchcodec"
+    full_scan: true
+    sample_count: 512
+    max_failures: 20
+    fail_on_error: true
 
   # 1) Compress long no-motion spans instead of deleting every zero-action frame.
   static_trim:
