@@ -25,6 +25,10 @@ Tool Commands:
                          Split long LeRobot episodes and label sub-episodes
   tools-merge-datasets
                          Merge or repair task labels in a local LeRobot dataset
+  tools-annotate-dataset-phase
+                         Append active-arm phase features to a dataset copy
+  tools-annotate-gripper-transition
+                         Export gripper transition reports or annotated copy
 
 Shell Tools:
   check_robotiq_ports.sh  Get Robotiq gripper serial ports

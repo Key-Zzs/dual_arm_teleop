@@ -624,7 +624,7 @@ def preprocess_dataset(cfg: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    default_cfg = Path(__file__).resolve().parents[1] / "config" / "preprocess_dataset_cfg.yaml"
+    default_cfg = Path(__file__).resolve().parents[1] / "config" / "dataset_config" / "preprocess_dataset_cfg.yaml"
     parser = argparse.ArgumentParser(description="Preprocess a LeRobot dataset for ACT training.")
     parser.add_argument("--config", type=Path, default=default_cfg)
     parser.add_argument("--dry-run", action="store_true", help="Only report frame counts; do not write output.")

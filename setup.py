@@ -1,11 +1,11 @@
-from setuptools import setup, find_packages
+from setuptools import setup, find_namespace_packages
 
 setup(
     name="dual_arm_teleop",
     version="0.1.0",
     description="dual-arm teleoperation and dataset collection utilities",
     python_requires=">=3.10",
-    packages=find_packages(
+    packages=find_namespace_packages(
         where=".",
         include=[
             "scripts*",
@@ -17,8 +17,18 @@ setup(
             "lerobot_robot_agilex_nero*",
             "lerobot_teleoperator_oculus*",
         ],
+        exclude=[
+            "*.__pycache__",
+            "*.__pycache__.*",
+        ],
     ),
     include_package_data=True,
+    package_data={
+        "scripts": [
+            "config/*.yaml",
+            "config/*/*.yaml",
+        ],
+    },
     install_requires=[
         "send2trash",
         "pyrealsense2",
@@ -26,6 +36,7 @@ setup(
         "zerorpc",
         "numpy",
         "easyhid",
+        "PyYAML",
     ],
     entry_points={
         "console_scripts": [
@@ -45,6 +56,8 @@ setup(
             "tools-preprocess-dataset = scripts.tools.preprocess_dataset:main",
             "tools-split-label-dataset = scripts.tools.split_label_dataset:main",
             "tools-merge-datasets = scripts.tools.merge_lerobot_tasks:main",
+            "tools-annotate-dataset-phase = scripts.tools.annotate_dataset_phase:main",
+            "tools-annotate-gripper-transition = scripts.tools.annotate_gripper_transition:main",
             
             # unified help command
             "robot-help = scripts.help.help_info:main",

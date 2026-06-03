@@ -17,7 +17,7 @@ Usage:
 
   # Use a different config, or override src/dst from CLI.
   python dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/tools/mirror_dataset.py \
-      --config dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/mirror_dataset_cfg.yaml \
+      --config dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/dataset_config/mirror_dataset_cfg.yaml \
       --src dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/src_dataset \
       --dst dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/src_dataset_mirrored \
       --dry-run
@@ -46,7 +46,7 @@ DEFAULT_SRC = Path(
 )
 DEFAULT_DST = DEFAULT_SRC.with_name(DEFAULT_SRC.name + "_mirrored")
 DEFAULT_CONFIG = Path(
-    "dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/mirror_dataset_cfg.yaml"
+    "dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/config/dataset_config/mirror_dataset_cfg.yaml"
 )
 
 
@@ -76,9 +76,14 @@ def parse_args() -> argparse.Namespace:
 
 def resolve_config_path(path: Path) -> Path:
     path = path.expanduser()
-    if path.exists() or path.is_absolute():
+    if path.exists():
         return path
-    script_relative = Path(__file__).resolve().parents[1] / "config" / path.name
+    migrated = path.parent / "dataset_config" / path.name
+    if migrated.exists():
+        return migrated
+    if path.is_absolute():
+        return path
+    script_relative = Path(__file__).resolve().parents[1] / "config" / "dataset_config" / path.name
     if script_relative.exists():
         return script_relative
     return path

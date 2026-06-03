@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import numpy as np
 
 TELEOP_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = TELEOP_ROOT / "scripts" / "debug" / "annotate_gripper_transition.py"
+SCRIPT_PATH = TELEOP_ROOT / "scripts" / "tools" / "annotate_gripper_transition.py"
 
 spec = importlib.util.spec_from_file_location("annotate_gripper_transition", SCRIPT_PATH)
 assert spec is not None and spec.loader is not None

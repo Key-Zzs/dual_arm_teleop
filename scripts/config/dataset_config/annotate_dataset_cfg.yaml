@@ -1,0 +1,91 @@
+annotate_dataset_phase:
+  # [required] Source dataset to read; the script never edits this dataset in place.
+  input_root:
+  # [required unless dry_run=true] Destination copy with phase_right_arm/phase_left_arm appended.
+  output_root:
+  # [optional] Local repo id override for LeRobot metadata loading/writing.
+  repo_id:
+  # [choices] two_phase_active_arm: append phase_right_arm and phase_left_arm from active-arm inference.
+  phase_mode: "two_phase_active_arm"
+  # [default] Action slices used to score left/right arm Cartesian motion.
+  left_delta_slice: "0:6"
+  right_delta_slice: "6:12"
+  # [optional] Gripper action dims used only for report hints.
+  left_gripper_dim:
+  right_gripper_dim:
+  # [default] Motion thresholds for deciding whether each arm is active.
+  trans_threshold: 0.001
+  rot_threshold: 0.005
+  # [default] Higher values require one arm to dominate more strongly.
+  dominance_ratio: 1.2
+  # [optional] FPS override; empty means use dataset metadata or fallback.
+  fps:
+  # [default] Segment cleanup timing controls in seconds.
+  min_active_sec: 0.3
+  max_idle_gap_sec: 0.5
+  # [default] Odd moving-average window for dominance smoothing.
+  smooth_window: 31
+  # [choices] true: use main right-to-left boundary heuristic; false: rely only on motion segments.
+  use_main_boundary: true
+  # [choices] save_report true: write JSON/CSV reports; false: skip report files.
+  # [choices] save_plots true: write diagnostic plots; false: skip plots.
+  save_report: true
+  save_plots: true
+  # [choices] true: replace existing output_root; false: fail if output_root already exists.
+  overwrite: false
+  # [choices] true: compute reports/plots only; false: write annotated dataset copy.
+  dry_run: false
+  # [optional] Report directory; defaults to output_root, or phase_annotation_report in dry-run.
+  report_dir:
+
+annotate_gripper_transition:
+  # [required] Source dataset to inspect; the script never edits this dataset in place.
+  dataset_root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125_cleaned"
+  # [choices] report_only: write reports only; annotated_copy: copy dataset, add annotation columns, and write reports.
+  output_mode: "annotated_copy"
+  # [required] In report_only mode this is the report root; in annotated_copy mode this is the output dataset root.
+  output_root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125_cleaned_annotated"
+  # [choices] true: replace existing reports/output dataset; false: fail if output files already exist.
+  overwrite: true
+  # [default] Prefix for annotation columns added to the exported dataset.
+  annotation_prefix: "annotation"
+  # [choices] true: keep videos in exported dataset; false: omit videos.
+  copy_videos: "true"
+  # [choices] copy: duplicate video files; symlink: link output videos to source videos to save disk.
+  copy_mode: "symlink"
+  # [choices] true: validate exported columns, row counts, loading, and source immutability; false: skip validation.
+  validate_output: true
+  # [optional] Episode subset; empty means all episodes.
+  episode_indexes:
+  max_episodes:
+  # [optional] Explicit gripper action dims; empty means infer from action names.
+  left_gripper_dim:
+  right_gripper_dim:
+  gripper_name_regex: "gripper"
+  # [choices] true: larger gripper value means open; false: smaller value means open; auto: infer from data.
+  open_high: "true"
+  # [choices] auto: infer binary/continuous values; binary: threshold state changes; continuous: hysteresis on continuous values.
+  mode: "auto"
+  # [choices] hysteresis: use open/close stable thresholds; derivative: use value deltas.
+  detector: "hysteresis"
+  delta_threshold: 0.05
+  binary_threshold: 0.5
+  open_threshold: 0.9
+  close_threshold: 0.1
+  # [choices] reached_state: label frame where new stable state is reached; start: label transition start; midpoint: label transition middle.
+  event_frame: "reached_state"
+  # [default] Context windows around detected transitions, in frames.
+  pre_window: 60
+  post_window: 30
+  min_transition_gap: 3
+  # [default] Rolling median smoothing window; 1 disables smoothing.
+  smooth_window: 1
+  # [optional] Expected transition counts per episode.
+  expected_left_opening: 2
+  expected_left_closing: 2
+  expected_right_opening: 2
+  expected_right_closing: 2
+  # [choices] true: exit non-zero on expected-count mismatch; false: report warnings only.
+  strict_expected_counts: false
+  # [choices] true: write per-episode plots; false: skip plots.
+  plot: false

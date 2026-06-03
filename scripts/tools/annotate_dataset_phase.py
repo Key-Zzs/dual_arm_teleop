@@ -66,6 +66,8 @@ except ModuleNotFoundError as exc:  # pragma: no cover - support running from re
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "dataset_config" / "annotate_dataset_cfg.yaml"
+
 
 PHASE_RIGHT = 0
 PHASE_LEFT = 1
@@ -151,6 +153,25 @@ def _output_repo_id(source_repo_id: str, explicit_repo_id: str | None) -> str:
         return explicit_repo_id
     source_repo_id = source_repo_id.rstrip("/")
     return f"{source_repo_id}_phase"
+
+
+def _load_config_section(path: Path, section: str) -> dict[str, Any]:
+    import yaml
+
+    path = path.expanduser()
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    cfg = data.get(section, {}) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Invalid config section {section!r} in {path}: expected a mapping.")
+    return cfg
+
+
+def _cfg_path(cfg: dict[str, Any], key: str) -> Path | None:
+    value = cfg.get(key)
+    if value in (None, ""):
+        return None
+    return Path(value).expanduser()
 
 
 def _parse_slice(text: str, action_dim: int, *, label: str) -> list[int]:
@@ -1030,60 +1051,90 @@ def _report_totals(episode_reports: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="YAML config path.",
+    )
+    config_args, _ = config_parser.parse_known_args(argv)
+    cfg = _load_config_section(config_args.config, "annotate_dataset_phase")
+
     parser = argparse.ArgumentParser(
         description=(
             "Annotate a dual-arm LeRobot dataset with phase_right_arm/phase_left_arm "
             "features appended to observation.state."
-        )
+        ),
+        parents=[config_parser],
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--input-root", type=Path, required=True, help="Existing LeRobot dataset root.")
+    parser.add_argument(
+        "--input-root",
+        type=Path,
+        default=_cfg_path(cfg, "input_root"),
+        help="Existing LeRobot dataset root.",
+    )
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=None,
+        default=_cfg_path(cfg, "output_root"),
         help="New output dataset root. Required unless --dry-run and --report-dir are used.",
     )
-    parser.add_argument("--repo-id", default=None, help="Repo id used for loading/writing local metadata.")
+    parser.add_argument("--repo-id", default=cfg.get("repo_id"), help="Repo id used for loading/writing local metadata.")
     parser.add_argument(
         "--phase-mode",
-        default="two_phase_active_arm",
+        default=cfg.get("phase_mode", "two_phase_active_arm"),
         choices=["two_phase_active_arm"],
         help="Phase annotation mode. Only two_phase_active_arm is implemented.",
     )
-    parser.add_argument("--left-delta-slice", default="0:6")
-    parser.add_argument("--right-delta-slice", default="6:12")
-    parser.add_argument("--left-gripper-dim", type=int, default=None)
-    parser.add_argument("--right-gripper-dim", type=int, default=None)
-    parser.add_argument("--trans-threshold", type=float, default=0.001)
-    parser.add_argument("--rot-threshold", type=float, default=0.005)
-    parser.add_argument("--dominance-ratio", type=float, default=1.2)
-    parser.add_argument("--fps", type=float, default=None, help="Override dataset fps. Defaults to metadata fps or 30.")
-    parser.add_argument("--min-active-sec", type=float, default=0.3)
-    parser.add_argument("--max-idle-gap-sec", type=float, default=0.5)
-    parser.add_argument("--smooth-window", type=int, default=31, help="Odd moving-average window.")
+    parser.add_argument("--left-delta-slice", default=cfg.get("left_delta_slice", "0:6"))
+    parser.add_argument("--right-delta-slice", default=cfg.get("right_delta_slice", "6:12"))
+    parser.add_argument("--left-gripper-dim", type=int, default=cfg.get("left_gripper_dim"))
+    parser.add_argument("--right-gripper-dim", type=int, default=cfg.get("right_gripper_dim"))
+    parser.add_argument("--trans-threshold", type=float, default=cfg.get("trans_threshold", 0.001))
+    parser.add_argument("--rot-threshold", type=float, default=cfg.get("rot_threshold", 0.005))
+    parser.add_argument("--dominance-ratio", type=float, default=cfg.get("dominance_ratio", 1.2))
+    parser.add_argument("--fps", type=float, default=cfg.get("fps"), help="Override dataset fps. Defaults to metadata fps or 30.")
+    parser.add_argument("--min-active-sec", type=float, default=cfg.get("min_active_sec", 0.3))
+    parser.add_argument("--max-idle-gap-sec", type=float, default=cfg.get("max_idle_gap_sec", 0.5))
+    parser.add_argument("--smooth-window", type=int, default=cfg.get("smooth_window", 31), help="Odd moving-average window.")
 
-    parser.set_defaults(use_main_boundary=True)
+    parser.set_defaults(use_main_boundary=cfg.get("use_main_boundary", True))
     parser.add_argument("--use-main-boundary", dest="use_main_boundary", action="store_true")
     parser.add_argument("--no-use-main-boundary", dest="use_main_boundary", action="store_false")
 
-    parser.set_defaults(save_report=True)
+    parser.set_defaults(save_report=cfg.get("save_report", True))
     parser.add_argument("--save-report", dest="save_report", action="store_true")
     parser.add_argument("--no-save-report", dest="save_report", action="store_false")
 
-    parser.set_defaults(save_plots=True)
+    parser.set_defaults(save_plots=cfg.get("save_plots", True))
     parser.add_argument("--save-plots", dest="save_plots", action="store_true")
     parser.add_argument("--no-save-plots", dest="save_plots", action="store_false")
 
-    parser.add_argument("--overwrite", action="store_true", help="Replace an existing distinct output-root.")
-    parser.add_argument("--dry-run", action="store_true", help="Only compute report/plots; do not write dataset.")
+    parser.add_argument(
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
+        default=cfg.get("overwrite", False),
+        help="Replace an existing distinct output-root.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action=argparse.BooleanOptionalAction,
+        default=cfg.get("dry_run", False),
+        help="Only compute report/plots; do not write dataset.",
+    )
     parser.add_argument(
         "--report-dir",
         type=Path,
-        default=None,
+        default=_cfg_path(cfg, "report_dir"),
         help="Report output directory. In export mode defaults to output-root.",
     )
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.input_root is None:
+        parser.error("--input-root is required, either on the CLI or in annotate_dataset_cfg.yaml.")
+    return args
 
 
 def _args_for_report(args: argparse.Namespace) -> dict[str, Any]:

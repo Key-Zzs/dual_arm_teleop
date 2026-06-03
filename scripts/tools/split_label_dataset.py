@@ -2405,7 +2405,7 @@ def split_label_dataset(cfg: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    default_cfg = Path(__file__).resolve().parents[1] / "config" / "split_label_dataset_cfg.yaml"
+    default_cfg = Path(__file__).resolve().parents[1] / "config" / "dataset_config" / "split_label_dataset_cfg.yaml"
     parser = argparse.ArgumentParser(description="Split long LeRobot episodes and label sub-episodes.")
     parser.add_argument("--config", type=Path, default=default_cfg)
     parser.add_argument("--dry-run", action="store_true", help="Only report segments; do not label or write.")

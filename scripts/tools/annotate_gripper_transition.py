@@ -2,15 +2,15 @@
 """Gripper transition detector and annotation exporter for LeRobot datasets.
 
 By default this script reads an existing LeRobot dataset, detects gripper
-opening/closing transitions from action columns, and writes diagnostic reports
-only. With ``--export-annotated-copy`` it first copies the source dataset to a
-new root, then adds gripper transition annotation columns only in that copy.
-It never modifies the source dataset.
+opening/closing transitions from action columns, and writes diagnostic reports.
+With ``--output-mode annotated_copy`` it first copies the source dataset to
+``--output-root``, then adds gripper transition annotation columns only in that
+copy. It never modifies the source dataset.
 
-python dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/debug/annotate_gripper_transition.py   \
+python dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/tools/annotate_gripper_transition.py   \
     --dataset-root /home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125_cleaned   \
-    --output-dataset-root /home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125_cleaned_annotated   \
-    --export-annotated-copy   \
+    --output-mode annotated_copy   \
+    --output-root /home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125_cleaned_annotated   \
     --copy-mode symlink   \
     --detector hysteresis   \
     --open-high true   \
@@ -24,7 +24,7 @@ python dual_arm_data_collection/lerobot_dual_arm_teleop/scripts/debug/annotate_g
     --expected-right-opening 2   \
     --expected-right-closing 2   \
     --validate-output \
-    --overwrite-output
+    --overwrite
 """
 
 from __future__ import annotations
@@ -45,6 +45,8 @@ import numpy as np
 
 LeRobotDataset = None
 _LEROBOT_IMPORT_ERROR: BaseException | None = None
+
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "dataset_config" / "annotate_dataset_cfg.yaml"
 
 try:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -218,6 +220,59 @@ def _infer_repo_id(root: Path) -> str:
     return root.expanduser().resolve(strict=False).name or "local_gripper_transition_dataset"
 
 
+def _load_config_section(path: Path, section: str) -> dict[str, Any]:
+    import yaml
+
+    path = path.expanduser()
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    cfg = data.get(section, {}) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError(f"Invalid config section {section!r} in {path}: expected a mapping.")
+    return cfg
+
+
+def _cfg_path(cfg: dict[str, Any], key: str) -> Path | None:
+    value = cfg.get(key)
+    if value in (None, ""):
+        return None
+    return Path(value).expanduser()
+
+
+def _cfg_report_root(cfg: dict[str, Any]) -> Path | None:
+    return _cfg_path(cfg, "output_report_root") or _cfg_path(cfg, "output_dir")
+
+
+def _cfg_output_mode(cfg: dict[str, Any]) -> str:
+    if "output_mode" in cfg:
+        return str(cfg["output_mode"])
+    if bool(cfg.get("export_annotated_copy", False)):
+        return "annotated_copy"
+    return "report_only"
+
+
+def _cfg_output_root(cfg: dict[str, Any]) -> Path | None:
+    output_root = _cfg_path(cfg, "output_root")
+    if output_root is not None:
+        return output_root
+    if _cfg_output_mode(cfg) == "annotated_copy":
+        return _cfg_path(cfg, "output_dataset_root")
+    return _cfg_report_root(cfg)
+
+
+def _cfg_overwrite(cfg: dict[str, Any]) -> bool:
+    if "overwrite" in cfg:
+        return bool(cfg["overwrite"])
+    return bool(cfg.get("overwrite_output", False))
+
+
+def _cfg_choice(cfg: dict[str, Any], key: str, default: str) -> str:
+    value = cfg.get(key, default)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 def _json_ready(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _json_ready(val) for key, val in value.items()}
@@ -246,18 +301,18 @@ def _validate_output_dataset_path(dataset_root: Path, output_dataset_root: Path)
     dataset_root = _resolve_for_safety(dataset_root)
     output_dataset_root = _resolve_for_safety(output_dataset_root)
     if dataset_root == output_dataset_root:
-        raise ValueError("--output-dataset-root must be different from --dataset-root.")
+        raise ValueError("--output-root must be different from --dataset-root in annotated_copy mode.")
     if _path_inside(output_dataset_root, dataset_root):
-        raise ValueError("--output-dataset-root must not be inside --dataset-root.")
+        raise ValueError("--output-root must not be inside --dataset-root in annotated_copy mode.")
     if _path_inside(dataset_root, output_dataset_root):
-        raise ValueError("--dataset-root must not be inside --output-dataset-root.")
+        raise ValueError("--dataset-root must not be inside --output-root.")
 
 
 def _validate_export_report_dir(dataset_root: Path, output_dir: Path) -> None:
     dataset_root = _resolve_for_safety(dataset_root)
     output_dir = _resolve_for_safety(output_dir)
     if _path_inside(output_dir, dataset_root):
-        raise ValueError("--output-dir must not be inside --dataset-root when exporting a dataset copy.")
+        raise ValueError("Report output root must not be inside --dataset-root when exporting a dataset copy.")
 
 
 def _annotation_columns(prefix: str) -> dict[str, str]:
@@ -552,9 +607,11 @@ def _resolve_gripper_dims(
     return GripperDims(left=left, right=right, warnings=warnings)
 
 
-def _parse_episode_indexes(values: list[str] | None) -> list[int] | None:
+def _parse_episode_indexes(values: list[str] | str | None) -> list[int] | None:
     if not values:
         return None
+    if isinstance(values, str):
+        values = [values]
 
     episode_indexes: list[int] = []
     for value in values:
@@ -1673,15 +1730,15 @@ def _copy_source_dataset_root(
     *,
     source_root: Path,
     output_root: Path,
-    overwrite_output: bool,
+    overwrite: bool,
     copy_videos: bool,
     copy_mode: str,
 ) -> list[str]:
     warnings: list[str] = []
     if output_root.exists():
-        if not overwrite_output:
+        if not overwrite:
             raise FileExistsError(
-                f"Output dataset root already exists: {output_root}. Pass --overwrite-output to rebuild it."
+                f"Output dataset root already exists: {output_root}. Pass --overwrite to rebuild it."
             )
         _remove_existing_output_root(output_root)
 
@@ -2053,162 +2110,232 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
-def build_arg_parser() -> argparse.ArgumentParser:
+def build_arg_parser(
+    cfg: dict[str, Any] | None = None,
+    config_parser: argparse.ArgumentParser | None = None,
+) -> argparse.ArgumentParser:
+    cfg = cfg or {}
+    parents = [config_parser] if config_parser is not None else []
     parser = argparse.ArgumentParser(
         description="Gripper transition detector and annotation exporter for LeRobot datasets.",
+        parents=parents,
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
         "--dataset-root",
         type=Path,
-        required=True,
+        default=_cfg_path(cfg, "dataset_root"),
         help="Path to an existing LeRobot dataset.",
     )
     parser.add_argument(
-        "--output-dir",
+        "--output-mode",
+        choices=("report_only", "annotated_copy"),
+        default=_cfg_output_mode(cfg),
+        help="Output behavior: write reports only, or export an annotated dataset copy with reports.",
+    )
+    parser.add_argument(
+        "--output-root",
         type=Path,
-        default=None,
+        default=_cfg_output_root(cfg),
         help=(
-            "Directory for report JSON/CSV/plots. "
-            "Required for dry-run; export defaults to output dataset root."
+            "Output root. In report_only mode this is the report directory; "
+            "in annotated_copy mode this is the annotated dataset root and reports are written there."
         ),
     )
     parser.add_argument(
         "--dry-run",
-        action="store_true",
-        help="Write diagnostic reports only. Cannot be combined with --export-annotated-copy.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Deprecated alias: --dry-run maps to --output-mode report_only.",
     )
     parser.add_argument(
         "--export-annotated-copy",
-        action="store_true",
-        help="Copy the input dataset and add gripper transition annotation columns in the copy.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Deprecated alias: --export-annotated-copy maps to --output-mode annotated_copy.",
+    )
+    parser.add_argument(
+        "--output-report-root",
+        "--output-dir",
+        dest="output_report_root",
+        type=Path,
+        default=None,
+        help="Deprecated alias for --output-root in report_only mode.",
     )
     parser.add_argument(
         "--output-dataset-root",
         type=Path,
         default=None,
-        help="Destination dataset root for --export-annotated-copy.",
+        help="Deprecated alias for --output-root in annotated_copy mode.",
     )
     parser.add_argument(
         "--overwrite-output",
-        action="store_true",
-        help="Delete and rebuild --output-dataset-root if it already exists.",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Deprecated alias for --overwrite.",
     )
     parser.add_argument(
         "--annotation-prefix",
-        default="annotation",
+        default=cfg.get("annotation_prefix", "annotation"),
         help="Prefix for annotation columns added to the exported dataset.",
     )
     parser.add_argument(
         "--copy-videos",
         choices=("true", "false"),
-        default="true",
+        default=_cfg_choice(cfg, "copy_videos", "true"),
         help="Whether the exported dataset should keep videos.",
     )
     parser.add_argument(
         "--copy-mode",
         choices=("copy", "symlink"),
-        default="copy",
+        default=cfg.get("copy_mode", "copy"),
         help="Copy all files, or symlink the root videos directory while copying metadata/parquet files.",
     )
     parser.add_argument(
         "--validate-output",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=cfg.get("validate_output", True),
         help="Validate annotation columns, row counts, source immutability, and LeRobotDataset loading.",
     )
     parser.add_argument(
         "--episode-indexes",
         nargs="+",
-        default=None,
+        default=cfg.get("episode_indexes"),
         help="Episode indexes, comma list, or Python-style ranges such as '0,2,5:10'.",
     )
-    parser.add_argument("--max-episodes", type=_positive_int, default=None, help="Limit processed episodes.")
+    parser.add_argument("--max-episodes", type=_positive_int, default=cfg.get("max_episodes"), help="Limit processed episodes.")
     parser.add_argument(
         "--left-gripper-dim",
         type=int,
-        default=None,
+        default=cfg.get("left_gripper_dim"),
         help="Explicit left gripper action dim.",
     )
     parser.add_argument(
         "--right-gripper-dim",
         type=int,
-        default=None,
+        default=cfg.get("right_gripper_dim"),
         help="Explicit right gripper action dim.",
     )
     parser.add_argument(
         "--gripper-name-regex",
-        default="gripper",
+        default=cfg.get("gripper_name_regex", "gripper"),
         help="Regex used to find candidate gripper action names in metadata.",
     )
     parser.add_argument(
         "--open-high",
         choices=("true", "false", "auto"),
-        default="auto",
+        default=_cfg_choice(cfg, "open_high", "auto"),
         help="Whether larger gripper values mean opening.",
     )
-    parser.add_argument("--mode", choices=("auto", "binary", "continuous"), default="auto")
+    parser.add_argument("--mode", choices=("auto", "binary", "continuous"), default=cfg.get("mode", "auto"))
     parser.add_argument(
         "--detector",
         choices=("hysteresis", "derivative"),
-        default="hysteresis",
+        default=cfg.get("detector", "hysteresis"),
         help="Transition detector to use; derivative preserves the previous delta-threshold behavior.",
     )
-    parser.add_argument("--delta-threshold", type=float, default=0.05)
-    parser.add_argument("--binary-threshold", type=float, default=0.5)
+    parser.add_argument("--delta-threshold", type=float, default=cfg.get("delta_threshold", 0.05))
+    parser.add_argument("--binary-threshold", type=float, default=cfg.get("binary_threshold", 0.5))
     parser.add_argument(
         "--open-threshold",
         type=float,
-        default=0.8,
+        default=cfg.get("open_threshold", 0.8),
         help="Stable high threshold for the hysteresis detector.",
     )
     parser.add_argument(
         "--close-threshold",
         type=float,
-        default=0.2,
+        default=cfg.get("close_threshold", 0.2),
         help="Stable low threshold for the hysteresis detector.",
     )
     parser.add_argument(
         "--event-frame",
         choices=("reached_state", "start", "midpoint"),
-        default="reached_state",
+        default=cfg.get("event_frame", "reached_state"),
         help="Frame used to label a hysteresis transition event.",
     )
-    parser.add_argument("--pre-window", type=_positive_int, default=5)
-    parser.add_argument("--post-window", type=_positive_int, default=8)
-    parser.add_argument("--min-transition-gap", type=_positive_int, default=3)
+    parser.add_argument("--pre-window", type=_positive_int, default=cfg.get("pre_window", 5))
+    parser.add_argument("--post-window", type=_positive_int, default=cfg.get("post_window", 8))
+    parser.add_argument("--min-transition-gap", type=_positive_int, default=cfg.get("min_transition_gap", 3))
     parser.add_argument(
         "--smooth-window",
         type=int,
-        default=1,
+        default=cfg.get("smooth_window", 1),
         help="Rolling median window; 1 disables smoothing.",
     )
-    parser.add_argument("--expected-left-opening", type=_positive_int, default=None)
-    parser.add_argument("--expected-left-closing", type=_positive_int, default=None)
-    parser.add_argument("--expected-right-opening", type=_positive_int, default=None)
-    parser.add_argument("--expected-right-closing", type=_positive_int, default=None)
+    parser.add_argument("--expected-left-opening", type=_positive_int, default=cfg.get("expected_left_opening"))
+    parser.add_argument("--expected-left-closing", type=_positive_int, default=cfg.get("expected_left_closing"))
+    parser.add_argument("--expected-right-opening", type=_positive_int, default=cfg.get("expected_right_opening"))
+    parser.add_argument("--expected-right-closing", type=_positive_int, default=cfg.get("expected_right_closing"))
     parser.add_argument(
         "--strict-expected-counts",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=cfg.get("strict_expected_counts", False),
         help="Return a non-zero exit code when any episode does not match expected transition counts.",
     )
-    parser.add_argument("--plot", action="store_true", help="Write per-episode transition plots.")
-    parser.add_argument("--overwrite", action="store_true", help="Replace existing report files.")
+    parser.add_argument(
+        "--plot",
+        action=argparse.BooleanOptionalAction,
+        default=cfg.get("plot", False),
+        help="Write per-episode transition plots.",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action=argparse.BooleanOptionalAction,
+        default=_cfg_overwrite(cfg),
+        help="Replace existing report files and, in annotated_copy mode, rebuild output-root.",
+    )
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
+def _normalize_output_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> argparse.Namespace:
+    if args.dry_run is True and args.export_annotated_copy is True:
+        parser.error("--dry-run cannot be combined with --export-annotated-copy.")
 
-    if args.export_annotated_copy and args.dry_run:
-        parser.error("--export-annotated-copy cannot be combined with --dry-run.")
-    if args.export_annotated_copy and args.output_dataset_root is None:
-        parser.error("--export-annotated-copy requires --output-dataset-root.")
-    if not args.export_annotated_copy and args.output_dataset_root is not None:
-        parser.error("--output-dataset-root is only valid with --export-annotated-copy.")
-    if not args.export_annotated_copy and args.output_dir is None:
-        parser.error("--output-dir is required for dry-run diagnostics.")
+    if args.dry_run is True:
+        args.output_mode = "report_only"
+    if args.export_annotated_copy is True:
+        args.output_mode = "annotated_copy"
+    elif args.export_annotated_copy is False and args.dry_run is None:
+        args.output_mode = "report_only"
+
+    legacy_report_root = args.output_report_root
+    legacy_dataset_root = args.output_dataset_root
+    if legacy_dataset_root is not None:
+        args.output_mode = "annotated_copy"
+        args.output_root = legacy_dataset_root
+    if legacy_report_root is not None and args.output_mode == "report_only":
+        args.output_root = legacy_report_root
+
+    args.report_root = legacy_report_root if args.output_mode == "annotated_copy" else None
+
+    if args.overwrite_output is not None:
+        args.overwrite = bool(args.overwrite_output)
+
+    if args.output_root is None:
+        parser.error("--output-root is required, either on the CLI or in annotate_dataset_cfg.yaml.")
+
+    args.export_annotated_copy = args.output_mode == "annotated_copy"
+    args.dry_run = args.output_mode == "report_only"
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument(
+        "--config",
+        type=Path,
+        default=DEFAULT_CONFIG_PATH,
+        help="YAML config path.",
+    )
+    config_args, _ = config_parser.parse_known_args(argv)
+    cfg = _load_config_section(config_args.config, "annotate_gripper_transition")
+    parser = build_arg_parser(cfg, config_parser)
+    args = parser.parse_args(argv)
+    args = _normalize_output_args(args, parser)
+
+    if args.dataset_root is None:
+        parser.error("--dataset-root is required, either on the CLI or in annotate_dataset_cfg.yaml.")
     if args.smooth_window < 1:
         parser.error("--smooth-window must be >= 1")
     if args.delta_threshold < 0:
@@ -2227,13 +2354,14 @@ def main(argv: list[str] | None = None) -> int:
 
     annotation_columns = _annotation_columns(args.annotation_prefix)
     output_dataset_root: Path | None = None
-    output_dir: Path | None = args.output_dir.expanduser().resolve(strict=False) if args.output_dir else None
+    output_root = args.output_root.expanduser().resolve(strict=False)
+    output_report_root = output_root
     if args.export_annotated_copy:
-        output_dataset_root = args.output_dataset_root.expanduser().resolve(strict=False)
+        output_dataset_root = output_root
         _validate_output_dataset_path(dataset_root, output_dataset_root)
-        if output_dir is None:
-            output_dir = output_dataset_root
-        _validate_export_report_dir(dataset_root, output_dir)
+        if args.report_root is not None:
+            output_report_root = args.report_root.expanduser().resolve(strict=False)
+        _validate_export_report_dir(dataset_root, output_report_root)
         _check_source_has_no_annotation_fields(dataset_root, annotation_columns)
 
     dataset = LeRobotDataset(  # type: ignore[operator]
@@ -2314,8 +2442,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if not args.export_annotated_copy:
-        assert output_dir is not None
-        output_paths = _prepare_output_dir(output_dir, overwrite=args.overwrite, plot=args.plot)
+        output_paths = _prepare_output_dir(output_report_root, overwrite=args.overwrite, plot=args.plot)
         _write_outputs(output_paths, detection_report, detections)
         _print_summary(detection_report, output_paths)
         if args.strict_expected_counts and detection_report["episodes_with_unexpected_transition_count"]:
@@ -2323,7 +2450,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     assert output_dataset_root is not None
-    assert output_dir is not None
     export_detections, default_normal_episode_indexes = _complete_export_detections(
         episode_lookup,
         detections,
@@ -2345,7 +2471,7 @@ def main(argv: list[str] | None = None) -> int:
     copy_warnings = _copy_source_dataset_root(
         source_root=dataset_root,
         output_root=output_dataset_root,
-        overwrite_output=bool(args.overwrite_output),
+        overwrite=bool(args.overwrite),
         copy_videos=args.copy_videos == "true",
         copy_mode=args.copy_mode,
     )
@@ -2397,9 +2523,9 @@ def main(argv: list[str] | None = None) -> int:
         warnings=export_warnings,
     )
     export_report_overwrite = (
-        args.overwrite or _resolve_for_safety(output_dir) == _resolve_for_safety(output_dataset_root)
+        args.overwrite or _resolve_for_safety(output_report_root) == _resolve_for_safety(output_dataset_root)
     )
-    export_paths = _prepare_annotation_export_paths(output_dir, overwrite=export_report_overwrite)
+    export_paths = _prepare_annotation_export_paths(output_report_root, overwrite=export_report_overwrite)
     _write_annotation_export_outputs(export_paths, export_report, export_detections)
     _print_export_summary(export_report, export_paths)
 
