@@ -13,29 +13,29 @@ train:
       fail_if_cuda_unavailable: false
 
   dataset:
-    repo_id: "nero_task3_step1_random/2mL_empty_right"
+    repo_id: "nero_task3_step1_random/dual_empty"
     # Local dataset directory. It should point to the dataset repo root.
     # root: "/home/deepcybo/.cache/huggingface/lerobot/franka_dual_arm/left_right_pick_merged_E150"
-    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/dual_empty_merged_E200_hybrid_cleaned"
     video_backend: "torchcodec" # torchcodec | pyav | video_reader
     # Corrupt video packets found by full dataset decode scan; the training sampler skips these dataset indices.
-    skip_indices: [10076, 16318, 16319, 19159, 19182, 19183]
+    # skip_indices: [10076, 16318, 16319, 19159, 19182, 19183]
 
   env:
 
   policy:
     # Supported: act | diffusion | dp | diffusion_policy.
     # 推荐保持为普通 ACT；轮次式 DAgger 会由 run_dagger_rounds.py 在内存中注入训练参数。
-    # type: "act"
-    # config_path: scripts/config/policy_config/act_train_config.yaml
+    type: "act"
+    config_path: scripts/config/policy_config/act_train_config.yaml
     # For diffusion:
-    type: "diffusion"
-    config_path: scripts/config/policy_config/diffusion_train_config.yaml
+    # type: "diffusion"
+    # config_path: scripts/config/policy_config/diffusion_train_config.yaml
 
     # Policy hyperparameters have been moved to scripts/config/policy_config/*_train_config.yaml.
 
-  output_dir: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1_random/2mL_empty_right/dp_20260603_E125"
-  job_name: "dp_2mL_empty_right_20260603_E125"
+  output_dir: "/home/deepcybo/wbcd_ws/Le-nero/dual_arm_data_collection/lerobot_dual_arm_teleop/outputs/train/task3_step1_random/dual_empty/act_20260603_E200"
+  job_name: "act_dual_empty_20260603_E200"
 
   resume: false
   seed: 1000

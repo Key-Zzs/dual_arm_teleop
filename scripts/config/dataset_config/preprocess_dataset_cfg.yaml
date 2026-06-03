@@ -1,14 +1,14 @@
 preprocess_dataset:
   source:
-    repo_id: "nero_task3_step1_random/2mL_empty_right"
-    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125"
+    repo_id: "nero_task3_step1_random/dual_empty"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/dual_empty_merged_E200_hybrid"
     episodes: null        # null means all episodes, or set e.g. [0, 1, 2]
     max_episodes: null    # optional quick-test limit
     video_backend: "torchcodec" # torchcodec | pyav | video_reader
 
   output:
-    repo_id: "nero_task3_step1_random/2mL_empty_right"
-    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/2mL_empty_right_merged_E125_cleaned"
+    repo_id: "nero_task3_step1_random/dual_empty"
+    root: "/home/deepcybo/.cache/huggingface/lerobot/nero_task3_step1_random/dual_empty_merged_E200_hybrid_cleaned"
     overwrite: false
     image_writer_threads: 4
     batch_encoding_size: 1
